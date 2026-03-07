@@ -6,15 +6,10 @@ Loads configuration from TOML files with environment variable overrides.
 from __future__ import annotations
 
 import os
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore[no-redef]
-
 
 # Default config search paths
 _CONFIG_FILENAMES = ["config.toml", "config.local.toml"]

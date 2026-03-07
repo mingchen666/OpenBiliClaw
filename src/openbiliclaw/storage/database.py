@@ -146,9 +146,22 @@ class Database:
         import json
 
         self.conn.execute(
-            """INSERT OR REPLACE INTO content_cache
-            (bvid, title, up_name, up_mid, duration, tags, description, cover_url, view_count, like_count, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """
+            INSERT OR REPLACE INTO content_cache (
+                bvid,
+                title,
+                up_name,
+                up_mid,
+                duration,
+                tags,
+                description,
+                cover_url,
+                view_count,
+                like_count,
+                source
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
             (
                 bvid,
                 kwargs.get("title", ""),

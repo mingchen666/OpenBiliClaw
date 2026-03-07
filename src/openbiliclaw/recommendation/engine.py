@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class Recommendation:
     """A recommendation ready to present to the user."""
 
-    content: DiscoveredContent  # type: ignore[type-arg]
+    content: DiscoveredContent
     expression: str = ""  # Friend-style recommendation reason
     topic_label: str = ""  # Personal topic (not generic categories)
     confidence: float = 0.0  # How confident the agent is in this rec
@@ -58,8 +58,8 @@ class RecommendationEngine:
 
     async def generate_recommendations(
         self,
-        discovered: list[DiscoveredContent],  # type: ignore[type-arg]
-        profile: SoulProfile,  # type: ignore[type-arg]
+        discovered: list[DiscoveredContent],
+        profile: SoulProfile,
         limit: int = 10,
     ) -> list[Recommendation]:
         """Generate friend-style recommendations from discovered content.
@@ -80,7 +80,7 @@ class RecommendationEngine:
     async def generate_personal_topic(
         self,
         recommendations: list[Recommendation],
-        profile: SoulProfile,  # type: ignore[type-arg]
+        profile: SoulProfile,
     ) -> PersonalTopic:
         """Create a deeply personalized recommendation topic.
 
@@ -99,8 +99,8 @@ class RecommendationEngine:
 
     async def generate_expression(
         self,
-        content: DiscoveredContent,  # type: ignore[type-arg]
-        profile: SoulProfile,  # type: ignore[type-arg]
+        content: DiscoveredContent,
+        profile: SoulProfile,
     ) -> str:
         """Generate a friend-style recommendation expression.
 

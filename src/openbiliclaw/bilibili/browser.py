@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 import shutil
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ class BilibiliBrowser:
             return {"error": error_msg}
 
         try:
-            return json.loads(stdout.decode())
+            return cast("dict[str, Any]", json.loads(stdout.decode()))
         except json.JSONDecodeError:
             return {"output": stdout.decode()}
 
@@ -107,7 +107,7 @@ class BilibiliBrowser:
             Page text content.
         """
         result = await self._run_command("open", url, "--text")
-        return result.get("output", "")
+        return str(result.get("output", ""))
 
     async def screenshot(self, url: str, output_path: str) -> str:
         """Take a screenshot of a page.
@@ -120,7 +120,7 @@ class BilibiliBrowser:
             Path to the saved screenshot.
         """
         result = await self._run_command("screenshot", url, "-o", output_path)
-        return result.get("output", output_path)
+        return str(result.get("output", output_path))
 
     async def close(self) -> None:
         """Close any active browser sessions."""

@@ -8,11 +8,21 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    """Coerce a JSON value into an object for strict typing."""
+    return cast("dict[str, Any]", value)
+
+
+def _json_list(value: Any) -> list[dict[str, Any]]:
+    """Coerce a JSON value into a list of objects for strict typing."""
+    return cast("list[dict[str, Any]]", value)
 
 
 @dataclass
@@ -81,9 +91,10 @@ class BilibiliAPIClient:
             params={"bvid": bvid},
         )
         resp.raise_for_status()
-        data = resp.json()["data"]
-        stat = data.get("stat", {})
-        owner = data.get("owner", {})
+        payload = _json_object(resp.json())
+        data = _json_object(payload["data"])
+        stat = _json_object(data.get("stat", {}))
+        owner = _json_object(data.get("owner", {}))
 
         return VideoInfo(
             bvid=data.get("bvid", bvid),
@@ -126,8 +137,9 @@ class BilibiliAPIClient:
             },
         )
         resp.raise_for_status()
-        data = resp.json().get("data", {})
-        return data.get("result", [])
+        payload = _json_object(resp.json())
+        data = _json_object(payload.get("data", {}))
+        return _json_list(data.get("result", []))
 
     async def get_user_history(self, max_items: int = 100) -> list[dict[str, Any]]:
         """Get the authenticated user's watch history.
@@ -150,8 +162,9 @@ class BilibiliAPIClient:
             params={"max": max_items, "type": "archive"},
         )
         resp.raise_for_status()
-        data = resp.json().get("data", {})
-        return data.get("list", [])
+        payload = _json_object(resp.json())
+        data = _json_object(payload.get("data", {}))
+        return _json_list(data.get("list", []))
 
     async def get_favorites(self, media_id: int) -> list[dict[str, Any]]:
         """Get content from a favorites folder.
@@ -167,8 +180,9 @@ class BilibiliAPIClient:
             params={"media_id": media_id, "pn": 1, "ps": 20},
         )
         resp.raise_for_status()
-        data = resp.json().get("data", {})
-        return data.get("medias", [])
+        payload = _json_object(resp.json())
+        data = _json_object(payload.get("data", {}))
+        return _json_list(data.get("medias", []))
 
     async def get_related_videos(self, bvid: str) -> list[dict[str, Any]]:
         """Get related/recommended videos for a given video.
@@ -184,7 +198,8 @@ class BilibiliAPIClient:
             params={"bvid": bvid},
         )
         resp.raise_for_status()
-        return resp.json().get("data", [])
+        payload = _json_object(resp.json())
+        return _json_list(payload.get("data", []))
 
     async def get_ranking(self, rid: int = 0) -> list[dict[str, Any]]:
         """Get ranking/trending videos.
@@ -200,8 +215,9 @@ class BilibiliAPIClient:
             params={"rid": rid, "type": "all"},
         )
         resp.raise_for_status()
-        data = resp.json().get("data", {})
-        return data.get("list", [])
+        payload = _json_object(resp.json())
+        data = _json_object(payload.get("data", {}))
+        return _json_list(data.get("list", []))
 
     async def close(self) -> None:
         """Close the HTTP client."""
