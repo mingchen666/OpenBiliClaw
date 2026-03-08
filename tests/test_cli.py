@@ -10,6 +10,7 @@ from openbiliclaw import config as config_module
 from openbiliclaw.bilibili.auth import AuthStatus
 from openbiliclaw.bilibili.browser import BrowserCommandError
 from openbiliclaw.cli import app
+from openbiliclaw.soul.profile import PreferenceLayer, SoulProfile
 
 
 def _write_example_config(project_root: Path) -> None:
@@ -313,3 +314,51 @@ def test_browser_content_reports_command_failure(
     assert result.exit_code == 1
     assert "浏览器操作失败" in result.stdout
     assert "snapshot failed" in result.stdout
+
+
+def test_profile_command_shows_saved_profile(
+    monkeypatch: pytest.MonkeyPatch, runner: CliRunner
+) -> None:
+    class FakeSoulEngine:
+        async def get_profile(self) -> SoulProfile:
+            return SoulProfile(
+                personality_portrait=(
+                    "这是一个偏爱深度内容、会主动寻找原理解释、决策比较克制的人。"
+                    * 6
+                ),
+                core_traits=["理性", "谨慎", "自驱"],
+                values=["成长", "真实"],
+                life_stage="稳定积累阶段",
+                deep_needs=["被理解", "持续成长"],
+                preferences=PreferenceLayer(),
+            )
+
+    monkeypatch.setattr(cli_module, "_build_soul_engine", lambda: FakeSoulEngine(), raising=False)
+    monkeypatch.setattr(cli_module, "_initialize_logging", lambda log_level_override=None: None)
+
+    result = runner.invoke(app, ["profile"])
+
+    assert result.exit_code == 0
+    assert "人格描述" in result.stdout
+    assert "核心特质" in result.stdout
+    assert "理性" in result.stdout
+    assert "稳定积累阶段" in result.stdout
+
+
+def test_profile_command_prints_init_guidance_when_missing_profile(
+    monkeypatch: pytest.MonkeyPatch, runner: CliRunner
+) -> None:
+    from openbiliclaw.soul.engine import SoulProfileNotInitializedError
+
+    class FakeSoulEngine:
+        async def get_profile(self) -> SoulProfile:
+            raise SoulProfileNotInitializedError("missing")
+
+    monkeypatch.setattr(cli_module, "_build_soul_engine", lambda: FakeSoulEngine(), raising=False)
+    monkeypatch.setattr(cli_module, "_initialize_logging", lambda log_level_override=None: None)
+
+    result = runner.invoke(app, ["profile"])
+
+    assert result.exit_code == 1
+    assert "尚未初始化" in result.stdout
+    assert "openbiliclaw init" in result.stdout

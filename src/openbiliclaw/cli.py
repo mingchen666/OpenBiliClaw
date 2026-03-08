@@ -62,6 +62,26 @@ def _build_browser() -> Any:
     )
 
 
+def _build_soul_engine() -> Any:
+    """Build the configured soul engine with initialized memory storage."""
+    from openbiliclaw.config import load_config
+    from openbiliclaw.memory.manager import MemoryManager
+    from openbiliclaw.soul.engine import SoulEngine
+
+    class _UnavailableLLM:
+        async def complete(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("LLM registry is unavailable for this command.")
+
+    config = load_config()
+    memory = MemoryManager(config.data_path)
+    memory.initialize()
+    try:
+        llm = _build_registry()
+    except Exception:
+        llm = _UnavailableLLM()
+    return SoulEngine(llm=llm, memory=memory)
+
+
 @app.callback()
 def main(log_level: str | None = typer.Option(None, "--log-level")) -> None:
     """Global CLI options."""
@@ -142,9 +162,30 @@ def recommend() -> None:
 @app.command()
 def profile() -> None:
     """查看用户画像."""
+    from openbiliclaw.soul.engine import SoulProfileNotInitializedError
+
+    engine = _build_soul_engine()
+    try:
+        profile_data = asyncio.run(engine.get_profile())
+    except SoulProfileNotInitializedError as exc:
+        console.print("[bold yellow]尚未初始化用户画像[/bold yellow]")
+        console.print("请先执行 `openbiliclaw init` 拉取历史并生成初始画像。")
+        raise typer.Exit(code=1) from exc
+
     console.print("[bold]🧠 用户画像[/bold]")
-    console.print("[dim]功能开发中...[/dim]")
-    # TODO: Display user soul profile
+    console.print("[bold cyan]人格描述[/bold cyan]")
+    console.print(profile_data.personality_portrait or "（暂无）")
+    console.print("[bold cyan]核心特质[/bold cyan]")
+    traits_text = "、".join(profile_data.core_traits) if profile_data.core_traits else "（暂无）"
+    console.print(f"  {traits_text}")
+    console.print("[bold cyan]价值观[/bold cyan]")
+    values_text = "、".join(profile_data.values) if profile_data.values else "（暂无）"
+    console.print(f"  {values_text}")
+    console.print("[bold cyan]当前阶段[/bold cyan]")
+    console.print(f"  {profile_data.life_stage or '（暂无）'}")
+    console.print("[bold cyan]深层需求[/bold cyan]")
+    needs_text = "、".join(profile_data.deep_needs) if profile_data.deep_needs else "（暂无）"
+    console.print(f"  {needs_text}")
 
 
 @app.command()
