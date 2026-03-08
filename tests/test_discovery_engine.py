@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import tempfile
+from pathlib import Path
+
 import pytest
 
-from openbiliclaw.discovery.engine import ContentDiscoveryEngine
+from openbiliclaw.discovery.engine import ContentDiscoveryEngine, DiscoveredContent
 from openbiliclaw.soul.profile import SoulProfile
+from openbiliclaw.storage.database import Database
 
 from .test_explore_strategy import (
     FakeBilibiliClient as FakeExploreBilibiliClient,
 )
-from .test_explore_strategy import FakeLLMService as FakeExploreLLMService
+from .test_explore_strategy import (
+    FakeLLMService as FakeExploreLLMService,
+)
 from .test_related_chain_strategy import (
     FakeLLMService as FakeRelatedLLMService,
 )
@@ -176,3 +183,144 @@ async def test_discovery_engine_runs_explore_strategy() -> None:
     assert len(results) == 1
     assert results[0].bvid == "BV1EXP"
     assert results[0].source_strategy == "explore"
+
+
+class _RecordingStrategy:
+    def __init__(
+        self,
+        name: str,
+        result: list[DiscoveredContent],
+        *,
+        delay: float = 0.0,
+        should_fail: bool = False,
+        started: list[str] | None = None,
+    ) -> None:
+        self._name = name
+        self._result = result
+        self._delay = delay
+        self._should_fail = should_fail
+        self._started = started if started is not None else []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    async def discover(
+        self, profile: SoulProfile, limit: int = 20
+    ) -> list[DiscoveredContent]:
+        self._started.append(self._name)
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        if self._should_fail:
+            raise RuntimeError(f"boom: {self._name}")
+        return self._result[:limit]
+
+
+@pytest.mark.asyncio
+async def test_discovery_engine_runs_strategies_concurrently_and_tolerates_failures() -> None:
+    started: list[str] = []
+    engine = ContentDiscoveryEngine()
+    engine.register_strategy(
+        _RecordingStrategy(
+            "slow-search",
+            [DiscoveredContent(bvid="BV1A", relevance_score=0.72, source_strategy="search")],
+            delay=0.02,
+            started=started,
+        )
+    )
+    engine.register_strategy(
+        _RecordingStrategy(
+            "fast-failing",
+            [],
+            delay=0.0,
+            should_fail=True,
+            started=started,
+        )
+    )
+    engine.register_strategy(
+        _RecordingStrategy(
+            "fast-trending",
+            [DiscoveredContent(bvid="BV1B", relevance_score=0.81, source_strategy="trending")],
+            delay=0.0,
+            started=started,
+        )
+    )
+
+    results = await engine.discover(_build_profile(), limit=20)
+
+    assert started == ["slow-search", "fast-failing", "fast-trending"]
+    assert [item.bvid for item in results] == ["BV1B", "BV1A"]
+
+
+@pytest.mark.asyncio
+async def test_discovery_engine_keeps_highest_scored_duplicate() -> None:
+    engine = ContentDiscoveryEngine()
+    engine.register_strategy(
+        _RecordingStrategy(
+            "search",
+            [
+                DiscoveredContent(
+                    bvid="BV1DUP",
+                    title="低分版本",
+                    relevance_score=0.52,
+                    source_strategy="search",
+                )
+            ],
+        )
+    )
+    engine.register_strategy(
+        _RecordingStrategy(
+            "trending",
+            [
+                DiscoveredContent(
+                    bvid="BV1DUP",
+                    title="高分版本",
+                    relevance_score=0.91,
+                    source_strategy="trending",
+                )
+            ],
+        )
+    )
+
+    results = await engine.discover(_build_profile(), limit=20)
+
+    assert len(results) == 1
+    assert results[0].title == "高分版本"
+    assert results[0].source_strategy == "trending"
+
+
+@pytest.mark.asyncio
+async def test_discovery_engine_caches_final_results() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "test.db")
+        db.initialize()
+
+        engine = ContentDiscoveryEngine(database=db)
+        engine.register_strategy(
+            _RecordingStrategy(
+                "search",
+                [
+                    DiscoveredContent(
+                        bvid="BV1A",
+                        title="缓存内容 A",
+                        up_name="UPA",
+                        relevance_score=0.88,
+                        source_strategy="search",
+                    ),
+                    DiscoveredContent(
+                        bvid="BV1B",
+                        title="缓存内容 B",
+                        up_name="UPB",
+                        relevance_score=0.74,
+                        source_strategy="explore",
+                    ),
+                ],
+            )
+        )
+
+        results = await engine.discover(_build_profile(), limit=20)
+        cached = db.get_cached_content(limit=10)
+
+        assert [item.bvid for item in results] == ["BV1A", "BV1B"]
+        assert [item["bvid"] for item in cached] == ["BV1A", "BV1B"]
+        assert cached[0]["source"] == "search"

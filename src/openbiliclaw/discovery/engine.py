@@ -6,6 +6,7 @@ that matches the user's soul profile.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from openbiliclaw.soul.profile import SoulProfile
+    from openbiliclaw.storage.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -86,9 +88,14 @@ class ContentDiscoveryEngine:
     - Explore: cross-domain surprise discovery
     """
 
-    def __init__(self, llm_service: SupportsStructuredTask | None = None) -> None:
+    def __init__(
+        self,
+        llm_service: SupportsStructuredTask | None = None,
+        database: Database | None = None,
+    ) -> None:
         self._strategies: list[DiscoveryStrategy] = []
         self._llm_service = llm_service
+        self._database = database
 
     def register_strategy(self, strategy: DiscoveryStrategy) -> None:
         """Register a discovery strategy."""
@@ -96,7 +103,10 @@ class ContentDiscoveryEngine:
         logger.info("Registered discovery strategy: %s", strategy.name)
 
     async def discover(
-        self, profile: SoulProfile, strategies: list[str] | None = None
+        self,
+        profile: SoulProfile,
+        strategies: list[str] | None = None,
+        limit: int = 30,
     ) -> list[DiscoveredContent]:
         """Run discovery with selected (or all) strategies.
 
@@ -108,31 +118,37 @@ class ContentDiscoveryEngine:
         Returns:
             Combined, deduplicated, and scored list of discovered content.
         """
-        results: list[DiscoveredContent] = []
-
         active = self._strategies
         if strategies:
             active = [s for s in self._strategies if s.name in strategies]
 
-        for strategy in active:
-            try:
-                items = await strategy.discover(profile)
-                results.extend(items)
-                logger.info("Strategy '%s' found %d items.", strategy.name, len(items))
-            except Exception:
-                logger.exception("Strategy '%s' failed.", strategy.name)
+        if not active:
+            return []
 
-        # Deduplicate by bvid
-        seen: set[str] = set()
-        unique: list[DiscoveredContent] = []
-        for item in results:
-            if item.bvid not in seen:
-                seen.add(item.bvid)
-                unique.append(item)
+        tasks = [strategy.discover(profile, limit=limit) for strategy in active]
+        gathered = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Sort by relevance
-        unique.sort(key=lambda x: x.relevance_score, reverse=True)
-        return unique
+        results: list[DiscoveredContent] = []
+        for strategy, outcome in zip(active, gathered, strict=True):
+            if isinstance(outcome, BaseException):
+                logger.exception("Strategy '%s' failed.", strategy.name, exc_info=outcome)
+                continue
+            if not isinstance(outcome, list):
+                logger.error(
+                    "Strategy '%s' returned unexpected outcome type: %s",
+                    strategy.name,
+                    type(outcome).__name__,
+                )
+                continue
+            items: list[DiscoveredContent] = outcome
+            results.extend(items)
+            logger.info("Strategy '%s' found %d items.", strategy.name, len(items))
+
+        merged = self._merge_duplicates(results)
+        merged.sort(key=lambda x: x.relevance_score, reverse=True)
+        final_results = merged[:limit]
+        self._cache_results(final_results)
+        return final_results
 
     async def evaluate_content(
         self, content: DiscoveredContent, profile: SoulProfile
@@ -207,3 +223,33 @@ class ContentDiscoveryEngine:
         else:
             value = 0.0
         return max(0.0, min(1.0, round(value, 4)))
+
+    @staticmethod
+    def _merge_duplicates(results: list[DiscoveredContent]) -> list[DiscoveredContent]:
+        by_bvid: dict[str, DiscoveredContent] = {}
+        for item in results:
+            existing = by_bvid.get(item.bvid)
+            if existing is None or item.relevance_score > existing.relevance_score:
+                by_bvid[item.bvid] = item
+        return list(by_bvid.values())
+
+    def _cache_results(self, results: list[DiscoveredContent]) -> None:
+        if self._database is None or not results:
+            return
+        for item in results:
+            try:
+                self._database.cache_content(
+                    item.bvid,
+                    title=item.title,
+                    up_name=item.up_name,
+                    up_mid=item.up_mid,
+                    duration=item.duration,
+                    tags=item.tags,
+                    description=item.description,
+                    cover_url=item.cover_url,
+                    view_count=item.view_count,
+                    like_count=item.like_count,
+                    source=item.source_strategy,
+                )
+            except Exception:
+                logger.exception("Failed to cache discovered content: %s", item.bvid)

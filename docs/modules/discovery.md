@@ -27,8 +27,8 @@
 | 5.2 排行榜策略 | ✅ | 全站榜 + 相关分区榜 + LLM 评分筛选 |
 | 5.3 相关推荐链策略 | ✅ | 事件种子 + 偏好/策略兜底种子 + 2 层相关推荐链 + LLM 评分过滤 |
 | 5.4 跨领域探索策略 | ✅ | 远域探索领域生成 + query 搜索 + exploration bonus |
-| 5.5 内容评估 | 🔄 | `evaluate_content()` 已实现，待更多策略复用 |
-| 5.6 发现引擎编排 | 🔄 | 已能运行 Search/Trending/RelatedChain/Explore，待补并行和缓存 |
+| 5.5 内容评估 | ✅ | `evaluate_content()` 已被四类发现策略复用 |
+| 5.6 发现引擎编排 | ✅ | 并发执行策略 + 高分去重 + SQLite 缓存写入 |
 
 ## 公开 API
 
@@ -52,6 +52,12 @@ assert results[0].source_strategy == "search"
 score = await engine.evaluate_content(results[0], profile)
 assert 0.0 <= score <= 1.0
 ```
+
+行为说明：
+
+- `discover()` 现在会并发执行多个已注册 strategy
+- 同一 `bvid` 若被多个策略命中，保留 `relevance_score` 更高的版本
+- 最终结果按分数降序返回，并写入 `content_cache`
 
 ### SearchStrategy
 
@@ -158,7 +164,7 @@ item = DiscoveredContent(
 )
 ```
 
-当前 `5.1` 已稳定填充的字段包括：
+当前 discovery 结果写入缓存时会稳定填充的字段包括：
 
 - `bvid`
 - `title`
@@ -179,4 +185,5 @@ item = DiscoveredContent(
 5. **相关推荐链优先复用真实行为**：种子优先来自近期事件，其次才是偏好补种子和策略兜底
 6. **跨领域探索强调“可解释的陌生感”**：不是越远越好，而是“主题陌生，但心理需求上说得通”
 7. **评分入口集中在引擎层**：`ContentDiscoveryEngine.evaluate_content()` 统一负责把 `score/reason` 写回 `DiscoveredContent`
-8. **引擎层仍不负责依赖创建**：`ContentDiscoveryEngine` 接收外部注入的 `llm_service`，策略继续显式注入 client/service
+8. **发现引擎承担最终收口职责**：策略负责找内容，引擎负责并发调度、去重排序和缓存写入
+9. **引擎层仍不负责依赖创建**：`ContentDiscoveryEngine` 接收外部注入的 `llm_service` / `database`，策略继续显式注入 client/service

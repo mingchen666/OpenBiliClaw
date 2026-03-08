@@ -6,6 +6,14 @@
 
 ## M5: 内容发现引擎（进行中）
 
+### 5.6 发现引擎编排 — `discovery/m56-engine-orchestration`
+
+- `ContentDiscoveryEngine.discover()` 改为并发执行多个 discovery strategy，单个策略失败不会中断整体发现周期
+- 引擎层对重复 `bvid` 进行合并，保留更高 `relevance_score` 的版本
+- 新增 `Database.get_cached_content()`，并在发现完成后把最终结果写入 `content_cache`
+- `evaluate_content()` 状态同步收口到 `5.5`：已被 Search / Trending / RelatedChain / Explore 复用
+- 新增 discovery/storage 测试，覆盖并发编排、失败容错、高分去重和缓存写入读回
+
 ### 5.4 跨领域探索策略 — `discovery/m54-explore-strategy`
 
 - `ExploreStrategy` 从空壳升级为可运行策略：先生成“高相关但有陌生感”的探索领域，再调用 B 站搜索

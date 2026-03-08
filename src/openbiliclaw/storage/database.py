@@ -247,6 +247,19 @@ class Database:
         )
         self.conn.commit()
 
+    def get_cached_content(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Get cached discovered content ordered by basic quality signals."""
+        cursor = self.conn.execute(
+            """
+            SELECT *
+            FROM content_cache
+            ORDER BY view_count DESC, discovered_at DESC, bvid ASC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
     def close(self) -> None:
         """Close the database connection."""
         if self._conn:

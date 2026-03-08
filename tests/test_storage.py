@@ -60,6 +60,33 @@ class TestDatabase:
 
             db.close()
 
+    def test_get_cached_content_returns_cached_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            db.cache_content(
+                "BV1A",
+                title="Video A",
+                up_name="UPA",
+                source="search",
+                view_count=100,
+            )
+            db.cache_content(
+                "BV1B",
+                title="Video B",
+                up_name="UPB",
+                source="trending",
+                view_count=200,
+            )
+
+            cached = db.get_cached_content(limit=10)
+
+            assert [item["bvid"] for item in cached] == ["BV1B", "BV1A"]
+            assert cached[0]["source"] == "trending"
+
+            db.close()
+
     def test_query_events_supports_type_keyword_and_time_filters(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "test.db")
