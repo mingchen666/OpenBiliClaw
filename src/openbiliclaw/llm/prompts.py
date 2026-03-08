@@ -136,3 +136,100 @@ def build_soul_profile_prompt(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
+
+
+def build_awareness_prompt(
+    *,
+    events: list[dict[str, object]],
+    preference_summary: dict[str, object],
+    soul_profile: dict[str, object],
+) -> list[dict[str, str]]:
+    """Build a structured prompt for recent awareness-note generation."""
+    system_prompt = """
+<task>
+你要基于近期用户行为，生成少量谨慎的近期观察笔记。
+</task>
+
+<rules>
+1. 输出必须是严格 JSON 数组，不要附带解释。
+2. observation 只能描述观察到的行为倾向，不要下人格定论。
+3. trend 和 emotion_guess 必须使用保守表述。
+4. 如果证据不足，可以返回空数组。
+</rules>
+
+<output_schema>
+[
+  {
+    "date": "2026-03-08",
+    "observation": "最近连续浏览高信息密度内容。",
+    "trend": "更偏向深度解释而非轻量消遣。",
+    "emotion_guess": "可能处于主动吸收和整理信息的阶段。"
+  }
+]
+</output_schema>
+""".strip()
+    user_prompt = "\n\n".join(
+        [
+            "<recent_events>",
+            json.dumps(events, ensure_ascii=False, indent=2),
+            "</recent_events>",
+            "<preference_summary>",
+            json.dumps(preference_summary, ensure_ascii=False, indent=2),
+            "</preference_summary>",
+            "<soul_profile>",
+            json.dumps(soul_profile, ensure_ascii=False, indent=2),
+            "</soul_profile>",
+        ]
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def build_insight_prompt(
+    *,
+    awareness_notes: list[dict[str, object]],
+    preference_summary: dict[str, object],
+    soul_profile: dict[str, object],
+) -> list[dict[str, str]]:
+    """Build a structured prompt for insight-hypothesis generation."""
+    system_prompt = """
+<task>
+你要基于近期觉察、偏好摘要和用户画像，生成谨慎的解释性假设。
+</task>
+
+<rules>
+1. 输出必须是严格 JSON 数组，不要附带解释。
+2. hypothesis 是假设，不是结论，措辞必须保守。
+3. 每条必须附 1~3 条 evidence。
+4. confidence 保持在 0~1，且不要过高。
+</rules>
+
+<output_schema>
+[
+  {
+    "hypothesis": "用户可能通过深度内容获得掌控感。",
+    "evidence": ["最近连续浏览高信息密度内容。"],
+    "confidence": 0.62
+  }
+]
+</output_schema>
+""".strip()
+    user_prompt = "\n\n".join(
+        [
+            "<awareness_notes>",
+            json.dumps(awareness_notes, ensure_ascii=False, indent=2),
+            "</awareness_notes>",
+            "<preference_summary>",
+            json.dumps(preference_summary, ensure_ascii=False, indent=2),
+            "</preference_summary>",
+            "<soul_profile>",
+            json.dumps(soul_profile, ensure_ascii=False, indent=2),
+            "</soul_profile>",
+        ]
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]

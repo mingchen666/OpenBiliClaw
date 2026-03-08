@@ -12,8 +12,19 @@ if TYPE_CHECKING:
     from openbiliclaw.llm.base import LLMProvider
     from openbiliclaw.memory.manager import MemoryManager
 
+from .awareness_analyzer import AwarenessAnalyzer
+from .insight_analyzer import InsightAnalyzer
 from .preference_analyzer import PreferenceAnalyzer
-from .profile import SoulProfile, preference_layer_from_dict
+from .profile import (
+    AwarenessNote,
+    InsightHypothesis,
+    SoulProfile,
+    awareness_note_from_dict,
+    awareness_note_to_dict,
+    insight_hypothesis_from_dict,
+    insight_hypothesis_to_dict,
+    preference_layer_from_dict,
+)
 from .profile_builder import ProfileBuilder
 
 logger = logging.getLogger(__name__)
@@ -41,6 +52,8 @@ class SoulEngine:
     def __init__(self, llm: LLMProvider, memory: MemoryManager) -> None:
         self._llm = llm
         self._memory = memory
+        self._awareness_analyzer = AwarenessAnalyzer(llm)
+        self._insight_analyzer = InsightAnalyzer(llm)
         self._preference_analyzer = PreferenceAnalyzer(llm)
         self._profile_builder = ProfileBuilder(llm)
 
@@ -110,7 +123,30 @@ class SoulEngine:
             feedback: User feedback data.
         """
         logger.info("Updating soul from feedback...")
-        # TODO: Process feedback through all layers
+        await self._memory.propagate_event(
+            {
+                "event_type": "feedback",
+                "title": str(feedback.get("hypothesis", "")),
+                "metadata": feedback,
+            }
+        )
+        hypotheses = self._load_insights()
+        target = self._normalize_text(str(feedback.get("hypothesis", "")))
+        signal = str(feedback.get("signal", "")).strip().lower()
+        updated = False
+        for item in hypotheses:
+            if self._normalize_text(item.hypothesis) != target:
+                continue
+            if signal in {"confirm", "like", "support"}:
+                item.validated = True
+                item.confidence = min(1.0, round(max(item.confidence, 0.75), 4))
+            elif signal in {"reject", "dislike", "deny"}:
+                item.validated = False
+                item.confidence = max(0.0, round(min(item.confidence, 0.35), 4))
+            updated = True
+            break
+        if updated:
+            self._save_insights(hypotheses)
 
     async def generate_awareness_note(self) -> str:
         """Generate a daily awareness note.
@@ -121,8 +157,17 @@ class SoulEngine:
         Returns:
             Natural language awareness note.
         """
-        # TODO: Generate based on recent events and pattern analysis
-        return ""
+        events = self._memory.query_events(limit=50)
+        notes = await self._awareness_analyzer.analyze(
+            events=events,
+            preference=self._memory.get_layer("preference").data,
+            soul_profile=self._memory.get_layer("soul").data,
+        )
+        if not notes:
+            return ""
+        merged = self._awareness_analyzer.merge_notes(self._load_awareness_notes(), notes)
+        self._save_awareness_notes(merged)
+        return notes[0].observation
 
     async def generate_insight(self) -> str:
         """Generate or update insight hypotheses.
@@ -135,5 +180,44 @@ class SoulEngine:
         Returns:
             Natural language insight.
         """
-        # TODO: Generate psychological insights from behavior patterns
-        return ""
+        awareness_notes = self._load_awareness_notes()
+        insights = await self._insight_analyzer.analyze(
+            awareness_notes=awareness_notes,
+            preference=self._memory.get_layer("preference").data,
+            soul_profile=self._memory.get_layer("soul").data,
+        )
+        if not insights:
+            return ""
+        merged = self._insight_analyzer.merge_insights(self._load_insights(), insights)
+        self._save_insights(merged)
+        return insights[0].hypothesis
+
+    def _load_awareness_notes(self) -> list[AwarenessNote]:
+        layer_data = self._memory.get_layer("awareness").data
+        notes = layer_data.get("notes", [])
+        return [awareness_note_from_dict(item) for item in notes if isinstance(item, dict)]
+
+    def _save_awareness_notes(self, notes: list[AwarenessNote]) -> None:
+        layer = self._memory.get_layer("awareness")
+        layer.data.clear()
+        layer.data.update({"notes": [awareness_note_to_dict(item) for item in notes]})
+        layer.save()
+
+    def _load_insights(self) -> list[InsightHypothesis]:
+        layer_data = self._memory.get_layer("insight").data
+        hypotheses = layer_data.get("hypotheses", [])
+        return [
+            insight_hypothesis_from_dict(item)
+            for item in hypotheses
+            if isinstance(item, dict)
+        ]
+
+    def _save_insights(self, insights: list[InsightHypothesis]) -> None:
+        layer = self._memory.get_layer("insight")
+        layer.data.clear()
+        layer.data.update({"hypotheses": [insight_hypothesis_to_dict(item) for item in insights]})
+        layer.save()
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        return "".join(value.split())

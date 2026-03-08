@@ -1,0 +1,135 @@
+"""Insight-layer generation from awareness and preference context."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Protocol
+
+from openbiliclaw.llm.base import LLMProviderError, LLMResponse
+from openbiliclaw.llm.prompts import build_insight_prompt
+
+from .profile import AwarenessNote, InsightHypothesis
+
+
+class SupportsComplete(Protocol):
+    async def complete(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        json_mode: bool = False,
+    ) -> LLMResponse: ...
+
+
+class InsightGenerationError(Exception):
+    """Raised when insight generation fails or returns invalid data."""
+
+
+@dataclass
+class InsightAnalyzer:
+    """Generate and merge structured insight hypotheses."""
+
+    registry: SupportsComplete
+
+    async def analyze(
+        self,
+        *,
+        awareness_notes: list[AwarenessNote],
+        preference: dict[str, object],
+        soul_profile: dict[str, object],
+    ) -> list[InsightHypothesis]:
+        messages = build_insight_prompt(
+            awareness_notes=[self._note_to_dict(note) for note in awareness_notes],
+            preference_summary=preference,
+            soul_profile=soul_profile,
+        )
+        try:
+            response = await self.registry.complete(messages, json_mode=True)
+        except LLMProviderError as exc:
+            raise InsightGenerationError(str(exc)) from exc
+        payload = self._parse_response(response.content)
+        return [self._build_hypothesis(item) for item in payload if isinstance(item, dict)]
+
+    def merge_insights(
+        self,
+        existing: list[InsightHypothesis],
+        incoming: list[InsightHypothesis],
+    ) -> list[InsightHypothesis]:
+        """Merge hypotheses by normalized hypothesis text."""
+        merged = {
+            self._normalize_text(item.hypothesis): item
+            for item in existing
+        }
+        for item in incoming:
+            key = self._normalize_text(item.hypothesis)
+            current = merged.get(key)
+            if current is None:
+                merged[key] = item
+                continue
+            merged[key] = InsightHypothesis(
+                hypothesis=current.hypothesis or item.hypothesis,
+                evidence=sorted({*current.evidence, *item.evidence}),
+                confidence=max(current.confidence, item.confidence),
+                validated=current.validated or item.validated,
+                created_at=current.created_at or item.created_at,
+            )
+        return list(merged.values())
+
+    def _parse_response(self, content: str) -> list[object]:
+        text = content.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise InsightGenerationError(
+                "LLM returned invalid JSON for insight generation."
+            ) from exc
+        if not isinstance(parsed, list):
+            raise InsightGenerationError("LLM insight response must be a JSON array.")
+        return parsed
+
+    @staticmethod
+    def _build_hypothesis(raw_item: dict[str, object]) -> InsightHypothesis:
+        return InsightHypothesis(
+            hypothesis=str(raw_item.get("hypothesis", "")).strip(),
+            evidence=InsightAnalyzer._as_str_list(raw_item.get("evidence")),
+            confidence=InsightAnalyzer._clamp_confidence(raw_item.get("confidence")),
+            validated=False,
+            created_at=datetime.now().date().isoformat(),
+        )
+
+    @staticmethod
+    def _note_to_dict(note: AwarenessNote) -> dict[str, object]:
+        return {
+            "date": note.date,
+            "observation": note.observation,
+            "trend": note.trend,
+            "emotion_guess": note.emotion_guess,
+        }
+
+    @staticmethod
+    def _as_str_list(raw_value: object) -> list[str]:
+        if not isinstance(raw_value, list):
+            return []
+        return [str(item).strip() for item in raw_value if str(item).strip()]
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        return "".join(value.split())
+
+    @staticmethod
+    def _clamp_confidence(raw_value: object) -> float:
+        if isinstance(raw_value, bool | int | float):
+            value = float(raw_value)
+        elif isinstance(raw_value, str):
+            try:
+                value = float(raw_value)
+            except ValueError:
+                value = 0.5
+        else:
+            value = 0.5
+        return max(0.0, min(1.0, round(value, 4)))

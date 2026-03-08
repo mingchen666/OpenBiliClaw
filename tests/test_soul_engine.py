@@ -140,3 +140,119 @@ async def test_get_profile_raises_when_soul_not_initialized(tmp_path: Path) -> N
 
     with pytest.raises(SoulProfileNotInitializedError):
         await engine.get_profile()
+
+
+@pytest.mark.asyncio
+async def test_generate_awareness_note_saves_awareness_layer(tmp_path: Path) -> None:
+    memory = MemoryManager(tmp_path)
+    memory.initialize()
+    await memory.propagate_event(
+        {"event_type": "view", "title": "AI 工具实测", "metadata": {"keyword": "AI"}}
+    )
+    memory.get_layer("soul").data.update(
+        {
+            "personality_portrait": (
+                "这是一个偏爱深度内容、会主动寻找原理解释、决策比较克制的人。"
+                * 8
+            ),
+            "core_traits": ["理性", "谨慎", "自驱"],
+        }
+    )
+    registry = FakeRegistry(
+        json.dumps(
+            [
+                {
+                    "date": "2026-03-08",
+                    "observation": "最近连续浏览高信息密度内容。",
+                    "trend": "更偏向深度解释。",
+                    "emotion_guess": "可能处于主动吸收信息的阶段。",
+                }
+            ],
+            ensure_ascii=False,
+        )
+    )
+    engine = SoulEngine(llm=registry, memory=memory)
+
+    note = await engine.generate_awareness_note()
+
+    assert "高信息密度" in note
+    awareness_data = memory.get_layer("awareness").data
+    assert awareness_data["notes"][0]["observation"] == "最近连续浏览高信息密度内容。"
+
+
+@pytest.mark.asyncio
+async def test_generate_insight_saves_insight_layer(tmp_path: Path) -> None:
+    memory = MemoryManager(tmp_path)
+    memory.initialize()
+    memory.get_layer("awareness").data.update(
+        {
+            "notes": [
+                {
+                    "date": "2026-03-08",
+                    "observation": "最近连续浏览高信息密度内容。",
+                    "trend": "更偏向深度解释。",
+                    "emotion_guess": "专注",
+                }
+            ]
+        }
+    )
+    memory.get_layer("soul").data.update(
+        {
+            "personality_portrait": (
+                "这是一个偏爱深度内容、会主动寻找原理解释、决策比较克制的人。"
+                * 8
+            ),
+            "core_traits": ["理性", "谨慎", "自驱"],
+        }
+    )
+    registry = FakeRegistry(
+        json.dumps(
+            [
+                {
+                    "hypothesis": "用户可能通过深度内容获得掌控感。",
+                    "evidence": ["最近连续浏览高信息密度内容。"],
+                    "confidence": 0.62,
+                }
+            ],
+            ensure_ascii=False,
+        )
+    )
+    engine = SoulEngine(llm=registry, memory=memory)
+
+    insight = await engine.generate_insight()
+
+    assert "掌控感" in insight
+    insight_data = memory.get_layer("insight").data
+    assert insight_data["hypotheses"][0]["hypothesis"] == "用户可能通过深度内容获得掌控感。"
+    assert insight_data["hypotheses"][0]["validated"] is False
+
+
+@pytest.mark.asyncio
+async def test_update_from_feedback_persists_feedback_and_marks_insight_validated(
+    tmp_path: Path,
+) -> None:
+    memory = MemoryManager(tmp_path)
+    memory.initialize()
+    memory.get_layer("insight").data.update(
+        {
+            "hypotheses": [
+                {
+                    "hypothesis": "用户可能通过深度内容获得掌控感。",
+                    "evidence": ["最近连续浏览高信息密度内容。"],
+                    "confidence": 0.62,
+                    "validated": False,
+                    "created_at": "2026-03-08",
+                }
+            ]
+        }
+    )
+    engine = SoulEngine(llm=FakeRegistry("[]"), memory=memory)
+
+    await engine.update_from_feedback(
+        {"hypothesis": "用户可能通过深度内容获得掌控感。", "signal": "confirm"}
+    )
+
+    insight_data = memory.get_layer("insight").data
+    assert insight_data["hypotheses"][0]["validated"] is True
+    feedback_events = memory.query_events(event_types=["feedback"])
+    assert feedback_events[0]["event_type"] == "feedback"

@@ -8,6 +8,8 @@
 
 - **SoulEngine** — 编排器，从事件出发驱动各层分析
 - **PreferenceAnalyzer** — LLM 驱动的偏好提取和合并
+- **AwarenessAnalyzer** — 基于近期事件生成结构化觉察笔记
+- **InsightAnalyzer** — 基于觉察、偏好和画像生成洞察假设
 - **SocraticDialogue** — 苏格拉底式用户对话，通过追问深化理解
 - **SoulProfile** — 用户灵魂画像数据结构
 
@@ -21,6 +23,11 @@
 | ProfileBuilder | ✅ | 结构化 prompt + JSON 校验 + `SoulProfile` 构建 |
 | SoulEngine.build_initial_profile() | ✅ | 从 history + preference 生成并持久化 `soul.json` |
 | SoulEngine.get_profile() | ✅ | 从 soul 层读取画像，未初始化时抛明确异常 |
+| AwarenessAnalyzer | ✅ | 近期事件 → `AwarenessNote` 列表，支持同日去重 |
+| InsightAnalyzer | ✅ | 觉察 + 偏好 + 画像 → `InsightHypothesis` 列表，支持假设合并 |
+| SoulEngine.generate_awareness_note() | ✅ | 生成并持久化 `awareness.json` |
+| SoulEngine.generate_insight() | ✅ | 生成并持久化 `insight.json` |
+| SoulEngine.update_from_feedback() | ✅ | feedback 事件落库，并更新匹配洞察状态 |
 
 ## 公开 API
 
@@ -97,6 +104,27 @@ loaded = await engine.get_profile()
 assert loaded.core_traits == profile.core_traits
 ```
 
+### AwarenessAnalyzer / InsightAnalyzer
+
+```python
+from openbiliclaw.soul.awareness_analyzer import AwarenessAnalyzer
+from openbiliclaw.soul.insight_analyzer import InsightAnalyzer
+
+awareness = AwarenessAnalyzer(registry=llm_registry)
+notes = await awareness.analyze(
+    events=recent_events,
+    preference=current_pref,
+    soul_profile=current_soul,
+)
+
+insight = InsightAnalyzer(registry=llm_registry)
+hypotheses = await insight.analyze(
+    awareness_notes=notes,
+    preference=current_pref,
+    soul_profile=current_soul,
+)
+```
+
 ## 设计决策
 
 1. **偏好提取用 json_mode**：确保 LLM 返回结构化 JSON，便于程序处理
@@ -105,3 +133,6 @@ assert loaded.core_traits == profile.core_traits
 4. **历史格式转换**：`agent` → `assistant` 角色映射，适配 OpenAI 消息格式
 5. **画像生成独立为 `ProfileBuilder`**：避免把 prompt/JSON 校验逻辑塞进 `SoulEngine`
 6. **灵魂层失败不覆盖旧画像**：坏 JSON、空响应、缺字段时直接报错，已有 `soul.json` 保留
+7. **觉察层保守去重**：同日 observation 标准化后相同则跳过，避免流水账堆积
+8. **洞察层按假设文本合并**：相同 hypothesis 合并 evidence，confidence 取较高值
+9. **验证状态只由代码更新**：LLM 只生成 hypothesis/evidence/confidence，`validated` 不信任模型输出
