@@ -7,6 +7,14 @@ import pytest
 from openbiliclaw.discovery.engine import ContentDiscoveryEngine
 from openbiliclaw.soul.profile import SoulProfile
 
+from .test_related_chain_strategy import (
+    FakeLLMService as FakeRelatedLLMService,
+)
+from .test_related_chain_strategy import (
+    FakeMemoryManager,
+    FakeRelatedClient,
+    _event,
+)
 from .test_search_strategy import FakeBilibiliClient, FakeLLMService, _build_profile
 from .test_trending_strategy import FakeLLMService as FakeTrendingLLMService
 from .test_trending_strategy import FakeRankingClient
@@ -84,3 +92,38 @@ async def test_discovery_engine_runs_registered_trending_strategy() -> None:
     assert len(results) == 1
     assert results[0].bvid == "BV1A"
     assert results[0].source_strategy == "trending"
+
+
+@pytest.mark.asyncio
+async def test_discovery_engine_runs_related_chain_strategy() -> None:
+    from openbiliclaw.discovery.engine import ContentDiscoveryEngine
+    from openbiliclaw.discovery.strategies.strategies import RelatedChainStrategy
+
+    engine = ContentDiscoveryEngine(
+        llm_service=FakeRelatedLLMService(
+            ['{"score": 0.84, "reason": "延续了近期观看兴趣。"}']
+        )
+    )
+    engine.register_strategy(
+        RelatedChainStrategy(
+            bilibili_client=FakeRelatedClient(
+                {
+                    "BV1SEED": [
+                        {
+                            "bvid": "BV1REL",
+                            "title": "相关推荐",
+                            "owner": {"name": "UPR", "mid": 10},
+                        }
+                    ]
+                }
+            ),
+            llm_service=engine._llm_service,
+            memory_manager=FakeMemoryManager(events=[_event("BV1SEED")]),
+        )
+    )
+
+    results = await engine.discover(_build_profile())
+
+    assert len(results) == 1
+    assert results[0].bvid == "BV1REL"
+    assert results[0].source_strategy == "related_chain"
