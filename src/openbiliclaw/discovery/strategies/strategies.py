@@ -48,6 +48,36 @@ class SupportsRankingClient(Protocol):
     async def get_ranking(self, rid: int = 0) -> list[dict[str, object]]: ...
 
 
+class SupportsMemoryManager(Protocol):
+    def query_events(
+        self,
+        *,
+        event_types: list[str] | None = None,
+        start_time: object | None = None,
+        end_time: object | None = None,
+        keyword: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, object]]: ...
+
+
+class SupportsSeedStrategy(Protocol):
+    async def discover(
+        self, profile: SoulProfile, limit: int = 20
+    ) -> list[DiscoveredContent]: ...
+
+
+class SupportsRelatedClient(Protocol):
+    async def get_related_videos(self, bvid: str) -> list[dict[str, object]]: ...
+
+    async def search(
+        self,
+        keyword: str,
+        page: int = 1,
+        page_size: int = 20,
+        order: str = "totalrank",
+    ) -> list[dict[str, object]]: ...
+
+
 @dataclass
 class SearchStrategy(DiscoveryStrategy):
     """Discover content by generating search queries from user interests."""
@@ -364,8 +394,19 @@ class TrendingStrategy(DiscoveryStrategy):
         return ordered
 
 
+@dataclass
 class RelatedChainStrategy(DiscoveryStrategy):
     """Discover content by following related recommendation chains."""
+
+    bilibili_client: SupportsRelatedClient
+    llm_service: SupportsStructuredTask
+    memory_manager: SupportsMemoryManager
+    search_strategy: SupportsSeedStrategy | None = None
+    trending_strategy: SupportsSeedStrategy | None = None
+    score_threshold: float = 0.65
+    max_seeds: int = 5
+    related_per_seed: int = 8
+    max_depth: int = 2
 
     @property
     def name(self) -> str:
@@ -383,10 +424,192 @@ class RelatedChainStrategy(DiscoveryStrategy):
         Returns:
             Discovered content list.
         """
-        # TODO: Start from recently liked/high-rated content
-        # TODO: Follow related recommendations iteratively
-        # TODO: Score each step against soul profile
-        return []
+        evaluator = ContentDiscoveryEngine(llm_service=self.llm_service)
+        seed_bvids = await self._select_seed_bvids(profile)
+        if not seed_bvids:
+            return []
+
+        results: list[DiscoveredContent] = []
+        seen_bvids = set(seed_bvids)
+        visited_source_bvids: set[str] = set()
+        frontier: list[tuple[str, int, int]] = [
+            (seed_bvid, 1, seed_index) for seed_index, seed_bvid in enumerate(seed_bvids)
+        ]
+
+        while frontier:
+            seed_bvid, depth, seed_index = frontier.pop(0)
+            if seed_bvid in visited_source_bvids:
+                continue
+            visited_source_bvids.add(seed_bvid)
+            try:
+                related_items = await self.bilibili_client.get_related_videos(seed_bvid)
+            except Exception:
+                logger.exception("Related videos request failed: %s", seed_bvid)
+                continue
+
+            for item in related_items[: self.related_per_seed]:
+                content = self._map_related_item(item)
+                if content is None or content.bvid in seen_bvids:
+                    continue
+                seen_bvids.add(content.bvid)
+                score = await evaluator.evaluate_content(content, profile)
+                bonus = self._seed_bonus(seed_index) + self._depth_bonus(depth)
+                content.relevance_score = min(1.0, round(score + bonus, 4))
+                if content.relevance_score < self.score_threshold:
+                    continue
+                results.append(content)
+                if depth < self.max_depth:
+                    frontier.append((content.bvid, depth + 1, seed_index))
+                if len(results) >= limit:
+                    return results
+
+        results.sort(key=lambda item: item.relevance_score, reverse=True)
+        return results
+
+    async def _select_seed_bvids(self, profile: SoulProfile) -> list[str]:
+        seeds: list[str] = []
+        seen: set[str] = set()
+
+        for bvid in self._event_seed_bvids():
+            if bvid in seen:
+                continue
+            seen.add(bvid)
+            seeds.append(bvid)
+            if len(seeds) >= self.max_seeds:
+                return seeds
+
+        for bvid in await self._preference_seed_bvids(profile):
+            if bvid in seen:
+                continue
+            seen.add(bvid)
+            seeds.append(bvid)
+            if len(seeds) >= self.max_seeds:
+                return seeds
+
+        for strategy in (self.search_strategy, self.trending_strategy):
+            if strategy is None:
+                continue
+            remaining = self.max_seeds - len(seeds)
+            if remaining <= 0:
+                break
+            try:
+                items = await strategy.discover(profile, limit=remaining)
+            except Exception:
+                logger.exception(
+                    "Fallback seed strategy failed: %s",
+                    getattr(strategy, "name", "unknown"),
+                )
+                continue
+            for item in items:
+                if item.bvid in seen or not item.bvid:
+                    continue
+                seen.add(item.bvid)
+                seeds.append(item.bvid)
+                if len(seeds) >= self.max_seeds:
+                    return seeds
+
+        return seeds
+
+    def _event_seed_bvids(self) -> list[str]:
+        events = self.memory_manager.query_events(
+            event_types=["view", "favorite", "like"],
+            limit=max(self.max_seeds * 3, 12),
+        )
+        seed_bvids: list[str] = []
+        for event in events:
+            bvid = self._extract_bvid_from_event(event)
+            if bvid:
+                seed_bvids.append(bvid)
+        return seed_bvids
+
+    async def _preference_seed_bvids(self, profile: SoulProfile) -> list[str]:
+        queries: list[str] = []
+        queries.extend(
+            interest.name.strip()
+            for interest in profile.preferences.interests[:2]
+            if interest.name.strip()
+        )
+        queries.extend(
+            up_name.strip()
+            for up_name in profile.preferences.favorite_up_users[:1]
+            if up_name.strip()
+        )
+
+        seeds: list[str] = []
+        seen: set[str] = set()
+        for query in queries:
+            try:
+                items = await self.bilibili_client.search(query, page=1, page_size=2)
+            except Exception:
+                logger.exception("Preference seed search failed: %s", query)
+                continue
+            for item in items:
+                bvid = str(item.get("bvid", "")).strip()
+                if not bvid or bvid in seen:
+                    continue
+                seen.add(bvid)
+                seeds.append(bvid)
+                if len(seeds) >= self.max_seeds:
+                    return seeds
+        return seeds
+
+    @staticmethod
+    def _extract_bvid_from_event(event: dict[str, object]) -> str:
+        metadata = event.get("metadata", {})
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+        if isinstance(metadata, dict):
+            bvid = str(metadata.get("bvid", "")).strip()
+            if bvid:
+                return bvid
+
+        url = str(event.get("url", "")).strip()
+        match = re.search(r"/video/(BV[\w]+)", url)
+        return match.group(1) if match else ""
+
+    def _map_related_item(self, item: dict[str, object]) -> DiscoveredContent | None:
+        bvid = str(item.get("bvid", "")).strip()
+        if not bvid:
+            return None
+        owner = item.get("owner")
+        up_name = ""
+        up_mid = 0
+        if isinstance(owner, dict):
+            up_name = SearchStrategy._clean_text(str(owner.get("name", "")))
+            up_mid = SearchStrategy._to_int(owner.get("mid", 0))
+
+        stat = item.get("stat")
+        view_count = 0
+        like_count = 0
+        if isinstance(stat, dict):
+            view_count = SearchStrategy._to_int(stat.get("view", 0))
+            like_count = SearchStrategy._to_int(stat.get("like", 0))
+
+        return DiscoveredContent(
+            bvid=bvid,
+            title=SearchStrategy._clean_text(str(item.get("title", ""))),
+            up_name=up_name,
+            up_mid=up_mid,
+            cover_url=str(item.get("pic", "")),
+            duration=SearchStrategy._parse_duration(item.get("duration", 0)),
+            view_count=view_count,
+            like_count=like_count,
+            description=SearchStrategy._clean_text(
+                str(item.get("desc", item.get("description", "")))
+            ),
+            source_strategy=self.name,
+        )
+
+    @staticmethod
+    def _seed_bonus(seed_index: int) -> float:
+        return max(0.0, 0.03 - seed_index * 0.01)
+
+    @staticmethod
+    def _depth_bonus(depth: int) -> float:
+        return max(0.0, 0.02 - max(0, depth - 1) * 0.01)
 
 
 class ExploreStrategy(DiscoveryStrategy):
