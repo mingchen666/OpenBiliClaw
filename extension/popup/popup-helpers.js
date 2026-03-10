@@ -1,7 +1,7 @@
-const DEFAULT_TITLE = "未命名推荐";
-const DEFAULT_UP_NAME = "未知UP主";
-const DEFAULT_EXPRESSION = "这条内容已经进入你的推荐列表，点开看看。";
-const DEFAULT_PORTRAIT = "阿B 还在观察你，先多用一会儿。";
+const DEFAULT_TITLE = "这条标题还没对上号";
+const DEFAULT_UP_NAME = "这位 UP 还没认出来";
+const DEFAULT_EXPRESSION = "这条已经进了你的推荐区，点开看看。";
+const DEFAULT_PORTRAIT = "画像还在慢慢攒，先多看一阵。";
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -15,6 +15,20 @@ export function getTabButtonState(activeTab, tabName) {
   return {
     selected: activeTab === tabName,
     tabIndex: activeTab === tabName ? 0 : -1,
+  };
+}
+
+export function getConnectionBadgeState(online) {
+  if (online) {
+    return {
+      tone: "online",
+      label: "已连接",
+    };
+  }
+
+  return {
+    tone: "offline",
+    label: "未连接",
   };
 }
 
@@ -54,6 +68,17 @@ export function normalizeProfileSummary(summary) {
   };
 }
 
+export function normalizeRuntimeStatus(status) {
+  return {
+    initialized: Boolean(status?.initialized),
+    recommendation_count: Number(status?.recommendation_count ?? 0),
+    pending_signal_events: Number(status?.pending_signal_events ?? 0),
+    last_refresh_at: normalizeText(status?.last_refresh_at),
+    last_notification_at: normalizeText(status?.last_notification_at),
+    unread_count: Number(status?.unread_count ?? 0),
+  };
+}
+
 export function validateCommentInput(note) {
   if (!normalizeText(note)) {
     return {
@@ -67,11 +92,11 @@ export function validateCommentInput(note) {
   };
 }
 
-export function getPopupState({ online, items = [], error = null }) {
+export function getPopupState({ online, items = [], error = null, runtimeStatus = null }) {
   if (!online) {
     return {
       kind: "offline",
-      message: "后端未连接，请先运行 openbiliclaw start",
+      message: "后端还没开张，先运行 openbiliclaw start",
       items: [],
     };
   }
@@ -79,16 +104,34 @@ export function getPopupState({ online, items = [], error = null }) {
   if (error) {
     return {
       kind: "error",
-      message: "推荐暂时不可用，请稍后重试",
+      message: "推荐暂时没刷出来，稍后再试",
       items: [],
     };
   }
 
   const normalizedItems = items.map(normalizeRecommendation);
+  const runtime = normalizeRuntimeStatus(runtimeStatus);
+
   if (normalizedItems.length === 0) {
+    if (!runtime.initialized) {
+      return {
+        kind: "uninitialized",
+        message: "还没完成初始化，先运行 openbiliclaw init",
+        items: [],
+      };
+    }
+
+    if (runtime.pending_signal_events > 0) {
+      return {
+        kind: "refreshing",
+        message: "正在根据你最近的新行为补货，再刷一会儿就会更新。",
+        items: [],
+      };
+    }
+
     return {
       kind: "empty",
-      message: "还没有可展示的推荐，先运行 init、discover 或 recommend",
+      message: "这会儿还没新东西，先运行 init、discover 或 recommend",
       items: [],
     };
   }
@@ -97,5 +140,6 @@ export function getPopupState({ online, items = [], error = null }) {
     kind: "ready",
     message: "",
     items: normalizedItems,
+    runtime,
   };
 }

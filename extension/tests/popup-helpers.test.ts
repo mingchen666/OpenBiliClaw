@@ -4,10 +4,12 @@ import assert from "node:assert/strict";
 import {
   buildFeedbackPayload,
   buildVideoUrl,
+  getConnectionBadgeState,
   getPopupState,
   getTabButtonState,
   normalizeRecommendation,
   normalizeProfileSummary,
+  normalizeRuntimeStatus,
   validateCommentInput,
 } from "../popup/popup-helpers.js";
 
@@ -29,25 +31,51 @@ test("normalizeRecommendation fills stable fallback fields", () => {
     presented: 0,
   });
 
-  assert.equal(item.title, "未命名推荐");
-  assert.equal(item.up_name, "未知UP主");
-  assert.equal(item.expression, "这条内容已经进入你的推荐列表，点开看看。");
+  assert.equal(item.title, "这条标题还没对上号");
+  assert.equal(item.up_name, "这位 UP 还没认出来");
+  assert.equal(item.expression, "这条已经进了你的推荐区，点开看看。");
   assert.equal(item.topic_label, "");
   assert.equal(item.presented, false);
 });
 
-test("getPopupState distinguishes offline empty and ready states", () => {
+test("getPopupState distinguishes offline uninitialized refreshing empty and ready states", () => {
   assert.deepEqual(getPopupState({ online: false, items: [] }), {
     kind: "offline",
-    message: "后端未连接，请先运行 openbiliclaw start",
+    message: "后端还没开张，先运行 openbiliclaw start",
     items: [],
   });
 
   assert.deepEqual(getPopupState({ online: true, items: [] }), {
-    kind: "empty",
-    message: "还没有可展示的推荐，先运行 init、discover 或 recommend",
+    kind: "uninitialized",
+    message: "还没完成初始化，先运行 openbiliclaw init",
     items: [],
   });
+
+  assert.deepEqual(
+    getPopupState({
+      online: true,
+      items: [],
+      runtimeStatus: { initialized: true, pending_signal_events: 4 },
+    }),
+    {
+      kind: "refreshing",
+      message: "正在根据你最近的新行为补货，再刷一会儿就会更新。",
+      items: [],
+    },
+  );
+
+  assert.deepEqual(
+    getPopupState({
+      online: true,
+      items: [],
+      runtimeStatus: { initialized: true, pending_signal_events: 0 },
+    }),
+    {
+      kind: "empty",
+      message: "这会儿还没新东西，先运行 init、discover 或 recommend",
+      items: [],
+    },
+  );
 
   const ready = getPopupState({
     online: true,
@@ -62,11 +90,23 @@ test("getPopupState distinguishes offline empty and ready states", () => {
         presented: true,
       },
     ],
+    runtimeStatus: { initialized: true, recommendation_count: 1, unread_count: 1 },
   });
 
   assert.equal(ready.kind, "ready");
   assert.equal(ready.items.length, 1);
   assert.equal(ready.items[0]?.bvid, "BV1ready");
+});
+
+test("normalizeRuntimeStatus fills stable fallback fields", () => {
+  assert.deepEqual(normalizeRuntimeStatus({ initialized: true, unread_count: "2" }), {
+    initialized: true,
+    recommendation_count: 0,
+    pending_signal_events: 0,
+    last_refresh_at: "",
+    last_notification_at: "",
+    unread_count: 2,
+  });
 });
 
 test("buildFeedbackPayload builds like and dislike payloads", () => {
@@ -122,6 +162,25 @@ test("normalizeProfileSummary fills stable fallback fields", () => {
   );
 });
 
+test("normalizeProfileSummary keeps the newer low-roleplay fallback copy", () => {
+  assert.deepEqual(
+    normalizeProfileSummary({
+      initialized: false,
+      personality_portrait: "",
+      core_traits: [],
+      deep_needs: [],
+      top_interests: [],
+    }),
+    {
+      initialized: false,
+      personality_portrait: "画像还在慢慢攒，先多看一阵。",
+      core_traits: [],
+      deep_needs: [],
+      top_interests: [],
+    },
+  );
+});
+
 test("getTabButtonState highlights current tab", () => {
   assert.deepEqual(getTabButtonState("recommend", "recommend"), {
     selected: true,
@@ -131,5 +190,17 @@ test("getTabButtonState highlights current tab", () => {
   assert.deepEqual(getTabButtonState("profile", "recommend"), {
     selected: false,
     tabIndex: -1,
+  });
+});
+
+test("getConnectionBadgeState returns compact status copy for popup header", () => {
+  assert.deepEqual(getConnectionBadgeState(true), {
+    tone: "online",
+    label: "已连接",
+  });
+
+  assert.deepEqual(getConnectionBadgeState(false), {
+    tone: "offline",
+    label: "未连接",
   });
 });

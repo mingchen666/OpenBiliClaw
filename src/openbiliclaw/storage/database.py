@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS content_cache (
     view_count  INTEGER DEFAULT 0,
     like_count  INTEGER DEFAULT 0,
     discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_scored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    notification_sent INTEGER DEFAULT 0,
+    notified_at TIMESTAMP,
     source      TEXT                 -- Which discovery strategy found it
 );
 
@@ -89,6 +92,7 @@ class Database:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA_SQL)
         self._ensure_recommendation_feedback_columns()
+        self._ensure_content_cache_runtime_columns()
 
         # Set schema version
         self._conn.execute(
@@ -220,7 +224,7 @@ class Database:
 
         self.conn.execute(
             """
-            INSERT OR REPLACE INTO content_cache (
+            INSERT INTO content_cache (
                 bvid,
                 title,
                 up_name,
@@ -231,9 +235,22 @@ class Database:
                 cover_url,
                 view_count,
                 like_count,
+                last_scored_at,
                 source
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+            ON CONFLICT(bvid) DO UPDATE SET
+                title = excluded.title,
+                up_name = excluded.up_name,
+                up_mid = excluded.up_mid,
+                duration = excluded.duration,
+                tags = excluded.tags,
+                description = excluded.description,
+                cover_url = excluded.cover_url,
+                view_count = excluded.view_count,
+                like_count = excluded.like_count,
+                last_scored_at = CURRENT_TIMESTAMP,
+                source = excluded.source
             """,
             (
                 bvid,
@@ -282,6 +299,33 @@ class Database:
         )
         return [dict(row) for row in cursor.fetchall()]
 
+    def get_latest_event_id(self) -> int:
+        """Return the latest event primary key."""
+        cursor = self.conn.execute("SELECT COALESCE(MAX(id), 0) AS latest_id FROM events")
+        row = cursor.fetchone()
+        return int(row["latest_id"]) if row is not None else 0
+
+    def query_events_since(
+        self,
+        *,
+        after_event_id: int,
+        event_types: list[str],
+    ) -> list[dict[str, Any]]:
+        """Query events newer than a given id for selected event types."""
+        if not event_types:
+            return []
+        placeholders = ", ".join("?" for _ in event_types)
+        cursor = self.conn.execute(
+            f"""
+            SELECT *
+            FROM events
+            WHERE id > ? AND event_type IN ({placeholders})
+            ORDER BY id ASC
+            """,
+            [after_event_id, *event_types],
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
     def insert_recommendation(
         self,
         bvid: str,
@@ -318,6 +362,64 @@ class Database:
             (limit,),
         )
         return [dict(row) for row in cursor.fetchall()]
+
+    def count_recommendations(self) -> int:
+        """Return the total number of stored recommendations."""
+        cursor = self.conn.execute("SELECT COUNT(*) AS count FROM recommendations")
+        row = cursor.fetchone()
+        return int(row["count"]) if row is not None else 0
+
+    def count_unread_recommendations(self) -> int:
+        """Return the number of unpresented recommendations."""
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) AS count FROM recommendations WHERE presented = 0"
+        )
+        row = cursor.fetchone()
+        return int(row["count"]) if row is not None else 0
+
+    def get_notification_candidate(
+        self,
+        *,
+        min_confidence: float = 0.82,
+    ) -> dict[str, Any] | None:
+        """Return one recommendation worth notifying the user about."""
+        cursor = self.conn.execute(
+            """
+            SELECT
+                r.id,
+                r.bvid,
+                r.expression,
+                r.confidence,
+                c.title,
+                c.notification_sent,
+                c.notified_at
+            FROM recommendations AS r
+            JOIN content_cache AS c ON c.bvid = r.bvid
+            WHERE r.presented = 0
+              AND c.notification_sent = 0
+              AND r.confidence >= ?
+            ORDER BY r.confidence DESC, r.created_at DESC, r.id DESC
+            LIMIT 1
+            """,
+            (min_confidence,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def mark_notification_sent(self, bvid: str) -> None:
+        """Mark one cached item as already notified."""
+        self.conn.execute(
+            """
+            UPDATE content_cache
+            SET notification_sent = 1,
+                notified_at = CURRENT_TIMESTAMP
+            WHERE bvid = ?
+            """,
+            (bvid,),
+        )
+        self.conn.commit()
 
     def update_recommendation_content(
         self,
@@ -412,4 +514,22 @@ class Database:
                 continue
             self.conn.execute(
                 f"ALTER TABLE recommendations ADD COLUMN {column_name} {column_type}"
+            )
+
+    def _ensure_content_cache_runtime_columns(self) -> None:
+        """Backfill content-cache runtime columns for continuous refresh."""
+        existing_columns = {
+            str(row["name"])
+            for row in self.conn.execute("PRAGMA table_info(content_cache)").fetchall()
+        }
+        required_columns = {
+            "last_scored_at": "TIMESTAMP",
+            "notification_sent": "INTEGER DEFAULT 0",
+            "notified_at": "TIMESTAMP",
+        }
+        for column_name, column_type in required_columns.items():
+            if column_name in existing_columns:
+                continue
+            self.conn.execute(
+                f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}"
             )

@@ -259,6 +259,13 @@ openbiliclaw init
 
 启动本地后端 API 服务，默认监听 `127.0.0.1:8420`，供浏览器插件或本地调试调用。
 
+当前 `start` 不只是提供静态接口，还会顺手启动候选池运行时：
+
+- 监听插件上报的强信号行为
+- 在阈值满足时自动刷新推荐候选
+- 定时做榜单/探索补货
+- 为插件 popup 和 service worker 提供 `/api/runtime-status` 与通知接口
+
 ```bash
 $ openbiliclaw start
 启动 OpenBiliClaw

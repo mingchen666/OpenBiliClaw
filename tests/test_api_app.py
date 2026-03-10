@@ -103,6 +103,95 @@ class TestBackendAPI:
         assert data["items"][0]["id"] == 7
         assert data["items"][0]["title"] == "讲透城市与建筑"
 
+    def test_runtime_status_endpoint_returns_runtime_summary(self) -> None:
+        from fastapi.testclient import TestClient
+
+        class FakeRuntimeController:
+            def get_runtime_status(self) -> dict[str, object]:
+                return {
+                    "initialized": True,
+                    "recommendation_count": 5,
+                    "pending_signal_events": 3,
+                    "last_refresh_at": "2026-03-10T12:00:00",
+                    "last_notification_at": "2026-03-10T12:30:00",
+                    "unread_count": 2,
+                }
+
+        app = create_app(
+            memory_manager=object(),
+            database=object(),
+            soul_engine=object(),
+            runtime_controller=FakeRuntimeController(),
+        )
+        client = TestClient(app)
+
+        response = client.get("/api/runtime-status")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "initialized": True,
+            "recommendation_count": 5,
+            "pending_signal_events": 3,
+            "last_refresh_at": "2026-03-10T12:00:00",
+            "last_notification_at": "2026-03-10T12:30:00",
+            "unread_count": 2,
+        }
+
+    def test_pending_notification_endpoint_returns_single_candidate(self) -> None:
+        from fastapi.testclient import TestClient
+
+        class FakeDatabase:
+            def get_notification_candidate(
+                self, *, min_confidence: float = 0.82
+            ) -> dict[str, object] | None:
+                assert min_confidence == 0.82
+                return {
+                    "id": 9,
+                    "bvid": "BV1PENDING",
+                    "title": "新的高置信推荐",
+                    "expression": "这条很对你现在的口味。",
+                }
+
+        app = create_app(memory_manager=object(), database=FakeDatabase(), soul_engine=object())
+        client = TestClient(app)
+
+        response = client.get("/api/notifications/pending")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "item": {
+                "recommendation_id": 9,
+                "bvid": "BV1PENDING",
+                "title": "新的高置信推荐",
+                "reason": "这条很对你现在的口味。",
+            }
+        }
+
+    def test_notification_sent_endpoint_marks_delivery(self) -> None:
+        from fastapi.testclient import TestClient
+
+        class FakeRuntimeController:
+            def __init__(self) -> None:
+                self.marked: list[str] = []
+
+            def mark_notification_sent(self, bvid: str) -> None:
+                self.marked.append(bvid)
+
+        runtime = FakeRuntimeController()
+        app = create_app(
+            memory_manager=object(),
+            database=object(),
+            soul_engine=object(),
+            runtime_controller=runtime,
+        )
+        client = TestClient(app)
+
+        response = client.post("/api/notifications/sent", json={"bvid": "BV1ACK"})
+
+        assert response.status_code == 200
+        assert response.json() == {"ok": True, "bvid": "BV1ACK"}
+        assert runtime.marked == ["BV1ACK"]
+
     def test_feedback_endpoint_updates_recommendation_and_records_event(self) -> None:
         from fastapi.testclient import TestClient
 

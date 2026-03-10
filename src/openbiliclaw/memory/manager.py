@@ -91,6 +91,7 @@ class MemoryManager:
         self._layers: dict[str, MemoryLayer] = {}
         self._database = Database(data_dir / "openbiliclaw.db")
         self._feedback_state_path = data_dir / "memory" / "feedback_state.json"
+        self._discovery_runtime_state_path = data_dir / "memory" / "discovery_runtime.json"
         self._insight_candidates_path = data_dir / "memory" / "insight_candidates.json"
         self._working_memory: dict[str, Any] = {}  # Session-only
 
@@ -142,6 +143,42 @@ class MemoryManager:
             "last_feedback_reanalyzed_at": str(state.get("last_feedback_reanalyzed_at", "")),
         }
         with open(self._feedback_state_path, "w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+
+    def load_discovery_runtime_state(self) -> dict[str, object]:
+        """Load continuous-discovery runtime state from disk."""
+        default_state = {
+            "last_event_refresh_at": "",
+            "last_trending_refresh_at": "",
+            "last_explore_refresh_at": "",
+            "last_processed_event_id": 0,
+            "last_notification_at": "",
+        }
+        if not self._discovery_runtime_state_path.exists():
+            return default_state
+        with open(self._discovery_runtime_state_path, encoding="utf-8") as file:
+            loaded = json.load(file)
+        if not isinstance(loaded, dict):
+            return default_state
+        return {
+            "last_event_refresh_at": str(loaded.get("last_event_refresh_at", "")),
+            "last_trending_refresh_at": str(loaded.get("last_trending_refresh_at", "")),
+            "last_explore_refresh_at": str(loaded.get("last_explore_refresh_at", "")),
+            "last_processed_event_id": self._to_int(loaded.get("last_processed_event_id", 0)),
+            "last_notification_at": str(loaded.get("last_notification_at", "")),
+        }
+
+    def save_discovery_runtime_state(self, state: dict[str, object]) -> None:
+        """Persist continuous-discovery runtime state to disk."""
+        self._discovery_runtime_state_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "last_event_refresh_at": str(state.get("last_event_refresh_at", "")),
+            "last_trending_refresh_at": str(state.get("last_trending_refresh_at", "")),
+            "last_explore_refresh_at": str(state.get("last_explore_refresh_at", "")),
+            "last_processed_event_id": self._to_int(state.get("last_processed_event_id", 0)),
+            "last_notification_at": str(state.get("last_notification_at", "")),
+        }
+        with open(self._discovery_runtime_state_path, "w", encoding="utf-8") as file:
             json.dump(payload, file, ensure_ascii=False, indent=2)
 
     def load_insight_candidates(self) -> list[dict[str, object]]:

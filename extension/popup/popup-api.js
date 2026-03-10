@@ -22,6 +22,24 @@ export async function fetchRecommendations() {
   return Array.isArray(payload.items) ? payload.items : [];
 }
 
+export async function fetchRuntimeStatus() {
+  return requestJson("/runtime-status", { method: "GET" });
+}
+
+export async function fetchPendingNotification() {
+  return requestJson("/notifications/pending", { method: "GET" });
+}
+
+export async function acknowledgeNotificationSent(bvid) {
+  return requestJson("/notifications/sent", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ bvid }),
+  });
+}
+
 export async function fetchProfileSummary() {
   return requestJson("/profile-summary", { method: "GET" });
 }

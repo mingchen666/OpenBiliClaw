@@ -298,3 +298,28 @@ class TestDatabase:
             assert row["feedback_at"] is not None
 
             db.close()
+
+    def test_notification_candidate_prefers_unpresented_unnotified_high_confidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            db.cache_content("BVLOW", title="普通内容", up_name="普通UP", source="search")
+            db.cache_content("BVHIGH", title="高置信内容", up_name="高能UP", source="trending")
+            low_id = db.insert_recommendation("BVLOW", confidence=0.7, presented=0)
+            high_id = db.insert_recommendation("BVHIGH", confidence=0.91, presented=0)
+
+            candidate = db.get_notification_candidate(min_confidence=0.82)
+
+            assert candidate is not None
+            assert candidate["id"] == high_id
+            assert candidate["bvid"] == "BVHIGH"
+
+            db.mark_notification_sent("BVHIGH")
+
+            next_candidate = db.get_notification_candidate(min_confidence=0.82)
+
+            assert next_candidate is None
+            assert low_id > 0
+
+            db.close()

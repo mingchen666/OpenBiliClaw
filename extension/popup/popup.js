@@ -1,6 +1,7 @@
 import {
   buildFeedbackPayload,
   buildVideoUrl,
+  getConnectionBadgeState,
   getPopupState,
   getTabButtonState,
   normalizeProfileSummary,
@@ -10,6 +11,7 @@ import {
   checkBackendStatus,
   fetchProfileSummary,
   fetchRecommendations,
+  fetchRuntimeStatus,
   sendChatMessage,
   submitFeedback,
 } from "./popup-api.js";
@@ -20,11 +22,13 @@ const state = {
   recommendations: [],
   profile: null,
   profileLoaded: false,
+  runtimeStatus: null,
 };
 
 const elements = {
+  statusBadge: document.getElementById("statusBadge"),
   statusDot: document.getElementById("statusDot"),
-  statusText: document.getElementById("statusText"),
+  statusLabel: document.getElementById("statusLabel"),
   hintText: document.getElementById("hintText"),
   emptyState: document.getElementById("emptyState"),
   emptyTitle: document.getElementById("emptyTitle"),
@@ -57,11 +61,17 @@ function setHint(message) {
 }
 
 function setStatus(online) {
-  if (!elements.statusDot || !elements.statusText) {
+  if (
+    !(elements.statusBadge instanceof HTMLElement) ||
+    !(elements.statusDot instanceof HTMLElement) ||
+    !(elements.statusLabel instanceof HTMLElement)
+  ) {
     return;
   }
-  elements.statusDot.classList.toggle("offline", !online);
-  elements.statusText.textContent = online ? "已连接到本地后端" : "后端未连接";
+  const badgeState = getConnectionBadgeState(online);
+  elements.statusBadge.dataset.tone = badgeState.tone;
+  elements.statusDot.classList.toggle("offline", badgeState.tone === "offline");
+  elements.statusLabel.textContent = badgeState.label;
 }
 
 function setActiveTab(tabName) {
@@ -113,10 +123,11 @@ function renderChipList(container, items, fallback) {
     return;
   }
   container.replaceChildren();
-  const values = items.length > 0 ? items : [fallback];
+  const isFallback = items.length === 0;
+  const values = isFallback ? [fallback] : items;
   for (const item of values) {
     const chip = document.createElement("span");
-    chip.className = "chip";
+    chip.className = `chip${isFallback ? " is-fallback" : ""}`;
     chip.textContent = item;
     container.append(chip);
   }
@@ -136,17 +147,17 @@ function renderProfileSummary(summary) {
   if (!summary.initialized) {
     elements.profileCard.hidden = true;
     elements.profileEmpty.hidden = false;
-    elements.profileEmptyTitle.textContent = "画像还没准备好";
-    elements.profileEmptyText.textContent = "先运行 openbiliclaw init，再回来看看它怎么理解你。";
+    elements.profileEmptyTitle.textContent = "画像还没攒起来";
+    elements.profileEmptyText.textContent = "先跑一遍 openbiliclaw init，再回来看看。";
     return;
   }
 
   elements.profileEmpty.hidden = true;
   elements.profileCard.hidden = false;
   elements.profilePortrait.textContent = summary.personality_portrait;
-  renderChipList(elements.profileTraits, summary.core_traits, "还在观察你的稳定特质");
-  renderChipList(elements.profileNeeds, summary.deep_needs, "还在摸你的内在驱动力");
-  renderChipList(elements.profileInterests, summary.top_interests, "先多用一会儿，它会慢慢摸清你的偏好");
+  renderChipList(elements.profileTraits, summary.core_traits, "这部分还在慢慢补");
+  renderChipList(elements.profileNeeds, summary.deep_needs, "这块还要再多看一点");
+  renderChipList(elements.profileInterests, summary.top_interests, "再刷一阵，这里会更准");
 }
 
 function appendChatMessage(role, content) {
@@ -169,9 +180,14 @@ function appendChatMessage(role, content) {
   elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
 }
 
+function setFeedbackStatus(statusLine, message) {
+  statusLine.textContent = message;
+  statusLine.hidden = !message;
+}
+
 async function openRecommendation(bvid) {
   if (!bvid) {
-    setHint("这条推荐暂时缺少 BV 号，稍后再试。");
+    setHint("这条卡片还没挂上 BV 号，稍后再试。");
     return;
   }
   await chrome.tabs.create({ url: buildVideoUrl(bvid) });
@@ -198,9 +214,9 @@ function createCommentComposer(item, statusLine) {
   const input = document.createElement("textarea");
   input.className = "comment-input";
   input.rows = 3;
-  input.placeholder = "写一句你对这条推荐的真实感觉";
+  input.placeholder = "写一句你为什么想看，或者为什么不想看";
 
-  const submit = createActionButton("发送", "action-button action-primary", async () => {
+  const submit = createActionButton("发出去", "action-button action-primary", async () => {
     const validation = validateCommentInput(input.value);
     if (!validation.valid) {
       setHint(validation.message);
@@ -209,12 +225,12 @@ function createCommentComposer(item, statusLine) {
     }
     try {
       await submitFeedback(buildFeedbackPayload(item.id, "comment", input.value));
-      setHint("这句反馈已经记下了。");
-      statusLine.textContent = "已记录：你写下了一条真实感受。";
+      setHint("这句记下了。");
+      setFeedbackStatus(statusLine, "记下了，这句会影响后面的推荐。");
       wrapper.hidden = true;
       input.value = "";
     } catch {
-      setHint("反馈失败，请确认本地后端已启动。");
+      setHint("这句没发出去，先看看本地后端是不是开着。");
     }
   });
 
@@ -232,72 +248,70 @@ function renderRecommendations(items) {
     const card = document.createElement("article");
     card.className = "recommendation-card";
 
-    const preview = document.createElement("div");
+    const preview = document.createElement("button");
     preview.className = "recommendation-preview";
-    preview.tabIndex = 0;
-    preview.setAttribute("role", "button");
+    preview.type = "button";
     preview.addEventListener("click", () => {
       void openRecommendation(item.bvid);
     });
-    preview.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        void openRecommendation(item.bvid);
-      }
-    });
+
+    const top = document.createElement("div");
+    top.className = "recommendation-top";
+
+    const badge = document.createElement("span");
+    badge.className = "topic-badge";
+    badge.textContent = item.topic_label || "这条给你留着";
 
     const title = document.createElement("h3");
     title.className = "recommendation-title";
     title.textContent = item.title;
 
+    const stateBadge = document.createElement("span");
+    stateBadge.className = `recommendation-state${item.presented ? " is-presented" : ""}`;
+    stateBadge.textContent = item.presented ? "你应该刷到过" : "刚给你翻出来";
+
     const meta = document.createElement("p");
     meta.className = "recommendation-meta";
-    meta.textContent = `UP 主：${item.up_name}`;
+    meta.textContent = `这位 UP：${item.up_name}`;
 
-    preview.append(title, meta);
-
-    if (item.topic_label) {
-      const badge = document.createElement("span");
-      badge.className = "topic-badge";
-      badge.textContent = item.topic_label;
-      preview.append(badge);
-    }
+    top.append(badge, stateBadge);
 
     const expression = document.createElement("p");
     expression.className = "recommendation-expression";
     expression.textContent = item.expression;
-    preview.append(expression);
+
+    preview.append(top, title, expression, meta);
 
     const feedbackStatus = document.createElement("p");
     feedbackStatus.className = "feedback-status";
-    feedbackStatus.textContent = item.presented ? "这条已经展示给你了。" : "";
+    setFeedbackStatus(feedbackStatus, item.presented ? "这条你应该已经眼熟了。" : "");
 
     const actions = document.createElement("div");
     actions.className = "recommendation-actions";
     const composer = createCommentComposer(item, feedbackStatus);
     actions.append(
-      createActionButton("打开视频", "action-button action-primary", () => {
+      createActionButton("去看看", "action-button action-primary", () => {
         void openRecommendation(item.bvid);
       }),
-      createActionButton("喜欢", "action-button action-secondary", async () => {
+      createActionButton("多来点", "action-button action-secondary", async () => {
         try {
           await submitFeedback(buildFeedbackPayload(item.id, "like"));
-          setHint("已记录你喜欢这条推荐。");
-          feedbackStatus.textContent = "已记录：你对这条内容是喜欢的。";
+          setHint("记下了，这类可以多来点。");
+          setFeedbackStatus(feedbackStatus, "记下了，这类内容会多给你一点。");
         } catch {
-          setHint("反馈失败，请确认本地后端已启动。");
+          setHint("这条反馈没记上，先看看本地后端是不是开着。");
         }
       }),
-      createActionButton("不喜欢", "action-button action-secondary", async () => {
+      createActionButton("少来点", "action-button action-secondary", async () => {
         try {
           await submitFeedback(buildFeedbackPayload(item.id, "dislike"));
-          setHint("已记录你不喜欢这条推荐。");
-          feedbackStatus.textContent = "已记录：你不太想再看到这种方向。";
+          setHint("记下了，这路子先少来点。");
+          setFeedbackStatus(feedbackStatus, "记下了，这个方向先往后放。");
         } catch {
-          setHint("反馈失败，请确认本地后端已启动。");
+          setHint("这条反馈没记上，先看看本地后端是不是开着。");
         }
       }),
-      createActionButton("写一句", "action-button action-secondary", () => {
+      createActionButton("说说原因", "action-button action-secondary", () => {
         composer.wrapper.hidden = !composer.wrapper.hidden;
         if (!composer.wrapper.hidden) {
           composer.input.focus();
@@ -314,7 +328,12 @@ function renderRecommendationState(stateShape) {
   if (stateShape.kind === "ready") {
     hideRecommendationEmptyState();
     renderRecommendations(stateShape.items);
-    setHint("推荐卡片里可以直接打开视频，也可以在这里给出即时反馈。");
+    const unreadCount = Number(stateShape.runtime?.unread_count ?? 0);
+    if (unreadCount > 0) {
+      setHint(`刚补进 ${unreadCount} 条还没看过的新内容，想看就点，不想看就直说。`);
+    } else {
+      setHint("想看就点，不想看就直说。");
+    }
     return;
   }
 
@@ -323,19 +342,31 @@ function renderRecommendationState(stateShape) {
   }
 
   if (stateShape.kind === "offline") {
-    showRecommendationEmptyState("本地后端未启动", stateShape.message);
-    setHint("先在项目根目录运行 openbiliclaw start。");
+    showRecommendationEmptyState("后端还没开张", stateShape.message);
+    setHint("先在项目根目录把 openbiliclaw start 跑起来。");
     return;
   }
 
   if (stateShape.kind === "error") {
-    showRecommendationEmptyState("推荐暂时不可用", stateShape.message);
-    setHint("后端已连接，但推荐接口当前不可用。");
+    showRecommendationEmptyState("推荐暂时没刷出来", stateShape.message);
+    setHint("后端连上了，但推荐接口这会儿没回。");
     return;
   }
 
-  showRecommendationEmptyState("还没有推荐内容", stateShape.message);
-  setHint("先运行 init、discover 或 recommend，再回来看看。");
+  if (stateShape.kind === "uninitialized") {
+    showRecommendationEmptyState("还没完成初始化", stateShape.message);
+    setHint("先跑一遍 openbiliclaw init，把画像和候选池攒起来。");
+    return;
+  }
+
+  if (stateShape.kind === "refreshing") {
+    showRecommendationEmptyState("阿B 正在补货", stateShape.message);
+    setHint("你最近的新行为已经记下了，稍等一下会补进更对味的内容。");
+    return;
+  }
+
+  showRecommendationEmptyState("这会儿还没新东西", stateShape.message);
+  setHint("先跑 init、discover 或 recommend，再回来瞅瞅。");
 }
 
 async function loadProfileSummary() {
@@ -362,17 +393,39 @@ async function initializeRecommendations() {
   setStatus(online);
 
   if (!online) {
-    renderRecommendationState(getPopupState({ online, items: [] }));
+    state.runtimeStatus = null;
+    renderRecommendationState(getPopupState({ online, items: [], runtimeStatus: null }));
     renderProfileSummary(normalizeProfileSummary({ initialized: false }));
     return;
   }
 
-  try {
-    state.recommendations = await fetchRecommendations();
-    renderRecommendationState(getPopupState({ online, items: state.recommendations }));
-  } catch (error) {
-    renderRecommendationState(getPopupState({ online, items: [], error }));
+  const [runtimeResult, recommendationResult] = await Promise.allSettled([
+    fetchRuntimeStatus(),
+    fetchRecommendations(),
+  ]);
+
+  state.runtimeStatus = runtimeResult.status === "fulfilled" ? runtimeResult.value : null;
+
+  if (recommendationResult.status === "fulfilled") {
+    state.recommendations = recommendationResult.value;
+    renderRecommendationState(
+      getPopupState({
+        online,
+        items: state.recommendations,
+        runtimeStatus: state.runtimeStatus,
+      }),
+    );
+    return;
   }
+
+  renderRecommendationState(
+    getPopupState({
+      online,
+      items: [],
+      error: recommendationResult.reason,
+      runtimeStatus: state.runtimeStatus,
+    }),
+  );
 }
 
 function bindTabs() {
@@ -405,30 +458,30 @@ function bindChat() {
     event.preventDefault();
     const message = elements.chatInput.value.trim();
     if (!message) {
-      setHint("先写一句你现在真正想聊的。");
+      setHint("先说一句你最近老点开什么。");
       elements.chatInput.focus();
       return;
     }
     if (!state.online) {
-      setHint("后端还没连上，暂时没法和阿B聊。");
+      setHint("后端还没连上，现在还发不出去。");
       return;
     }
 
     appendChatMessage("你", message);
     elements.chatInput.value = "";
     elements.chatSendButton.disabled = true;
-    elements.chatSendButton.textContent = "思考中...";
+    elements.chatSendButton.textContent = "发送中...";
 
     try {
       const payload = await sendChatMessage(message);
-      appendChatMessage("阿B", payload.reply);
-      setHint("阿B 已经接住了你刚才的问题。");
+      appendChatMessage("助手", payload.reply);
+      setHint("收到，这句记下了。");
     } catch {
-      appendChatMessage("阿B", "我刚刚断了一下线，你再换个说法告诉我一次。");
-      setHint("聊天接口暂时不可用，请确认本地后端已启动。");
+      appendChatMessage("助手", "刚刚没发出去，换个说法再试试。");
+      setHint("聊天接口这会儿没接上，先看看本地后端是不是开着。");
     } finally {
       elements.chatSendButton.disabled = false;
-      elements.chatSendButton.textContent = "发送";
+      elements.chatSendButton.textContent = "发出去";
     }
   });
 }
@@ -437,7 +490,7 @@ async function initializePopup() {
   bindTabs();
   bindChat();
   setActiveTab("recommend");
-  setHint("正在检查连接状态...");
+  setHint("先看看本地后端连上没。");
   await initializeRecommendations();
 }
 

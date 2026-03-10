@@ -25,6 +25,7 @@
 | 4.5 核心记忆加载 | ✅ | 统一摘要裁剪 + 所有 Soul LLM 调用自动注入 |
 | 9.2 画像更新 | ✅ | 反馈达到阈值后自动重分析偏好，并持久化反馈处理状态 |
 | 对话学习状态 | ✅ | `dialogue` 事件 + `insight_candidates.json`，支撑聊天信号的受控学习 |
+| 持续刷新状态 | ✅ | `discovery_runtime.json` 记录候选池刷新、通知游标和最近处理事件位置 |
 
 ## 公开 API
 
@@ -76,6 +77,15 @@ feedback_state = memory.load_feedback_state()
 #   "last_feedback_reanalyzed_at": ""
 # }
 
+runtime_state = memory.load_discovery_runtime_state()
+# {
+#   "last_event_refresh_at": "",
+#   "last_trending_refresh_at": "",
+#   "last_explore_refresh_at": "",
+#   "last_processed_event_id": 0,
+#   "last_notification_at": ""
+# }
+
 candidates = memory.load_insight_candidates()
 # [
 #   {
@@ -123,3 +133,4 @@ data_dir = "data"  # 记忆 JSON 文件存储在 data/memory/ 下
 6. **插件事件兼容**：事件层白名单已扩到插件采集事件，避免 `/api/events` 在 `snapshot`、`scroll`、`hover`、`seek` 等行为上拒收
 7. **反馈状态独立持久化**：`feedback_state.json` 单独保存反馈处理游标，避免把运行状态塞进 `preference.json` 或 `soul.json`
 8. **聊天候选与正式画像分层**：聊天提取出的 `insight_candidates.json` 先作为中间状态保留，不直接覆盖 `soul.json`
+9. **候选池运行状态分层**：`discovery_runtime.json` 只负责刷新与通知游标，不与 `feedback_state.json`、`insight_candidates.json` 或画像数据混存

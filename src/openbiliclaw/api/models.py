@@ -47,6 +47,45 @@ class RecommendationListResponse(BaseModel):
     items: list[RecommendationOut]
 
 
+class RuntimeStatusResponse(BaseModel):
+    """Runtime summary for popup and background status checks."""
+
+    initialized: bool
+    recommendation_count: int
+    pending_signal_events: int
+    last_refresh_at: str = ""
+    last_notification_at: str = ""
+    unread_count: int
+
+
+class PendingNotificationOut(BaseModel):
+    """One notification-worthy recommendation."""
+
+    recommendation_id: int
+    bvid: str
+    title: str = ""
+    reason: str = ""
+
+
+class PendingNotificationResponse(BaseModel):
+    """Wrapper for a pending notification candidate."""
+
+    item: PendingNotificationOut | None = None
+
+
+class NotificationAckIn(BaseModel):
+    """Acknowledge one browser notification delivery."""
+
+    bvid: str
+
+
+class NotificationAckResponse(BaseModel):
+    """Response after marking a notification as delivered."""
+
+    ok: bool
+    bvid: str
+
+
 class ProfileSummaryResponse(BaseModel):
     """Lightweight soul profile exposed to the popup."""
 

@@ -201,6 +201,44 @@ def test_feedback_state_round_trips_to_json(tmp_path: Path) -> None:
     assert state["last_feedback_reanalyzed_at"] == "2026-03-09T12:00:00"
 
 
+def test_discovery_runtime_state_defaults_when_missing(tmp_path: Path) -> None:
+    memory = MemoryManager(tmp_path)
+    memory.initialize()
+
+    state = memory.load_discovery_runtime_state()
+
+    assert state == {
+        "last_event_refresh_at": "",
+        "last_trending_refresh_at": "",
+        "last_explore_refresh_at": "",
+        "last_processed_event_id": 0,
+        "last_notification_at": "",
+    }
+
+
+def test_discovery_runtime_state_round_trips_to_json(tmp_path: Path) -> None:
+    memory = MemoryManager(tmp_path)
+    memory.initialize()
+
+    memory.save_discovery_runtime_state(
+        {
+            "last_event_refresh_at": "2026-03-10T10:00:00",
+            "last_trending_refresh_at": "2026-03-10T09:00:00",
+            "last_explore_refresh_at": "2026-03-10T00:00:00",
+            "last_processed_event_id": 42,
+            "last_notification_at": "2026-03-10T10:30:00",
+        }
+    )
+
+    state = memory.load_discovery_runtime_state()
+
+    assert state["last_event_refresh_at"] == "2026-03-10T10:00:00"
+    assert state["last_trending_refresh_at"] == "2026-03-10T09:00:00"
+    assert state["last_explore_refresh_at"] == "2026-03-10T00:00:00"
+    assert state["last_processed_event_id"] == 42
+    assert state["last_notification_at"] == "2026-03-10T10:30:00"
+
+
 def test_insight_candidates_default_to_empty_list(tmp_path: Path) -> None:
     memory = MemoryManager(tmp_path)
     memory.initialize()
