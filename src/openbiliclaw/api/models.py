@@ -156,6 +156,17 @@ class CognitionUpdateSeenResponse(BaseModel):
     id: str
 
 
+class CognitionUpdateSummary(BaseModel):
+    """Structured cognition card shown in the popup profile tab."""
+
+    summary: str
+    impact: str = ""
+    reasoning: str = ""
+    evidence: str = ""
+    source: str = ""
+    created_at: str = ""
+
+
 class ProfileSummaryResponse(BaseModel):
     """Lightweight soul profile exposed to the popup."""
 
@@ -164,7 +175,7 @@ class ProfileSummaryResponse(BaseModel):
     core_traits: list[str] = Field(default_factory=list)
     deep_needs: list[str] = Field(default_factory=list)
     top_interests: list[str] = Field(default_factory=list)
-    recent_cognition_updates: list[str] = Field(default_factory=list)
+    recent_cognition_updates: list[CognitionUpdateSummary] = Field(default_factory=list)
 
 
 class EventIngestResponse(BaseModel):

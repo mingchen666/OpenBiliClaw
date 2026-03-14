@@ -635,6 +635,11 @@ class TestBackendAPI:
                         "id": "cog-1",
                         "kind": "interest_added",
                         "summary": "阿B 现在更确定你会吃国际时事深拆这一口。",
+                        "impact": "画像里“国际新闻 / 深度分析”这条偏好会更靠前。",
+                        "reasoning": "这更像是连续强化后的稳定兴趣，不只是一次随手点开。",
+                        "evidence": "因为你最近连续点开相关内容，还主动提到了国际时事。",
+                        "source": "chat",
+                        "created_at": "2026-03-14T22:30:00",
                         "notified": False,
                     },
                 ]
@@ -675,8 +680,22 @@ class TestBackendAPI:
             "deep_needs": ["理解世界", "持续成长"],
             "top_interests": ["国际新闻", "深度分析"],
             "recent_cognition_updates": [
-                "阿B 现在更确定你会吃国际时事深拆这一口。",
-                "我对你又对上了一点：你不是只看热闹的人。",
+                {
+                    "summary": "阿B 现在更确定你会吃国际时事深拆这一口。",
+                    "impact": "画像里“国际新闻 / 深度分析”这条偏好会更靠前。",
+                    "reasoning": "这更像是连续强化后的稳定兴趣，不只是一次随手点开。",
+                    "evidence": "因为你最近连续点开相关内容，还主动提到了国际时事。",
+                    "source": "chat",
+                    "created_at": "2026-03-14T22:30:00",
+                },
+                {
+                    "summary": "我对你又对上了一点：你不是只看热闹的人。",
+                    "impact": "",
+                    "reasoning": "",
+                    "evidence": "",
+                    "source": "",
+                    "created_at": "",
+                },
             ],
         }
 

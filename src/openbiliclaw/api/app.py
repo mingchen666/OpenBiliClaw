@@ -229,7 +229,14 @@ def create_app(
             ]
             raw_updates.sort(key=lambda item: bool(item.get("notified", False)))
             cognition_updates = [
-                str(item.get("summary", "")).strip()
+                {
+                    "summary": str(item.get("summary", "")).strip(),
+                    "impact": str(item.get("impact", "")).strip(),
+                    "reasoning": str(item.get("reasoning", "")).strip(),
+                    "evidence": str(item.get("evidence", "")).strip(),
+                    "source": str(item.get("source", "")).strip(),
+                    "created_at": str(item.get("created_at", "")).strip(),
+                }
                 for item in raw_updates
             ][:3]
         return ProfileSummaryResponse(
