@@ -91,6 +91,7 @@ class MemoryManager:
         self._layers: dict[str, MemoryLayer] = {}
         self._database = Database(data_dir / "openbiliclaw.db")
         self._feedback_state_path = data_dir / "memory" / "feedback_state.json"
+        self._account_sync_state_path = data_dir / "memory" / "account_sync_state.json"
         self._discovery_runtime_state_path = data_dir / "memory" / "discovery_runtime.json"
         self._insight_candidates_path = data_dir / "memory" / "insight_candidates.json"
         self._cognition_updates_path = data_dir / "memory" / "cognition_updates.json"
@@ -144,6 +145,51 @@ class MemoryManager:
             "last_feedback_reanalyzed_at": str(state.get("last_feedback_reanalyzed_at", "")),
         }
         with open(self._feedback_state_path, "w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+
+    def load_account_sync_state(self) -> dict[str, object]:
+        """Load account-side sync cursor state from disk."""
+        default_state = {
+            "last_history_view_at": 0,
+            "last_history_bvid": "",
+            "last_favorites_sync_at": "",
+            "favorite_signature": "",
+            "last_following_sync_at": "",
+            "following_signature": "",
+            "last_account_sync_at": "",
+            "last_sync_error": "",
+        }
+        if not self._account_sync_state_path.exists():
+            return default_state
+        with open(self._account_sync_state_path, encoding="utf-8") as file:
+            loaded = json.load(file)
+        if not isinstance(loaded, dict):
+            return default_state
+        return {
+            "last_history_view_at": self._to_int(loaded.get("last_history_view_at", 0)),
+            "last_history_bvid": str(loaded.get("last_history_bvid", "")),
+            "last_favorites_sync_at": str(loaded.get("last_favorites_sync_at", "")),
+            "favorite_signature": str(loaded.get("favorite_signature", "")),
+            "last_following_sync_at": str(loaded.get("last_following_sync_at", "")),
+            "following_signature": str(loaded.get("following_signature", "")),
+            "last_account_sync_at": str(loaded.get("last_account_sync_at", "")),
+            "last_sync_error": str(loaded.get("last_sync_error", "")),
+        }
+
+    def save_account_sync_state(self, state: dict[str, object]) -> None:
+        """Persist account-side sync cursor state to disk."""
+        self._account_sync_state_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "last_history_view_at": self._to_int(state.get("last_history_view_at", 0)),
+            "last_history_bvid": str(state.get("last_history_bvid", "")),
+            "last_favorites_sync_at": str(state.get("last_favorites_sync_at", "")),
+            "favorite_signature": str(state.get("favorite_signature", "")),
+            "last_following_sync_at": str(state.get("last_following_sync_at", "")),
+            "following_signature": str(state.get("following_signature", "")),
+            "last_account_sync_at": str(state.get("last_account_sync_at", "")),
+            "last_sync_error": str(state.get("last_sync_error", "")),
+        }
+        with open(self._account_sync_state_path, "w", encoding="utf-8") as file:
             json.dump(payload, file, ensure_ascii=False, indent=2)
 
     def load_discovery_runtime_state(self) -> dict[str, object]:

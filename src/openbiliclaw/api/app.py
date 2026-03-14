@@ -43,6 +43,7 @@ def create_app(
     runtime_controller: Any | None = None,
     recommendation_engine: Any | None = None,
     runtime_event_hub: Any | None = None,
+    account_sync_service: Any | None = None,
 ) -> FastAPI:
     """Create the local backend API app."""
     app = FastAPI(title="OpenBiliClaw API")
@@ -68,6 +69,7 @@ def create_app(
         from openbiliclaw.llm.service import LLMService
         from openbiliclaw.memory.manager import MemoryManager
         from openbiliclaw.recommendation.engine import RecommendationEngine
+        from openbiliclaw.runtime.account_sync import AccountSyncService
         from openbiliclaw.runtime.events import RuntimeEventHub
         from openbiliclaw.runtime.refresh import ContinuousRefreshController
         from openbiliclaw.soul.dialogue import SocraticDialogue
@@ -90,13 +92,13 @@ def create_app(
         llm_service = LLMService(registry=llm_registry, memory=memory_manager)
         if recommendation_engine is None:
             recommendation_engine = RecommendationEngine(llm=llm_service, database=database)
-        if runtime_controller is None:
-            bilibili_client = BilibiliAPIClient(
-                cookie=resolve_runtime_cookie(
-                    data_dir=config.data_path,
-                    configured_cookie=config.bilibili.cookie,
-                )
+        bilibili_client = BilibiliAPIClient(
+            cookie=resolve_runtime_cookie(
+                data_dir=config.data_path,
+                configured_cookie=config.bilibili.cookie,
             )
+        )
+        if runtime_controller is None:
             discovery_engine = ContentDiscoveryEngine(
                 llm_service=llm_service,
                 database=database,
@@ -132,6 +134,13 @@ def create_app(
                 recommendation_engine=recommendation_engine,
                 pool_target_count=config.scheduler.pool_target_count,
                 event_hub=runtime_event_hub or RuntimeEventHub(),
+            )
+        if account_sync_service is None:
+            account_sync_service = AccountSyncService(
+                memory_manager=memory_manager,
+                bilibili_client=bilibili_client,
+                soul_engine=soul_engine,
+                sync_interval_hours=config.scheduler.account_sync_interval_hours,
             )
         if runtime_event_hub is None:
             runtime_event_hub = getattr(runtime_controller, "event_hub", None)
@@ -178,17 +187,27 @@ def create_app(
     async def startup_refresh_loop() -> None:
         run_forever = getattr(runtime_controller, "run_forever", None)
         if runtime_controller is None or not callable(run_forever):
+            app.state.refresh_task = None
+        else:
+            app.state.refresh_task = asyncio.create_task(run_forever())
+        sync_forever = getattr(account_sync_service, "run_forever", None)
+        if account_sync_service is None or not callable(sync_forever):
+            app.state.account_sync_task = None
             return
-        app.state.refresh_task = asyncio.create_task(run_forever())
+        app.state.account_sync_task = asyncio.create_task(sync_forever())
 
     @app.on_event("shutdown")
     async def shutdown_refresh_loop() -> None:
         refresh_task = getattr(app.state, "refresh_task", None)
-        if refresh_task is None:
-            return
-        refresh_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await refresh_task
+        if refresh_task is not None:
+            refresh_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await refresh_task
+        account_sync_task = getattr(app.state, "account_sync_task", None)
+        if account_sync_task is not None:
+            account_sync_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await account_sync_task
 
     @app.get("/api/profile-summary", response_model=ProfileSummaryResponse)
     async def profile_summary() -> ProfileSummaryResponse:
@@ -315,7 +334,11 @@ def create_app(
                 pending_signal_events=0,
                 unread_count=0,
             )
-        return RuntimeStatusResponse(**get_runtime_status())
+        payload = dict(get_runtime_status())
+        get_account_sync_status = getattr(account_sync_service, "get_runtime_status", None)
+        if callable(get_account_sync_status):
+            payload.update(get_account_sync_status())
+        return RuntimeStatusResponse(**payload)
 
     @app.get("/api/notifications/pending", response_model=PendingNotificationResponse)
     async def pending_notification() -> PendingNotificationResponse:

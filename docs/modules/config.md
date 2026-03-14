@@ -102,6 +102,7 @@ cp config.example.toml config.toml
 | `enabled` | bool | `true` | 是否启用定时发现 |
 | `discovery_cron` | string | `"0 */4 * * *"` | 发现任务 cron 表达式 |
 | `pool_target_count` | int | `30` | discovery pool 期望保有的可换候选数量；运行时会持续补货直到接近该目标 |
+| `account_sync_interval_hours` | int | `6` | 账户侧长期信号同步间隔；运行时会低频拉取 history / favorites / following |
 
 ### `[storage]`
 

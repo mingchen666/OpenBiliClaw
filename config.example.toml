@@ -71,6 +71,8 @@ enabled = true
 discovery_cron = "0 */4 * * *"  # Every 4 hours
 # Keep at least this many fresh candidates ready in the discovery pool
 pool_target_count = 30
+# Low-frequency account sync interval for history / favorites / following
+account_sync_interval_hours = 6
 
 [storage]
 # SQLite database path

@@ -27,6 +27,7 @@
 | 对话学习状态 | ✅ | `dialogue` 事件 + `insight_candidates.json`，支撑聊天信号的受控学习 |
 | 持续刷新状态 | ✅ | `discovery_runtime.json` 记录候选池刷新、通知游标和最近处理事件位置 |
 | 认知变化状态 | ✅ | `cognition_updates.json` 记录关键认知变化、通知状态和来源 |
+| 账户同步状态 | ✅ | `account_sync_state.json` 记录历史/收藏/关注同步游标、签名和最近错误 |
 
 ## 公开 API
 
@@ -112,6 +113,18 @@ updates = memory.load_cognition_updates()
 #     ...
 #   }
 # ]
+
+account_sync_state = memory.load_account_sync_state()
+# {
+#   "last_history_view_at": 1710000000,
+#   "last_history_bvid": "BV1SYNC",
+#   "last_favorites_sync_at": "2026-03-14T12:00:00+00:00",
+#   "favorite_signature": "7:BVFRESH",
+#   "last_following_sync_at": "2026-03-14T12:05:00+00:00",
+#   "following_signature": "99",
+#   "last_account_sync_at": "2026-03-14T12:05:00+00:00",
+#   "last_sync_error": "",
+# }
 ```
 
 ### PreferenceAnalyzer（由 SoulEngine 调用）
@@ -149,3 +162,4 @@ data_dir = "data"  # 记忆 JSON 文件存储在 data/memory/ 下
 8. **聊天候选与正式画像分层**：聊天提取出的 `insight_candidates.json` 先作为中间状态保留，不直接覆盖 `soul.json`
 9. **候选池运行状态分层**：`discovery_runtime.json` 只负责刷新与通知游标，不与 `feedback_state.json`、`insight_candidates.json` 或画像数据混存
 10. **认知变化单独留痕**：`cognition_updates.json` 保存系统最近形成的关键理解变化，既供插件通知使用，也让画像页能回显“最近记住了什么”
+11. **账户同步状态单独持久化**：`account_sync_state.json` 记录 history / favorites / following 的增量游标和签名，避免每轮全量重灌事件层

@@ -6,6 +6,13 @@
 
 ## M8: 插件后端 API（进行中）
 
+### 账户侧定时同步 — `runtime/m115-account-sync`
+
+- 本地后端运行时新增低频账户同步链路，会定期拉取 `history / favorites / following`
+- 新数据会统一转成 `view / favorite / follow` 事件，再复用 `SoulEngine.analyze_events()` 更新偏好与画像
+- 新增 `account_sync_state.json` 保存历史游标、收藏/关注签名和最近同步错误
+- `runtime-status` 新增 `last_account_sync_at` / `last_account_sync_error`，便于 popup 或诊断页展示账户同步状态
+
 ### 聊天即时认知阈值放宽 — `runtime/m114-chat-cognition-threshold`
 
 - popup/CLI 聊天现在对 `interest / value / goal / dislike` 这类单条中高置信信号更敏感，会更早进入「阿B 最近新记住了什么」

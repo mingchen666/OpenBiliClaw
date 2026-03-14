@@ -58,6 +58,7 @@ headed = false
 [scheduler]
 enabled = true
 discovery_cron = "0 */4 * * *"
+account_sync_interval_hours = 6
 
 [storage]
 db_path = "data/openbiliclaw.db"
@@ -250,3 +251,18 @@ def test_validate_runtime_config_rejects_invalid_auth_method() -> None:
 
     with pytest.raises(ConfigError, match="bilibili.auth_method"):
         validate_runtime_config(config)
+
+
+def test_build_config_supports_account_sync_interval() -> None:
+    config = _build_config(
+        {
+            "scheduler": {
+                "enabled": True,
+                "discovery_cron": "0 */4 * * *",
+                "pool_target_count": 30,
+                "account_sync_interval_hours": 12,
+            }
+        }
+    )
+
+    assert config.scheduler.account_sync_interval_hours == 12

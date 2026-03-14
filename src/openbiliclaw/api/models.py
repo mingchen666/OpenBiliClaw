@@ -78,6 +78,8 @@ class RuntimeStatusResponse(BaseModel):
     recent_pool_topics: list[str] = Field(default_factory=list)
     manual_refresh_state: str = "idle"
     manual_refresh_message: str = ""
+    last_account_sync_at: str = ""
+    last_account_sync_error: str = ""
 
 
 class PendingNotificationOut(BaseModel):

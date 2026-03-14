@@ -125,11 +125,19 @@ class TestBackendAPI:
                     "recent_pool_topics": ["国际时事", "宏观经济", "纪录片"],
                 }
 
+        class FakeAccountSyncService:
+            def get_runtime_status(self) -> dict[str, object]:
+                return {
+                    "last_account_sync_at": "2026-03-14T18:00:00+00:00",
+                    "last_account_sync_error": "",
+                }
+
         app = create_app(
             memory_manager=object(),
             database=object(),
             soul_engine=object(),
             runtime_controller=FakeRuntimeController(),
+            account_sync_service=FakeAccountSyncService(),
         )
         client = TestClient(app)
 
@@ -149,6 +157,8 @@ class TestBackendAPI:
             "recent_pool_topics": ["国际时事", "宏观经济", "纪录片"],
             "manual_refresh_state": "idle",
             "manual_refresh_message": "",
+            "last_account_sync_at": "2026-03-14T18:00:00+00:00",
+            "last_account_sync_error": "",
         }
 
     def test_runtime_stream_websocket_receives_published_events(self) -> None:

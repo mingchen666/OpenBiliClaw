@@ -239,6 +239,53 @@ def test_discovery_runtime_state_round_trips_to_json(tmp_path: Path) -> None:
     assert state["last_notification_at"] == "2026-03-10T10:30:00"
 
 
+def test_account_sync_state_defaults_when_missing(tmp_path: Path) -> None:
+    memory = MemoryManager(tmp_path)
+    memory.initialize()
+
+    state = memory.load_account_sync_state()
+
+    assert state == {
+        "last_history_view_at": 0,
+        "last_history_bvid": "",
+        "last_favorites_sync_at": "",
+        "favorite_signature": "",
+        "last_following_sync_at": "",
+        "following_signature": "",
+        "last_account_sync_at": "",
+        "last_sync_error": "",
+    }
+
+
+def test_account_sync_state_round_trips_to_json(tmp_path: Path) -> None:
+    memory = MemoryManager(tmp_path)
+    memory.initialize()
+
+    memory.save_account_sync_state(
+        {
+            "last_history_view_at": 1710000000,
+            "last_history_bvid": "BV1SYNC",
+            "last_favorites_sync_at": "2026-03-14T12:00:00",
+            "favorite_signature": "fav:abc",
+            "last_following_sync_at": "2026-03-14T12:10:00",
+            "following_signature": "follow:def",
+            "last_account_sync_at": "2026-03-14T12:10:00",
+            "last_sync_error": "",
+        }
+    )
+
+    state = memory.load_account_sync_state()
+
+    assert state["last_history_view_at"] == 1710000000
+    assert state["last_history_bvid"] == "BV1SYNC"
+    assert state["last_favorites_sync_at"] == "2026-03-14T12:00:00"
+    assert state["favorite_signature"] == "fav:abc"
+    assert state["last_following_sync_at"] == "2026-03-14T12:10:00"
+    assert state["following_signature"] == "follow:def"
+    assert state["last_account_sync_at"] == "2026-03-14T12:10:00"
+    assert state["last_sync_error"] == ""
+
+
 def test_insight_candidates_default_to_empty_list(tmp_path: Path) -> None:
     memory = MemoryManager(tmp_path)
     memory.initialize()
