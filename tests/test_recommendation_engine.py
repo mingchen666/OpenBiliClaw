@@ -499,6 +499,36 @@ async def test_reshuffle_recommendations_spreads_styles_before_backfill() -> Non
 
 
 @pytest.mark.asyncio
+async def test_reshuffle_recommendations_backfills_to_requested_limit_when_style_is_dominant(
+) -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "test.db")
+        db.initialize()
+        for index in range(6):
+            db.cache_content(
+                f"BVLIGHT{index + 1}",
+                title=f"轻聊候选 {index + 1}",
+                up_name="轻聊频道",
+                source="search",
+                relevance_score=0.96 - index * 0.01,
+                relevance_reason=f"这条会接住你最近想往里看一点的状态 {index + 1}。",
+                style_key="light_chat",
+                topic_key=f"轻聊话题:{index + 1}",
+            )
+        engine = RecommendationEngine(llm=_DummyLLM(), database=db)
+
+        recommendations = await engine.reshuffle_recommendations(
+            profile=_build_profile(),
+            limit=5,
+        )
+
+        picked = [item.content.bvid for item in recommendations]
+
+        assert len(recommendations) == 5
+        assert picked == ["BVLIGHT1", "BVLIGHT2", "BVLIGHT3", "BVLIGHT4", "BVLIGHT5"]
+
+
+@pytest.mark.asyncio
 async def test_reshuffle_recommendations_uses_style_aware_fallback_expression() -> None:
     class _ExplodingLLM(_DummyLLM):
         async def complete_structured_task(self, **kwargs) -> LLMResponse:  # type: ignore[override]
@@ -636,3 +666,37 @@ async def test_reshuffle_recommendations_spreads_topics_in_same_batch() -> None:
         assert "BVINT2" not in picked
         assert "BVTECH1" in picked
         assert "BVDOC1" in picked
+
+
+def test_build_debug_summary_counts_styles_sources_and_topics() -> None:
+    summary = RecommendationEngine._build_debug_summary(
+        [
+            DiscoveredContent(
+                bvid="BV1A",
+                title="讲透中东局势",
+                source_strategy="search",
+                topic_key="国际时事:地缘政治",
+                style_key="deep_dive",
+            ),
+            DiscoveredContent(
+                bvid="BV1B",
+                title="贸易政策速读",
+                source_strategy="trending",
+                topic_key="国际时事:贸易",
+                style_key="news_brief",
+            ),
+            DiscoveredContent(
+                bvid="BV1C",
+                title="另外一条中东局势",
+                source_strategy="search",
+                topic_key="国际时事:地缘政治",
+                style_key="deep_dive",
+            ),
+        ]
+    )
+
+    assert summary["count"] == 3
+    assert summary["styles"] == {"deep_dive": 2, "news_brief": 1}
+    assert summary["sources"] == {"search": 2, "trending": 1}
+    assert summary["topics"] == {"国际时事:地缘政治": 2, "国际时事:贸易": 1}
+    assert summary["sample_titles"] == ["讲透中东局势", "贸易政策速读", "另外一条中东局势"]

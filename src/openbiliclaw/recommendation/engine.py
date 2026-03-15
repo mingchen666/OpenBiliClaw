@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
@@ -100,7 +101,15 @@ class RecommendationEngine:
             else self._load_unrecommended_content(limit=max(limit * 3, 20))
         )
         candidates = self._exclude_recently_viewed(candidates)
+        logger.info(
+            "Recommendation candidate summary (generate): %s",
+            json.dumps(self._build_debug_summary(candidates), ensure_ascii=False),
+        )
         ranked = self._select_diversified_batch(candidates, limit=limit)
+        logger.info(
+            "Recommendation picked summary (generate): %s",
+            json.dumps(self._build_debug_summary(ranked), ensure_ascii=False),
+        )
 
         recommendations = [
             Recommendation(
@@ -142,7 +151,15 @@ class RecommendationEngine:
         """
         candidates = self._load_pool_candidates(limit=max(limit * 3, 20))
         candidates = self._exclude_recently_viewed(candidates)
+        logger.info(
+            "Recommendation candidate summary (reshuffle): %s",
+            json.dumps(self._build_debug_summary(candidates), ensure_ascii=False),
+        )
         ranked = self._select_diversified_batch(candidates, limit=limit)
+        logger.info(
+            "Recommendation picked summary (reshuffle): %s",
+            json.dumps(self._build_debug_summary(ranked), ensure_ascii=False),
+        )
         recommendations: list[Recommendation] = []
         shown_bvids: list[str] = []
 
@@ -372,12 +389,7 @@ class RecommendationEngine:
                 return selected
 
         for item in deferred:
-            style_token = cls._style_token(item)
-            if style_token and style_counts.get(style_token, 0) >= per_style_cap:
-                continue
             selected.append(item)
-            if style_token:
-                style_counts[style_token] = style_counts.get(style_token, 0) + 1
             if len(selected) >= limit:
                 break
         return selected[:limit]
@@ -495,3 +507,30 @@ class RecommendationEngine:
         if not isinstance(payload, list):
             return []
         return [str(item).strip() for item in payload if str(item).strip()]
+
+    @classmethod
+    def _build_debug_summary(
+        cls,
+        candidates: list[DiscoveredContent],
+    ) -> dict[str, object]:
+        style_counts = Counter(
+            cls._style_token(item) or "unknown" for item in candidates
+        )
+        source_counts = Counter(
+            cls._normalize_topic_token(item.source_strategy) or "unknown"
+            for item in candidates
+        )
+        topic_counts: Counter[str] = Counter()
+        for item in candidates:
+            tokens = cls._diversity_tokens(item)
+            if not tokens:
+                topic_counts["unknown"] += 1
+                continue
+            topic_counts[sorted(tokens)[0]] += 1
+        return {
+            "count": len(candidates),
+            "styles": dict(style_counts.most_common(5)),
+            "sources": dict(source_counts.most_common(5)),
+            "topics": dict(topic_counts.most_common(5)),
+            "sample_titles": [item.title for item in candidates[:5]],
+        }
