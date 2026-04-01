@@ -14,6 +14,84 @@
 | 洞察层 | Insight | 假设管理 *(P2)* | JSON |
 | 灵魂层 | Soul | 人格描述 + 核心特质 | JSON |
 
+## 现在画像相关到底有几层
+
+如果从“系统怎么一步步理解你”这个角度看，当前不是一层画像，而是 **5 层**：
+
+1. **事件层 Event**
+   这里只记发生了什么，不做解释。
+   例如：
+   - 你看了哪条视频
+   - 搜了什么词
+   - 点了 like / dislike
+   - 聊天里说了什么
+
+2. **偏好层 Preference**
+   这里开始回答“你大概率喜欢什么、不喜欢什么、习惯怎么看”。
+   例如：
+   - `interests = 国际时事 / 历史 / 纪录片`
+   - `depth_preference = 0.9`
+   - `disliked_topics = 浅层热点复读`
+
+3. **觉察层 Awareness**
+   这里不是给你贴人格标签，而是写“最近观察到的变化”。
+   例如：
+   - “最近连续浏览高信息密度国际议题内容”
+   - “这几天明显更偏向讲透结构，而不是轻量消遣”
+
+4. **洞察层 Insight**
+   这里开始尝试解释“你为什么会这样选内容”，但仍然保持假设语气。
+   例如：
+   - “用户可能不是只想知道发生了什么，而是在用深度内容建立判断确定性”
+
+5. **灵魂层 Soul**
+   这是最终画像层，回答的是“这个人整体上像谁、怎么理解世界、最近处于什么阶段”。
+   例如：
+   - “这是一个会主动追问复杂事件底层逻辑的人，偏好高信息密度、能把因果链讲透的内容”
+
+### 一句话区分这五层
+
+- **事件层**：发生了什么
+- **偏好层**：你喜欢什么
+- **觉察层**：你最近变成了什么样
+- **洞察层**：你可能为什么会这样
+- **灵魂层**：把前面这些长期整合后，你像一个什么样的人
+
+### 一个直观例子
+
+假设你最近连续做了这些事：
+
+- 看了 3 条“国际局势深度解读”
+- 搜索“国际新闻 因果链”
+- 聊天里说“我想把国际新闻背后的结构看明白”
+- 对一条“浅层热点复读”点了 `dislike`
+
+那么五层大致会这样长出来：
+
+| 层 | 这一层会记录什么 | 示例 |
+|----|------------------|------|
+| Event | 原始事实 | `view: 20分钟讲透中东局势`、`search: 国际新闻 因果链`、`feedback: dislike` |
+| Preference | 稳定偏好信号 | 你偏好高信息密度、深度解释，不喜欢浅层复读 |
+| Awareness | 近期观察 | 最近在连续寻找“能把事情讲透”的内容 |
+| Insight | 解释性假设 | 你可能在通过深度内容建立更稳定的判断框架 |
+| Soul | 长期画像 | 你是一个倾向追问结构和因果、对表层热闹不太满足的人 |
+
+所以当前“画像”不是一张平面的标签表，而是一套从事实到解释再到人格描述的分层结构。
+
+### 为什么要分这么多层
+
+如果只有最终画像一层，系统会有两个问题：
+
+- **太容易抖动**：你今天随口说一句话，整张人格画像就变
+- **太难解释**：前端只能看到“你现在是这样的人”，但说不清这个判断从哪里来
+
+分层之后，每一层各做一件事：
+
+- Event 保证原始证据可追溯
+- Preference 保证推荐和 discovery 有稳定结构化输入
+- Awareness / Insight 保证画像不只是兴趣标签堆砌
+- Soul 保证最终输出仍然像“对一个人的理解”，而不是报表
+
 ## 已实现功能
 
 | 任务 | 状态 | 说明 |
@@ -248,6 +326,49 @@ updated_pref = await analyzer.analyze_events(
 
 `LLMService.complete_structured_task()` 会把这份 core memory 自动注入到后续的偏好分析、觉察、洞察、聊天学习和 discovery 评分 prompt 里，让系统在“记得你是谁”的前提下继续理解新信号。
 
+## 状态文件体系
+
+除五层记忆数据外，MemoryManager 还管理一组运行状态文件：
+
+```
+data/memory/
+├── event.json                  # 事件层（层数据缓存）
+├── preference.json             # 偏好层
+├── awareness.json              # 觉察层
+├── insight.json                # 洞察层
+├── soul.json                   # 灵魂层
+├── feedback_state.json         # 反馈处理游标
+├── account_sync_state.json     # 账户同步游标
+├── discovery_runtime.json      # 候选池刷新游标
+├── insight_candidates.json     # 聊天候选洞察（中间态）
+└── cognition_updates.json      # 认知变化记录（供插件通知）
+```
+
+| 文件 | 用途 | 主要消费者 |
+|------|------|-----------|
+| `feedback_state.json` | 记录反馈处理到了哪一条，避免重复分析 | SoulEngine |
+| `account_sync_state.json` | 历史/收藏/关注的增量同步游标和签名 | AccountSyncService |
+| `discovery_runtime.json` | 候选池刷新时间、通知游标、最近话题 | RefreshController |
+| `insight_candidates.json` | 聊天中提取的候选洞察，等待置信度达标 | SoulEngine |
+| `cognition_updates.json` | 系统最近形成的关键认知变化 | FastAPI → 浏览器插件通知 |
+
+设计原则：每种状态独立文件，不和画像数据混存。
+
+## 系统集成
+
+MemoryManager 被以下组件直接依赖：
+
+| 组件 | 读操作 | 写操作 |
+|------|--------|--------|
+| **SoulEngine** | 全部五层 + feedback/insight/cognition 状态 | 全部五层 + feedback/insight/cognition 状态 |
+| **LLMService** | `render_core_memory_prompt()`, `get_core_memory()` | — |
+| **FastAPI (app.py)** | `load_cognition_updates()` | `propagate_event()`, `save_cognition_updates()` |
+| **RefreshController** | `load_discovery_runtime_state()` | `save_discovery_runtime_state()` |
+| **AccountSyncService** | `load_account_sync_state()` | `save_account_sync_state()`, `propagate_event()` |
+| **CLI** | — | `propagate_event()` |
+
+职责边界：**SoulEngine** 是唯一负责五层之间编排和更新逻辑的组件，其他组件只通过 MemoryManager 的公开接口读写特定状态。
+
 ## 配置项
 
 ```toml
@@ -263,12 +384,13 @@ data_dir = "data"  # 记忆 JSON 文件存储在 data/memory/ 下
 1. **SQLite 事件层 + JSON 上层**：事件量大用 DB，画像数据量小用 JSON 文件
 2. **兴趣衰减**：`weight × 0.9^weeks`，低于 0.05 自动移除，避免陈旧标签污染画像
 3. **运行时共享 SQLite 实例**：CLI / API 高流量路径优先复用同一个 `Database`，减少锁冲突和重复初始化
-3. **合并策略**：按 `(name, category)` 双键去重，权重取 max，`first_seen` 保持不变
-4. **核心记忆裁剪**：`get_core_memory()` 只暴露稳定摘要，不把整层原始 JSON 直接塞进 prompt
-5. **统一 Prompt 注入**：`render_core_memory_prompt()` 和 `LLMService` 统一为画像、偏好、觉察、洞察链路注入用户上下文
-6. **插件事件兼容**：事件层白名单已扩到插件采集事件，避免 `/api/events` 在 `snapshot`、`scroll`、`hover`、`seek` 等行为上拒收
-7. **反馈状态独立持久化**：`feedback_state.json` 单独保存反馈处理游标，避免把运行状态塞进 `preference.json` 或 `soul.json`
-8. **聊天候选与正式画像分层**：聊天提取出的 `insight_candidates.json` 先作为中间状态保留，不直接覆盖 `soul.json`
-9. **候选池运行状态分层**：`discovery_runtime.json` 只负责刷新与通知游标，不与 `feedback_state.json`、`insight_candidates.json` 或画像数据混存
-10. **认知变化单独留痕**：`cognition_updates.json` 保存系统最近形成的关键理解变化，既供插件通知使用，也让画像页能回显“最近记住了什么”
-11. **账户同步状态单独持久化**：`account_sync_state.json` 记录 history / favorites / following 的增量游标和签名，避免每轮全量重灌事件层
+4. **合并策略**：按 `(name, category)` 双键去重，权重取 max，`first_seen` 保持不变
+5. **灵魂层双存储**：`soul_profile.json` 存储结构化 OnionProfile v2 格式（版本 2），`soul_profile.md` 提供人类可读的镜像，`soul_changelog.md` 记录每次更新的来源、时间和变化摘要；自动迁移 v1 flat SoulProfile 格式
+6. **核心记忆裁剪**：`get_core_memory()` 只暴露稳定摘要，不把整层原始 JSON 直接塞进 prompt
+7. **统一 Prompt 注入**：`render_core_memory_prompt()` 和 `LLMService` 统一为画像、偏好、觉察、洞察链路注入用户上下文
+8. **插件事件兼容**：事件层白名单已扩到插件采集事件，避免 `/api/events` 在 `snapshot`、`scroll`、`hover`、`seek` 等行为上拒收
+9. **反馈状态独立持久化**：`feedback_state.json` 单独保存反馈处理游标，避免把运行状态塞进 `preference.json` 或 `soul.json`
+10. **聊天候选与正式画像分层**：聊天提取出的 `insight_candidates.json` 先作为中间状态保留，不直接覆盖 `soul.json`
+11. **候选池运行状态分层**：`discovery_runtime.json` 只负责刷新与通知游标，不与 `feedback_state.json`、`insight_candidates.json` 或画像数据混存
+12. **认知变化单独留痕**：`cognition_updates.json` 保存系统最近形成的关键理解变化，既供插件通知使用，也让画像页能回显”最近记住了什么”
+13. **账户同步状态单独持久化**：`account_sync_state.json` 记录 history / favorites / following 的增量游标和签名，避免每轮全量重灌事件层

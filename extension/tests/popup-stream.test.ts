@@ -17,23 +17,23 @@ test("createRuntimeStreamUrl converts backend http url to websocket runtime stre
   );
 });
 
+class FakeWebSocket {
+  static latest: FakeWebSocket | null = null;
+  url: string;
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onclose: (() => void) | null = null;
+
+  constructor(url: string) {
+    this.url = url;
+    FakeWebSocket.latest = this;
+  }
+
+  close() {}
+}
+
 test("runtime stream client dispatches parsed events", async () => {
   const received: Array<Record<string, unknown>> = [];
-
-  class FakeWebSocket {
-    static latest: FakeWebSocket | null = null;
-    url: string;
-    onopen: (() => void) | null = null;
-    onmessage: ((event: { data: string }) => void) | null = null;
-    onclose: (() => void) | null = null;
-
-    constructor(url: string) {
-      this.url = url;
-      FakeWebSocket.latest = this;
-    }
-
-    close() {}
-  }
 
   const client = createRuntimeStreamClient({
     backendUrl: "http://127.0.0.1:8420/api",
@@ -59,4 +59,75 @@ test("runtime stream client dispatches parsed events", async () => {
       pool_available_count: 42,
     },
   ]);
+});
+
+test("runtime stream client calls onConnect when socket opens", () => {
+  let connected = false;
+
+  const client = createRuntimeStreamClient({
+    backendUrl: "http://127.0.0.1:8420/api",
+    WebSocketImpl: FakeWebSocket as never,
+    onConnect() {
+      connected = true;
+    },
+  });
+
+  client.connect();
+  assert.equal(connected, false);
+
+  FakeWebSocket.latest?.onopen?.();
+  assert.equal(connected, true);
+});
+
+test("runtime stream client calls onDisconnect when socket closes after being connected", () => {
+  let disconnected = false;
+
+  const client = createRuntimeStreamClient({
+    backendUrl: "http://127.0.0.1:8420/api",
+    WebSocketImpl: FakeWebSocket as never,
+    reconnectDelayMs: 100_000,
+    onDisconnect() {
+      disconnected = true;
+    },
+  });
+
+  client.connect();
+
+  // Close without ever connecting — should NOT trigger onDisconnect
+  FakeWebSocket.latest?.onclose?.();
+  assert.equal(disconnected, false);
+
+  // Now simulate a successful connection then disconnect
+  FakeWebSocket.latest?.onopen?.();
+  FakeWebSocket.latest?.onclose?.();
+  assert.equal(disconnected, true);
+
+  client.disconnect();
+});
+
+test("runtime stream client resets wasConnected after disconnect so reconnect triggers onConnect again", () => {
+  const events: string[] = [];
+
+  const client = createRuntimeStreamClient({
+    backendUrl: "http://127.0.0.1:8420/api",
+    WebSocketImpl: FakeWebSocket as never,
+    reconnectDelayMs: 100_000,
+    onConnect() {
+      events.push("connect");
+    },
+    onDisconnect() {
+      events.push("disconnect");
+    },
+  });
+
+  client.connect();
+  FakeWebSocket.latest?.onopen?.();
+  FakeWebSocket.latest?.onclose?.();
+  assert.deepEqual(events, ["connect", "disconnect"]);
+
+  // Simulate reconnect (new socket created)
+  FakeWebSocket.latest?.onopen?.();
+  assert.deepEqual(events, ["connect", "disconnect", "connect"]);
+
+  client.disconnect();
 });

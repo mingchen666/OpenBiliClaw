@@ -238,6 +238,21 @@ function connectRuntimeStream() {
       }
       renderActivityCard();
     },
+    onConnect() {
+      if (!state.online) {
+        state.online = true;
+        setStatus(true);
+        setHint("后端重新连上了，正在刷新。", "success");
+        void initializeRecommendations();
+      }
+    },
+    onDisconnect() {
+      if (state.online) {
+        state.online = false;
+        setStatus(false);
+        setHint("后端连接断了，等重连上会自动恢复。", "error");
+      }
+    },
   });
   client.connect();
 }
@@ -751,15 +766,17 @@ function renderRecommendations(items, { append = false } = {}) {
     const top = document.createElement("div");
     top.className = "recommendation-top";
 
-    const badge = document.createElement("span");
-    badge.className = "topic-badge";
-    badge.textContent = item.topic_label || "这条给你留着";
-
     const stateBadge = document.createElement("span");
     stateBadge.className = `recommendation-state${item.presented ? " is-presented" : ""}`;
     stateBadge.textContent = item.presented ? "你应该刷到过" : "刚给你翻出来";
 
-    top.append(badge, stateBadge);
+    if (item.topic_label) {
+      const badge = document.createElement("span");
+      badge.className = "topic-badge";
+      badge.textContent = item.topic_label;
+      top.append(badge);
+    }
+    top.append(stateBadge);
 
     const copyBlock = document.createElement("div");
     copyBlock.className = "recommendation-copy-block";
@@ -768,11 +785,13 @@ function renderRecommendations(items, { append = false } = {}) {
     title.className = "recommendation-title";
     title.textContent = item.title;
 
-    const expression = document.createElement("p");
-    expression.className = "recommendation-expression";
-    expression.textContent = item.expression;
-
-    copyBlock.append(title, expression);
+    copyBlock.append(title);
+    if (item.expression) {
+      const expression = document.createElement("p");
+      expression.className = "recommendation-expression";
+      expression.textContent = item.expression;
+      copyBlock.append(expression);
+    }
 
     const metaLine = document.createElement("p");
     metaLine.className = "recommendation-meta-line";

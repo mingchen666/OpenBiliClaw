@@ -63,9 +63,11 @@
    - **字段归一**：例如都整理成 `bvid / title / up_name / duration / description / source_strategy / topic_key / style_key`
    - **相关性评估**：`TrendingStrategy`、`RelatedChainStrategy`、`ExploreStrategy` 会调用 `ContentDiscoveryEngine.evaluate_content()`，把内容标题、简介、来源和画像摘要一起交给 LLM，得到 `relevance_score` 和 `relevance_reason`
 
-   之后引擎会合并所有策略返回的列表，并通过 `_merge_duplicates()` 按 `bvid` 去重。如果同一个视频被多个策略同时找到，不是“谁先回来算谁”，而是保留 `relevance_score` 更高的那个版本。
+   当前四个策略都会走 LLM 评估：`SearchStrategy` 在本地启发式打分后对候选统一调用 `evaluate_content()`，`TrendingStrategy`、`RelatedChainStrategy`、`ExploreStrategy` 也各自在 discover 流程中调用 `evaluate_content()`。只有通过 `score_threshold`（默认 0.65）的内容才会被保留。
 
-   这一步的作用，是把“不同来源的原始线索”变成“可以比较的一组候选”。
+   之后引擎会合并所有策略返回的列表，并通过 `_merge_duplicates()` 按 `bvid` 去重。如果同一个视频被多个策略同时找到，不是”谁先回来算谁”，而是保留 `relevance_score` 更高的那个版本。
+
+   这一步的作用，是把”不同来源的原始线索”变成”可以比较的一组候选”。
 
 4. **按相关性和供给层级排序**
    合并完成后，引擎会进入 `_merge_and_rank()` 做第一次统一排序。当前排序不是只看分数，而是先看候选层级，再看内容质量信号：
@@ -317,15 +319,18 @@ discovery 不是“把整个找片过程都交给 LLM”。当前实现里，LLM
 现在这层 prompt 还会主动约束“外推多样性”：
 
 - 结果至少横跨 3 类不同内容方向，而不是围着一个相邻主题连续换词
+- 至少 2 个方向要明确锚定用户前 5 个高权重兴趣，优先做“核心兴趣的近邻扩展”而不是直接漂去远域
+- 最多只允许 1 个完全不直接提及核心兴趣词的远邻方向
 - 同一母题的近义变体只能保留 1 个，避免 `博弈论 / 桌游机制 / 策略模型` 一类方向同时灌进池子
 - `why_it_might_resonate` 必须先回到用户的认知需求和信息处理方式，而不是只按题材表面相似来联想
 
 但模型返回后，`ExploreStrategy` 不会无脑全收。它还会继续做过滤：
 
-- 去掉与当前高权重兴趣过于相似的 `domain`
+- 去掉与当前高权重兴趣完全重复的 `domain`，但允许“纪录片幕后 / Fate 世界观扩展”这类近邻方向保留
+- 先把能直接锚定核心兴趣的方向排到前面；如果锚定方向已经够了，远邻方向最多只留 1 个
 - 清洗 query，去重并裁到上限
 - 先搜索这些 query，再把搜到的视频重新送去做内容相关性评估
-- 最终把评分和 `novelty_level` 组合成探索后的 `relevance_score`
+- 最终把评分和 `novelty_level` 组合成探索后的 `relevance_score`，对没有直接兴趣锚点的远邻方向再加一层轻量距离惩罚
 
 所以 explore 的关键不是“随机拓圈”，而是“先提出可解释的新方向，再验证这些方向里的具体视频值不值得进池”。
 
@@ -424,7 +429,7 @@ discovery 不是“把整个找片过程都交给 LLM”。当前实现里，LLM
 | 5.2 排行榜策略 | ✅ | 全站榜 + 相关分区榜 + LLM 评分筛选 |
 | 5.3 相关推荐链策略 | ✅ | 事件种子 + 偏好/策略兜底种子 + 2 层相关推荐链 + LLM 评分过滤 |
 | 5.4 跨领域探索策略 | ✅ | 远域探索领域生成 + query 搜索 + exploration bonus + prompt 级外推多样性约束 |
-| 5.5 内容评估 | ✅ | `evaluate_content()` 已被四类发现策略复用 |
+| 5.5 内容评估 | ✅ | `evaluate_content()` 已被四类发现策略复用（含 SearchStrategy） |
 | 5.6 发现引擎编排 | ✅ | 并发执行策略 + 高分去重 + SQLite 缓存写入 |
 | M120 多事件循环并发控制修复 | ✅ | `DiscoveryConcurrencyController` 现在会按当前 event loop 重新绑定 semaphore，CLI `init` 的分阶段补货不会再在第二轮触发跨 loop `RuntimeError` |
 | 候选供给升级 | ✅ | 主发现不足时触发 backfill，并把相关性 / 候选层级写入缓存 |
@@ -434,6 +439,12 @@ discovery 不是“把整个找片过程都交给 LLM”。当前实现里，LLM
 | M122 来源优先补齐与风格误判修正 | ✅ | 池子压缩时会优先保留不同 `source` 的候选，再限制重复 `style`；同时补强 `style_key` 规则，减少硬内容误判成 `light_chat` |
 | M123 按来源缺口补池子 | ✅ | runtime 在补货时会先统计池子里的 `search / related_chain / trending / explore` 余量，再优先补足缺口最大的来源，不再让 `explore` 长期淹没其它来源 |
 | M126 explore 高风险子簇压缩 | ✅ | refresh 结束后会温和压一轮 `explore` 内部的高风险相邻簇，例如制造 / 工艺 / 材料、博弈 / 桌游 / 机制，避免单簇继续堆满 fresh pool |
+| SearchStrategy LLM 评估 | ✅ | `SearchStrategy` 现在默认走 `evaluate_content()` LLM 打分（`llm_evaluation=True`），不再只用本地启发式（上限 0.62），可通过 `llm_evaluation=False` 关闭 |
+| 策略中间产物捕获 | ✅ | 4 个策略均支持 `last_intermediates` 属性，运行后可查看生成的搜索词、选择的分区、种子列表、探索域等中间产物 |
+| Discovery 评估框架 | ✅ | `DiscoveryEvaluator` 支持 7 维质量评估（relevance / diversity / specificity / query_quality / explanation_quality / novelty / no_echo_chamber），含自动和人工两种模式 |
+| Discovery 模拟场景 | ✅ | `ScenarioGenerator` + `MockBilibiliClient` + `MockMemoryManager` 可离线生成模拟 B 站内容宇宙用于评估，无需真实 API |
+| Discovery 自动优化循环 | ✅ | SGD 风格优化循环：生成 persona → 生成 scenario → 运行发现 → 多维评估 → exploit/explore → accept/rollback |
+| Discovery 人工评估脚本 | ✅ | 交互式人工评估 + 可选触发优化 |
 
 ## 公开 API
 
@@ -489,9 +500,14 @@ strategy = SearchStrategy(
     queries_per_run=8,
     page_size=10,
     max_pages=1,
+    llm_evaluation=True,      # 默认开启 LLM 评估
+    score_threshold=0.65,      # 评分阈值
 )
 
 items = await strategy.discover(profile, limit=20)
+
+# 运行后可取中间产物
+queries = strategy.last_intermediates.get("queries", [])
 ```
 
 行为说明：
@@ -501,7 +517,10 @@ items = await strategy.discover(profile, limit=20)
 - 正常模式默认抓每个 query 的第一页；backfill 变体会放大 query 数和页数
 - 对多个 query 的搜索结果按 `bvid` 去重
 - 将结果映射为 `DiscoveredContent`
+- 高权重兴趣如果同时命中 query、标题或简介，会拿到更高的起始锚定分，避免核心兴趣搜索长期被宽泛 `explore` 候选压住
 - 会把 query 派生的 `topic_key` 一起写入候选，供后续池子压缩和推荐分桶使用
+- `llm_evaluation=True` 时（默认），搜索结果会统一过 `evaluate_content()` 做 LLM 打分，只保留高于 `score_threshold` 的候选
+- `llm_evaluation=False` 时退回到纯本地启发式打分，适合测试或低成本运行
 
 适合的场景：
 
@@ -585,8 +604,10 @@ items = await strategy.discover(profile, limit=20)
 
 - 先让 LLM 推断 3 到 5 个“高相关但有陌生感”的远域探索方向
 - 每个方向必须附 `why_it_might_resonate`、`novelty_level` 和 1 到 2 个 B 站搜索 query
-- 会过滤掉与当前高权重兴趣过于相似的领域
+- 会过滤掉与当前高权重兴趣完全重复的领域，但允许“核心兴趣的近邻扩展”保留下来
+- 有足够锚定方向时，只允许最多 1 个完全不直接提及核心兴趣词的远邻方向进入搜索
 - 搜索结果统一走 `evaluate_content()`，再叠加 `exploration_bonus`
+- 没有直接兴趣锚点的远邻方向，会在最终 `relevance_score` 上吃一个轻量距离惩罚
 - 最终保留“相关性足够高，同时比常规策略更有意外感”的内容
 
 适合的场景：
@@ -645,6 +666,168 @@ item = DiscoveredContent(
 
 所以最后用户看到的推荐之所以“不那么像复制粘贴”，很大程度上不是因为 LLM 临场发挥，而是因为 discovery 在更早一层就把候选池整理过了。
 
+## 模块边界与外部协议
+
+Discovery 模块不是独立运行的，它和上下游模块之间有清晰的输入输出边界。
+
+### 输入：从 Soul 模块消费什么
+
+Discovery 的起点是一个 `SoulProfile`（或 `OnionProfile` 转换而来的兼容对象）。每个策略从画像里取不同的切面：
+
+| 策略 | 消费的画像字段 | 用途 |
+|------|-------------|------|
+| **SearchStrategy** | `personality_portrait`, `core_traits[:5]`, `interests[:10]`, `favorite_up_users[:5]`, `deep_needs[:5]`, `_active_speculations` | 生成搜索词、计算兴趣锚定分 |
+| **TrendingStrategy** | 同上（通过 `_profile_summary()`） | 选择排行榜分区、评估内容相关性 |
+| **RelatedChainStrategy** | `interests[:2]`, `favorite_up_users[:1]` + 全画像用于评估 | 生成偏好种子、评估相关链内容 |
+| **ExploreStrategy** | 同 Search + **`exploration_openness`**（关键） | 生成跨域方向、计算探索 bonus |
+
+**协议约定**：
+- Discovery 只读取画像，不修改画像
+- 画像由 `soul/` 模块维护，discovery 不关心画像是如何构建或更新的
+- 如果画像为空或缺少关键字段，策略会 fallback 到默认行为（空兴趣列表、默认分区等）
+
+### 输出：给 Recommendation 模块提供什么
+
+Discovery 的产出是 `list[DiscoveredContent]`，写入 SQLite `content_cache` 后供推荐层消费。
+
+```
+DiscoveredContent
+├── bvid, title, up_name, up_mid      # B 站内容标识
+├── cover_url, duration, view_count     # 展示元数据
+├── relevance_score (0.0-1.0)          # LLM 评估的相关度
+├── relevance_reason                    # 自然语言推荐理由
+├── source_strategy                     # 来源策略（search/trending/related_chain/explore）
+├── topic_key, style_key               # 多样性控制信号
+├── candidate_tier                      # primary / backfill
+└── discovered_at, last_scored_at      # 时间戳
+```
+
+**协议约定**：
+- 推荐层可以信赖 `relevance_score` 和 `relevance_reason` 已经被填充
+- 推荐层可以用 `topic_key` + `style_key` + `source_strategy` 做多样性控制
+- Discovery 不做最终的推荐排序和文案生成，那是 `recommendation/` 的职责
+
+### 外部依赖：B 站 API 和 LLM
+
+Discovery 策略通过 Protocol 接口消费外部服务，不直接依赖具体实现：
+
+| Protocol | 方法 | 实现者 |
+|----------|------|--------|
+| `SupportsSearchClient` | `search(keyword, page, page_size, order)` | `BilibiliAPIClient` / `MockBilibiliClient` |
+| `SupportsRankingClient` | `get_ranking(rid)` | `BilibiliAPIClient` / `MockBilibiliClient` |
+| `SupportsRelatedClient` | `get_related_videos(bvid)` + `search(...)` | `BilibiliAPIClient` / `MockBilibiliClient` |
+| `SupportsMemoryManager` | `query_events(event_types, limit, ...)` | `MemoryManager` / `MockMemoryManager` |
+| `SupportsStructuredTask` | `complete_structured_task(...)` | `LLMService` (任意 provider) |
+
+这种显式 Protocol 设计意味着：
+- 测试可以用 mock 替代真实服务
+- 评估循环可以用 `MockBilibiliClient` 离线运行
+- 新增 B 站数据源只需实现对应 Protocol
+
+### 中间产物：给评估系统提供什么
+
+每个策略运行后会在 `last_intermediates` 中暴露内部决策产物：
+
+| 策略 | `last_intermediates` 内容 |
+|------|--------------------------|
+| SearchStrategy | `{"queries": ["纪录片 原理", "摄影 构图", ...]}` |
+| TrendingStrategy | `{"rids": [0, 36, 188, ...]}` |
+| RelatedChainStrategy | `{"seeds": [("BV...", "topic_key"), ...]}` |
+| ExploreStrategy | `{"domains": [{"domain": "...", "novelty_level": 0.62, ...}, ...]}` |
+
+评估系统通过这些中间产物可以独立评估搜索词质量、分区选择合理性、种子选择质量和探索方向创造性，而不只是看最终结果。
+
+## 评估与优化体系
+
+Discovery 模块有一套与 Soul 模块平行的评估优化框架，支持自动 SGD 循环和人工评估两种模式。
+
+### 为什么 Discovery 的评估和 Soul 不一样
+
+Soul 评估有明确的 ground truth：一个预定义的 `OnionProfile`，可以逐字段对比。Discovery 不行——没有一组"绝对正确的推荐视频"。所以 Discovery 的评估是**多维质量打分**，而不是结构对比。
+
+### 7 维评估体系
+
+| 维度 | 权重 | 打分方式 | 适用策略 |
+|------|------|---------|---------|
+| `relevance` | 0.30 | LLM judge: 内容是否真正匹配画像 | 全部 |
+| `diversity` | 0.15 | 算法: topic/style 的 Shannon 熵 | 全部 |
+| `specificity` | 0.15 | LLM judge: 结果是否个性化而非泛热门 | 全部 |
+| `query_quality` | 0.10 | LLM judge: 搜索词/域的创造性和针对性 | search, explore |
+| `explanation_quality` | 0.10 | 算法: relevance_reason 的完整度 | trending, related, explore |
+| `novelty` | 0.10 | 算法: 不在已知兴趣中的比例 | explore, trending |
+| `no_echo_chamber` | 0.10 | 算法: topic 集中度惩罚 | 全部 |
+
+### Prompt 归因映射
+
+评估系统能把"哪个维度分低"归因到"应该改哪个 prompt"：
+
+```python
+DISCOVERY_FIELD_TO_PARAM = {
+    "search.query_quality":            "search_queries_prompt",
+    "search.relevance":                "search_queries_prompt",
+    "trending.relevance":              "content_evaluation_prompt",
+    "trending.rid_selection":          "trending_rids_prompt",
+    "explore.query_quality":           "explore_domains_prompt",
+    "explore.novelty":                 "explore_domains_prompt",
+    "explore.relevance":               "content_evaluation_prompt",
+    "related_chain.relevance":         "content_evaluation_prompt",
+    "related_chain.explanation_quality":"content_evaluation_prompt",
+    ...
+}
+```
+
+### 模拟内容宇宙
+
+评估循环不能调用真实 B 站 API。`ScenarioGenerator` 会为每个 persona 生成一个模拟的 B 站内容宇宙：
+
+- **60 条模拟视频**（~30% 高相关 / ~30% 中相关 / ~20% 低相关 / ~20% 噪音）
+- **搜索索引**：按标题/标签关键词建立倒排，搜索词质量真正影响搜索结果
+- **排行榜分组**：按分区 rid 组织
+- **相关视频图**：每条视频关联 3-5 条相关视频
+- **行为事件**：5-8 条模拟观看/点赞事件供 RelatedChain 选种子
+
+`MockBilibiliClient` 满足所有策略的 Protocol 接口，搜索时会做关键词模糊匹配而不是返回固定列表。
+
+### 自动优化循环
+
+```text
+for each epoch:
+    1. 生成/加载 persona (复用 soul 的 PersonaPool)
+    2. 生成/加载 scenario (ScenarioPool 缓存)
+    3. 用 MockBilibiliClient 运行 4 个策略
+    4. DiscoveryEvaluator 做 7 维评估
+    5. 最差维度 → FIELD_TO_PARAM → 定位到具体 prompt
+    6. Exploit (修最差的 prompt) 或 Explore (随机扰动)
+    7. Apply → 验证 → Accept 或 Rollback
+    8. Early stopping (patience >= 3)
+```
+
+运行方式：
+
+```bash
+.venv/bin/python scripts/run_discovery_auto_optimize.py \
+    --rounds 10 --batch 3 --explore-rate 0.2 --patience 3
+```
+
+### 人工评估
+
+```bash
+.venv/bin/python scripts/run_discovery_eval.py --mock
+```
+
+会逐策略展示发现结果和中间产物，人工对每个维度打 0-1 分，生成 `DiscoveryEvalReport`，可选触发一轮优化。
+
+### 评估系统文件清单
+
+| 文件 | 职责 |
+|------|------|
+| `eval/discovery_evaluator.py` | 7 维评估器 + FIELD_TO_PARAM + 算法/LLM 打分函数 |
+| `eval/discovery_scenario.py` | ScenarioGenerator + MockBilibiliClient + MockMemoryManager + ScenarioPool |
+| `eval/discovery_optimizer.py` | Discovery 专属参数注册表 + `create_discovery_optimizer()` 工厂 |
+| `eval/agents.py` | `run_discovery_optimizer_agent()` — 发现系统专用优化 agent |
+| `scripts/run_discovery_auto_optimize.py` | SGD 自动优化循环 |
+| `scripts/run_discovery_eval.py` | 人工评估交互脚本 |
+
 ## 设计决策
 
 1. **策略显式注入依赖**：`SearchStrategy` 不自己构建 LLM 或 API client，便于测试和后续编排
@@ -663,4 +846,10 @@ item = DiscoveredContent(
 14. **来源补齐优先级高于风格上限**：在 discovery 压缩时，新的 `search / trending / related_chain` 候选应优先获得一个坑位，不能先被重复的 `style_key` 卡死
 15. **`style_key` 规则宁可偏粗，也不能把硬内容全掉进 `light_chat`**：芯片、显微镜、理论、哲学这类更适合 `deep_dive`；全过程、制造过程、工艺难度更适合 `story_doc`
 16. **补货要看来源缺口，不只看池子总量**：如果池子总数够了但 `trending` 一直接近 0、`explore` 却超标，体感仍会单一；runtime refresh 现在会优先补足来源缺口，再追总量
-17. **`explore` 也要控内部子簇，不只控总量**：即使 `explore` 总数没超标，制造 / 工艺 / 材料、博弈 / 桌游 / 机制这类相邻方向也可能在内部堆成一大簇；refresh 现在会把过量部分温和压到非 `fresh`，避免“可换窗口只剩一个味”
+17. **`explore` 也要控内部子簇，不只控总量**：即使 `explore` 总数没超标，制造 / 工艺 / 材料、博弈 / 桌游 / 机制这类相邻方向也可能在内部堆成一大簇；refresh 现在会把过量部分温和压到非 `fresh`，避免”可换窗口只剩一个味”
+18. **四个策略统一走 LLM 评估**：`SearchStrategy` 不再只用本地启发式打分，默认也走 `evaluate_content()`；这让评估系统可以统一优化 `content_evaluation_prompt` 对全部策略生效
+19. **策略暴露中间产物**：每个策略的 `last_intermediates` 让评估系统能独立评估搜索词质量、分区选择、种子选择和探索方向，而不只是看最终结果列表
+20. **评估用多维质量打分而不是对比 ground truth**：Discovery 没有”正确答案”，所以评估的是结果集在 relevance / diversity / specificity / novelty 等 7 个维度的质量
+21. **模拟内容宇宙做模糊匹配，不是固定列表**：`MockBilibiliClient` 的搜索基于关键词倒排 + 模糊匹配，搜索词质量真正影响返回结果，评估才有意义
+22. **评估归因到 prompt 级别**：`DISCOVERY_FIELD_TO_PARAM` 映射维度到具体 prompt，优化器可以定向修改最影响评分的那个 prompt，而不是盲目调所有
+23. **PromptOptimizer 参数化复用**：不为 discovery 写新的 optimizer，而是让 `PromptOptimizer` 接受不同的参数注册表和白名单，soul 和 discovery 共享 apply/commit/rollback 机制

@@ -13,10 +13,13 @@ export function createRuntimeStreamClient({
   WebSocketImpl = globalThis.WebSocket,
   reconnectDelayMs = 2000,
   onEvent = () => {},
+  onConnect = () => {},
+  onDisconnect = () => {},
 } = {}) {
   let socket = null;
   let reconnectTimer = null;
   let stopped = false;
+  let wasConnected = false;
 
   function scheduleReconnect() {
     if (stopped || reconnectTimer != null) {
@@ -33,6 +36,10 @@ export function createRuntimeStreamClient({
       return;
     }
     socket = new WebSocketImpl(createRuntimeStreamUrl(backendUrl));
+    socket.onopen = () => {
+      wasConnected = true;
+      onConnect();
+    };
     socket.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);
@@ -43,6 +50,10 @@ export function createRuntimeStreamClient({
     };
     socket.onclose = () => {
       socket = null;
+      if (wasConnected) {
+        wasConnected = false;
+        onDisconnect();
+      }
       scheduleReconnect();
     };
   }

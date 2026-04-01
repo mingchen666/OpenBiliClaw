@@ -49,6 +49,9 @@ dev = [
 local-llm = [
     "ollama>=0.4",
 ]
+eval = [
+    "claude-agent-sdk>=0.1",
+]
 
 [project.scripts]
 openbiliclaw = "openbiliclaw.cli:app"
@@ -78,6 +81,11 @@ select = [
     "SIM",  # flake8-simplify
     "TCH",  # flake8-type-checking
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"src/openbiliclaw/llm/prompts.py" = ["E501"]  # Prompt templates contain long JSON examples
+"src/openbiliclaw/llm/prompts_pipeline.py" = ["E501"]
+"scripts/*.py" = ["E501"]  # Scripts contain long prompt strings
 
 [tool.mypy]
 python_version = "3.11"
