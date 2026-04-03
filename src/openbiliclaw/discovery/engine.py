@@ -148,6 +148,7 @@ class ContentDiscoveryEngine:
         database: Database | None = None,
         *,
         concurrency: DiscoveryConcurrencyController | None = None,
+        embedding_service: Any | None = None,
         target_primary_count: int = 12,
         backfill_target_count: int = 18,
     ) -> None:
@@ -155,9 +156,10 @@ class ContentDiscoveryEngine:
         self._llm_service = llm_service
         self._database = database
         self._concurrency = concurrency
+        self._embedding_service = embedding_service
         self._target_primary_count = max(1, target_primary_count)
         self._backfill_target_count = max(self._target_primary_count, backfill_target_count)
-        self._eval_cache: dict[str, tuple[float, str, str]] = {}
+        self._eval_cache: dict[str, tuple[float, str, str, str]] = {}
 
     def register_strategy(self, strategy: DiscoveryStrategy) -> None:
         """Register a discovery strategy."""
@@ -193,8 +195,11 @@ class ContentDiscoveryEngine:
             profile=profile,
             limit=effective_limit,
         )
+        # Normalize topic_group using embeddings before dedup
+        merged_primary = self._merge_and_rank(primary_results)
+        await self._normalize_topic_groups(merged_primary)
         final_results = self._compress_topic_repeats(
-            self._merge_and_rank(primary_results),
+            merged_primary,
             limit=effective_limit,
         )
 
@@ -206,13 +211,69 @@ class ContentDiscoveryEngine:
                 limit=effective_limit,
                 existing=final_results,
             )
+            all_results = self._merge_and_rank([*final_results, *backfill_results])
+            await self._normalize_topic_groups(all_results)
             final_results = self._compress_topic_repeats(
-                self._merge_and_rank([*final_results, *backfill_results]),
+                all_results,
                 limit=effective_limit,
             )
 
         self._cache_results(final_results)
         return final_results
+
+    async def _normalize_topic_groups(
+        self,
+        results: list[DiscoveredContent],
+    ) -> None:
+        """Use embedding similarity to unify semantically identical topic_groups.
+
+        If embedding service is not available, this is a no-op and the existing
+        exact-string dedup in _compress_topic_repeats handles everything.
+        """
+        if self._embedding_service is None or not results:
+            return
+
+        from openbiliclaw.llm.embedding import cosine_similarity
+
+        # Build cluster centroids from unique topic_groups
+        clusters: dict[str, list[float]] = {}  # canonical_label → centroid
+        remap: dict[str, str] = {}  # original_label → canonical_label
+
+        for item in results:
+            topic = self._topic_bucket(item)
+            if not topic or topic in remap:
+                continue
+
+            vec = await self._embedding_service.embed(topic)
+            if not vec:
+                remap[topic] = topic
+                continue
+
+            # Find most similar existing cluster
+            best_label: str | None = None
+            best_sim = 0.0
+            for label, centroid in clusters.items():
+                sim = cosine_similarity(vec, centroid)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_label = label
+
+            threshold = self._embedding_service.similarity_threshold
+            if best_label is not None and best_sim >= threshold:
+                remap[topic] = best_label
+                logger.debug(
+                    "Topic merged: %r → %r (sim=%.3f)", topic, best_label, best_sim,
+                )
+            else:
+                clusters[topic] = vec
+                remap[topic] = topic
+
+        # Apply remapping
+        for item in results:
+            topic = self._topic_bucket(item)
+            canonical = remap.get(topic)
+            if canonical and canonical != topic and item.topic_group:
+                item.topic_group = canonical
 
     async def evaluate_content(
         self,
@@ -242,11 +303,13 @@ class ContentDiscoveryEngine:
         cache_key = f"{content.bvid}:{id(profile)}"
         cached = self._eval_cache.get(cache_key)
         if cached is not None:
-            score, reason, topic_group = cached
+            score, reason, topic_group, style_key = cached
             content.relevance_score = score
             content.relevance_reason = reason
             if topic_group:
                 content.topic_group = topic_group
+            if style_key:
+                content.style_key = style_key
             return score
 
         from openbiliclaw.llm.prompts import build_content_evaluation_prompt
@@ -290,15 +353,25 @@ class ContentDiscoveryEngine:
             score = self._clamp_score(payload.get("score", 0.0))
             reason = str(payload.get("reason", "")).strip()
             topic_group = str(payload.get("topic_group", "")).strip()
+            style_key = str(payload.get("style_key", "")).strip().lower()
         except Exception:
             logger.exception("Failed to evaluate discovered content: %s", content.bvid)
             return 0.0
+
+        # Validate LLM-returned style_key against allowed values
+        _VALID_STYLES = {
+            "game_strategy", "news_brief", "practical_guide", "story_doc",
+            "visual_showcase", "tech_analysis", "philosophy_culture",
+            "deep_dive", "light_chat",
+        }
 
         content.relevance_score = score
         content.relevance_reason = reason
         if topic_group:
             content.topic_group = topic_group
-        self._eval_cache[cache_key] = (score, reason, topic_group)
+        if style_key in _VALID_STYLES:
+            content.style_key = style_key
+        self._eval_cache[cache_key] = (score, reason, topic_group, style_key)
         return score
 
     @staticmethod

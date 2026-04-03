@@ -149,10 +149,22 @@ def create_app(
                 bilibili_request_concurrency=2,
                 llm_evaluation_concurrency=2,
             )
+            # Build embedding service for semantic topic dedup (optional)
+            _embedding_service = None
+            try:
+                from openbiliclaw.llm.embedding import EmbeddingService
+                from openbiliclaw.llm.gemini_provider import GeminiProvider
+                _gemini = registry.get("gemini")
+                if isinstance(_gemini, GeminiProvider):
+                    _embedding_service = EmbeddingService(_gemini)
+            except Exception:
+                pass
+
             discovery_engine = ContentDiscoveryEngine(
                 llm_service=llm_service,
                 database=database,
                 concurrency=concurrency,
+                embedding_service=_embedding_service,
             )
             search_strategy = SearchStrategy(
                 llm_service=llm_service,

@@ -519,6 +519,7 @@ def test_runtime_builders_share_database_instance(monkeypatch: pytest.MonkeyPatc
             llm_service: object,
             database: object,
             concurrency: object | None = None,
+            embedding_service: object | None = None,
         ) -> None:
             self.llm_service = llm_service
             self.database = database

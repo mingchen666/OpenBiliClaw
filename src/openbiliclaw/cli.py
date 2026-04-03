@@ -266,10 +266,23 @@ def _build_discovery_engine() -> Any:
         llm_evaluation_concurrency=2,
     )
 
+    # Build embedding service for semantic topic dedup (optional)
+    embedding_service = None
+    try:
+        from openbiliclaw.llm.embedding import EmbeddingService
+        from openbiliclaw.llm.gemini_provider import GeminiProvider
+        registry = _build_registry()
+        gemini = registry.get("gemini")
+        if isinstance(gemini, GeminiProvider):
+            embedding_service = EmbeddingService(gemini)
+    except Exception:
+        pass  # Embedding is optional; falls back to exact string dedup
+
     engine = ContentDiscoveryEngine(
         llm_service=llm_service,
         database=database,
         concurrency=concurrency,
+        embedding_service=embedding_service,
     )
     search_strategy = SearchStrategy(
         llm_service=llm_service,

@@ -115,7 +115,7 @@ class TestBackendAPI:
                 captured["llm_evaluation_concurrency"] = llm_evaluation_concurrency
 
         class FakeContentDiscoveryEngine:
-            def __init__(self, *, llm_service: object, database: object, concurrency=None) -> None:
+            def __init__(self, *, llm_service: object, database: object, concurrency=None, embedding_service=None) -> None:
                 captured["engine_concurrency"] = concurrency
 
             def register_strategy(self, strategy: object) -> None:

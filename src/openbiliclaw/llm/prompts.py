@@ -675,13 +675,22 @@ def build_content_evaluation_prompt(
         "要求：2-4 个中文词，抽象到能覆盖同类内容，"
         "例如\"强化学习\"而非\"强化学习ppo算法源码级讲解\"，"
         "\"城市建筑\"而非\"上海外滩建筑群纪录片\"。"
-        "同一主题的不同切面必须归为同一个 topic_group。\n"
+        "同一主题的不同切面必须归为同一个 topic_group。"
+        "语义相同的主题必须用同一个词——\"AI\" \"人工智能\" \"机器学习\" 统一写成 \"人工智能\"，"
+        "\"RL\" \"强化学习\" 统一写成 \"强化学习\"。\n"
+        "7. style_key 从以下 9 个选项中选一个，描述该内容的呈现风格：\n"
+        "   game_strategy（游戏攻略/机制解析）/ news_brief（新闻资讯/时事快评）/ "
+        "practical_guide（教程/入门/实操指南）/ story_doc（纪录片/故事/人物传记）/ "
+        "visual_showcase（视觉向/混剪/空镜）/ tech_analysis（技术深度分析/硬件评测）/ "
+        "philosophy_culture（哲学/文化/思想讨论）/ deep_dive（原理讲解/学术解析）/ "
+        "light_chat（日常/闲聊/娱乐/其他）\n"
         "</rules>\n\n"
         "<output_schema>\n"
         "{\n"
         '  "score": 0.78,\n'
         '  "reason": "这个视频的讲解深度和表达方式更贴近你长期偏好的高信息密度内容。",\n'
-        '  "topic_group": "认知科学"\n'
+        '  "topic_group": "认知科学",\n'
+        '  "style_key": "deep_dive"\n'
         "}\n"
         "</output_schema>"
     )
