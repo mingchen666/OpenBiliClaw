@@ -232,6 +232,47 @@ class RecommendationEngine:
             if canonical and canonical != topic and item.topic_group:
                 item.topic_group = canonical
 
+    async def _select_relevant_interests(
+        self,
+        content: DiscoveredContent,
+        profile: SoulProfile,
+        *,
+        top_k: int = 5,
+    ) -> list[dict[str, object]]:
+        """Select interests most relevant to this content via embedding similarity.
+
+        Falls back to top-K by weight when embedding service is unavailable.
+        """
+        all_interests = [
+            {"name": item.name, "category": item.category, "weight": item.weight}
+            for item in profile.preferences.interests[:15]
+        ]
+        if not all_interests:
+            return []
+        if self._embedding_service is None:
+            return all_interests[:top_k]
+
+        from openbiliclaw.llm.embedding import cosine_similarity
+
+        content_text = f"{content.title} {content.description or ''}"
+        content_vec = await self._embedding_service.embed(content_text)
+        if not content_vec:
+            return all_interests[:top_k]
+
+        scored: list[tuple[dict[str, object], float]] = []
+        for interest in all_interests:
+            interest_vec = await self._embedding_service.embed(str(interest["name"]))
+            if not interest_vec:
+                scored.append((interest, float(interest.get("weight", 0))))
+                continue
+            sim = cosine_similarity(content_vec, interest_vec)
+            # Blend embedding similarity with weight for ranking
+            blended = sim * 0.7 + float(interest.get("weight", 0)) * 0.3
+            scored.append((interest, blended))
+
+        scored.sort(key=lambda x: -x[1])
+        return [item for item, _ in scored[:top_k]]
+
     async def precompute_pool_copy(
         self,
         *,
@@ -375,19 +416,15 @@ class RecommendationEngine:
             },
             recent_feedback=[],
         )
+        # Select most relevant interests for this content via embedding similarity
+        interests_for_prompt = await self._select_relevant_interests(content, profile)
+
         messages = build_recommendation_expression_prompt(
             profile_summary={
                 "personality_portrait": profile.personality_portrait,
                 "core_traits": profile.core_traits[:5],
                 "deep_needs": profile.deep_needs[:5],
-                "interests": [
-                    {
-                        "name": item.name,
-                        "category": item.category,
-                        "weight": item.weight,
-                    }
-                    for item in profile.preferences.interests[:10]
-                ],
+                "interests": interests_for_prompt,
             },
             content_summary={
                 "title": content.title,

@@ -312,6 +312,31 @@ class ContentDiscoveryEngine:
                 content.style_key = style_key
             return score
 
+        # Embedding pre-filter: skip LLM call for content with very low
+        # similarity to any user interest (saves API cost)
+        if self._embedding_service is not None and profile.preferences.interests:
+            from openbiliclaw.llm.embedding import cosine_similarity
+
+            content_text = f"{content.title} {content.description or ''}"
+            content_vec = await self._embedding_service.embed(content_text)
+            if content_vec:
+                max_sim = 0.0
+                for interest_item in profile.preferences.interests[:10]:
+                    interest_vec = await self._embedding_service.embed(interest_item.name)
+                    if interest_vec:
+                        sim = cosine_similarity(content_vec, interest_vec)
+                        if sim > max_sim:
+                            max_sim = sim
+                # Very low similarity to all interests AND not from explore strategy
+                # (explore is intentionally cross-domain, so don't pre-filter it)
+                if max_sim < 0.3 and content.source_strategy != "explore":
+                    content.relevance_score = round(max_sim * 0.5, 4)
+                    content.relevance_reason = "embedding 预过滤: 与所有兴趣相似度极低"
+                    self._eval_cache[cache_key] = (
+                        content.relevance_score, content.relevance_reason, "", "",
+                    )
+                    return content.relevance_score
+
         from openbiliclaw.llm.prompts import build_content_evaluation_prompt
 
         messages = build_content_evaluation_prompt(
