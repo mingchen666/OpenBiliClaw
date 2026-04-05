@@ -305,6 +305,7 @@ def _build_discovery_engine() -> Any:
         llm_service=llm_service,
         bilibili_client=bilibili_client,
         concurrency=concurrency,
+        embedding_service=embedding_service,
     )
 
     engine.register_strategy(search_strategy)

@@ -39,6 +39,7 @@ class ExploreStrategy(DiscoveryStrategy):
     llm_service: SupportsStructuredTask
     bilibili_client: SupportsSearchClient
     concurrency: DiscoveryConcurrencyController | None = None
+    embedding_service: object | None = None
     score_threshold: float = 0.65
     queries_per_domain: int = 3
     max_domains: int = 5
@@ -204,7 +205,7 @@ class ExploreStrategy(DiscoveryStrategy):
             normalized = self._normalize_domain_key(domain)
             if not domain or normalized in seen_domains:
                 continue
-            if self._looks_too_similar(normalized, current_interests):
+            if await self._looks_too_similar_async(normalized, current_interests):
                 continue
             seen_domains.add(normalized)
             domains.append(
@@ -220,23 +221,43 @@ class ExploreStrategy(DiscoveryStrategy):
         prioritized = self._prioritize_domains(domains, anchor_set)
         return [domain for domain in prioritized if domain["queries"]]
 
-    @staticmethod
-    def _looks_too_similar(domain: str, current_interests: set[str]) -> bool:
+    async def _looks_too_similar_async(self, domain: str, current_interests: set[str]) -> bool:
+        """Check if domain is too similar to existing interests.
+
+        Uses embedding cosine similarity when available, falls back to substring check.
+        Threshold for "too similar" is 0.75 (stricter than dedup's 0.82 —
+        we want explore to be genuinely novel).
+        """
         if not domain:
             return False
+        # Fast path: exact or near-exact string match
         for interest_val in current_interests:
             if not interest_val:
                 continue
-            # Exact match: definitely too similar
             if domain == interest_val:
                 return True
-            # Domain is a trivial extension of interest (<3 chars added): too similar
-            # e.g. "纪录片" vs "纪录片类" -- too close
-            # But "纪录片" vs "纪录片幕后工艺" -- different enough to explore
             if interest_val in domain and len(domain) - len(interest_val) < 3:
                 return True
             if domain in interest_val and len(interest_val) - len(domain) < 3:
                 return True
+
+        # Semantic check: catch "AI应用" vs "人工智能", "RL" vs "强化学习"
+        if self.embedding_service is not None:
+            from openbiliclaw.llm.embedding import cosine_similarity
+            try:
+                domain_vec = await self.embedding_service.embed(domain)
+                if domain_vec:
+                    for interest_val in current_interests:
+                        if not interest_val:
+                            continue
+                        interest_vec = await self.embedding_service.embed(interest_val)
+                        if interest_vec and cosine_similarity(domain_vec, interest_vec) >= 0.75:
+                            logger.debug(
+                                "Explore domain rejected (semantic): %r ≈ %r", domain, interest_val,
+                            )
+                            return True
+            except Exception:
+                pass  # Fall through to False on embedding failure
         return False
 
     @staticmethod

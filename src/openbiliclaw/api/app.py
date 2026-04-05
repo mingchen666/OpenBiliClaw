@@ -182,6 +182,7 @@ def create_app(
                 llm_service=llm_service,
                 bilibili_client=bilibili_client,
                 concurrency=concurrency,
+                embedding_service=_embedding_service,
             )
             discovery_engine.register_strategy(search_strategy)
             discovery_engine.register_strategy(trending_strategy)

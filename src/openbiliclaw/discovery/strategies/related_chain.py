@@ -161,22 +161,29 @@ class RelatedChainStrategy(DiscoveryStrategy):
         seeds: list[tuple[str, str]] = []
         seen: set[str] = set()
 
+        # Reserve slots for cross-domain seeds to fight echo chamber
+        cross_domain_slots = max(1, self.max_seeds // 3)
+        interest_slots = self.max_seeds - cross_domain_slots
+
+        # Phase 1: fill interest-based seeds (events + preferences)
         for bvid in self._event_seed_bvids():
             if bvid in seen:
                 continue
             seen.add(bvid)
             seeds.append((bvid, self._topic_key_from_seed_bvid(bvid)))
-            if len(seeds) >= self.max_seeds:
-                return seeds
+            if len(seeds) >= interest_slots:
+                break
 
-        for bvid in await self._preference_seed_bvids(profile):
-            if bvid in seen:
-                continue
-            seen.add(bvid)
-            seeds.append((bvid, self._topic_key_from_seed_bvid(bvid)))
-            if len(seeds) >= self.max_seeds:
-                return seeds
+        if len(seeds) < interest_slots:
+            for bvid in await self._preference_seed_bvids(profile):
+                if bvid in seen:
+                    continue
+                seen.add(bvid)
+                seeds.append((bvid, self._topic_key_from_seed_bvid(bvid)))
+                if len(seeds) >= interest_slots:
+                    break
 
+        # Phase 2: fill cross-domain seeds from explore/trending strategies
         for strategy in (self.search_strategy, self.trending_strategy):
             if strategy is None:
                 continue
