@@ -635,8 +635,14 @@ def _score_no_echo_chamber(results: list[Any]) -> float:
 
     topics: list[str] = []
     for item in results:
-        topic = getattr(item, "topic_key", "") or "unknown"
-        topics.append(topic.strip().lower())
+        # Prefer topic_group (coarse, LLM-assigned, embedding-normalized)
+        # over topic_key (raw query string, per-query not per-result)
+        topic = (
+            getattr(item, "topic_group", "").strip()
+            or getattr(item, "topic_key", "").strip()
+            or "unknown"
+        )
+        topics.append(topic.lower())
 
     counts = Counter(topics)
     if not counts:
