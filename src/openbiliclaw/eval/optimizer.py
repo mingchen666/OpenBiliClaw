@@ -75,6 +75,12 @@ MODIFIABLE_FILES: list[str] = [
     f"{_SRC}/soul/profile.py",
     f"{_SRC}/soul/pipeline.py",
     f"{_SRC}/soul/engine.py",
+    f"{_SRC}/recommendation/engine.py",
+    f"{_SRC}/recommendation/curator.py",
+    f"{_SRC}/discovery/strategies/search.py",
+    f"{_SRC}/discovery/strategies/trending.py",
+    f"{_SRC}/discovery/strategies/related_chain.py",
+    f"{_SRC}/discovery/strategies/explore.py",
 ]
 
 DEFAULT_CONTINUOUS_PARAMS: list[ContinuousParam] = [

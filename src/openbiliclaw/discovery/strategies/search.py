@@ -70,11 +70,6 @@ class SearchStrategy(DiscoveryStrategy):
         """
         queries = await self._generate_queries(profile)
         self.last_intermediates = {"queries": list(queries)}
-        # Force-refresh WBI keys before starting search requests.
-        # When running concurrently with other strategies the shared client
-        # may have stale keys that cause v_voucher challenges.
-        if hasattr(self.bilibili_client, "_cached_wbi_keys"):
-            self.bilibili_client._cached_wbi_keys = None  # type: ignore[attr-defined]
         anchor_list = interest_anchors(profile)
         candidates: list[DiscoveredContent] = []
         seen_bvids: set[str] = set()
@@ -83,22 +78,20 @@ class SearchStrategy(DiscoveryStrategy):
             for query_index, query in enumerate(queries)
             for page in range(1, self.max_pages + 1)
         ]
-        # Run search queries sequentially with delay to avoid B站 search
-        # rate-limiting.  The search endpoint is aggressively rate-limited
-        # and returns v_voucher challenges under concurrent pressure.
-        gathered: list[object] = []
-        for i, (_, query, page) in enumerate(request_plan):
-            if i > 0:
-                await asyncio.sleep(0.5)
-            try:
-                result = await self.bilibili_client.search(
-                    query,
-                    page=page,
-                    page_size=self.page_size,
-                )
-                gathered.append(result)
-            except Exception as exc:
-                gathered.append(exc)
+        # Use a dedicated API client for search to avoid session-level
+        # rate-limiting from B站.  The shared client accumulates request
+        # history from other strategies (trending, related_chain, explore)
+        # which triggers v_voucher challenges on the search endpoint.
+        search_client = self._create_search_client()
+        try:
+            gathered = await self._execute_search_queries(
+                search_client, request_plan,
+            )
+        finally:
+            if search_client is not self.bilibili_client:
+                close = getattr(search_client, "close", None)
+                if callable(close):
+                    await close()
 
         api_result_count = 0
         for (query_index, query, page), outcome in zip(request_plan, gathered, strict=True):
@@ -164,6 +157,41 @@ class SearchStrategy(DiscoveryStrategy):
             score_threshold=max(0.58, round(self.score_threshold - 0.07, 2)),
             last_intermediates={},
         )
+
+    def _create_search_client(self) -> SupportsSearchClient:
+        """Create a fresh API client for search to avoid session pollution.
+
+        Falls back to the shared client if we can't create a dedicated one.
+        """
+        try:
+            from openbiliclaw.bilibili.api import BilibiliAPIClient
+            cookie = getattr(self.bilibili_client, "_cookie", "")
+            if cookie:
+                return BilibiliAPIClient(cookie=cookie, min_request_interval=0.5)
+        except Exception:
+            logger.debug("Could not create dedicated search client, using shared")
+        return self.bilibili_client
+
+    async def _execute_search_queries(
+        self,
+        client: SupportsSearchClient,
+        request_plan: list[tuple[int, str, int]],
+    ) -> list[object]:
+        """Execute search queries sequentially with delay."""
+        gathered: list[object] = []
+        for i, (_, query, page) in enumerate(request_plan):
+            if i > 0:
+                await asyncio.sleep(0.5)
+            try:
+                result = await client.search(
+                    query,
+                    page=page,
+                    page_size=self.page_size,
+                )
+                gathered.append(result)
+            except Exception as exc:
+                gathered.append(exc)
+        return gathered
 
     async def _generate_queries(self, profile: SoulProfile) -> list[str]:
         prompt_messages = build_search_queries_prompt(

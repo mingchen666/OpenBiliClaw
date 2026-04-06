@@ -25,9 +25,13 @@ from openbiliclaw.eval.optimizer import (
 _SRC = "src/openbiliclaw"
 
 # Files the discovery optimizer is allowed to modify.
-# Only prompts.py — strategy code and engine code are not auto-optimized.
 DISCOVERY_MODIFIABLE_FILES: list[str] = [
     f"{_SRC}/llm/prompts.py",
+    f"{_SRC}/discovery/strategies/search.py",
+    f"{_SRC}/discovery/strategies/trending.py",
+    f"{_SRC}/discovery/strategies/related_chain.py",
+    f"{_SRC}/discovery/strategies/explore.py",
+    f"{_SRC}/discovery/engine.py",
 ]
 
 DISCOVERY_PROMPT_PARAMS: list[PromptParam] = [

@@ -798,25 +798,32 @@ async def run_discovery_optimizer_agent(
     files_text = "\n".join(f"  - {f}" for f in DISCOVERY_MODIFIABLE_FILES)
     prompt = (
         "根据以下发现系统评估报告，分析内容发现质量的偏差原因并提出修改。\n\n"
-        "你只能修改 prompts.py 中的 prompt 模板。可修改的文件：\n"
+        "你可以修改 prompt 模板和发现策略代码。可修改的文件：\n"
         f"{files_text}\n\n"
-        "⚠️ 重要约束：\n"
-        "- 不要修改策略代码（strategies.py）和引擎代码（engine.py）\n"
-        "- 不要修改阈值、权重等数值参数\n"
-        "- 只修改 prompt 模板中的指令文本\n\n"
         "<discovery_architecture>\n"
         "数据流：SoulProfile → 4 种发现策略并发执行 → 合并去重排序 → 多样性压缩 → 缓存\n\n"
+        "策略文件职责：\n"
+        "  - search.py: 生成搜索词并调用 B站搜索 API\n"
+        "  - trending.py: 抓取 B站排行榜分区内容\n"
+        "  - related_chain.py: 从种子视频出发沿关联链扩展\n"
+        "  - explore.py: LLM 生成跨域探索方向并搜索\n"
+        "  - engine.py: 策略编排、去重、多样性压缩\n\n"
         "可优化的 prompt（按策略归因）:\n"
-        "  - build_search_queries_prompt(): 搜索词生成（影响 query_quality / diversity / no_echo_chamber）\n"
+        "  - build_search_queries_prompt(): 搜索词生成（影响 query_quality / diversity）\n"
         "  - build_content_evaluation_prompt(): 内容匹配度评估（影响 relevance / specificity）\n"
         "  - build_trending_rids_prompt(): 排行榜分区选择\n"
         "  - build_explore_domains_prompt(): 跨域探索方向生成\n"
         "</discovery_architecture>\n\n"
-        "每次最多修改 2 处。修改必须是精确的 diff 级别（old_text → new_text）。\n"
-        "修改必须保持函数签名不变、不引入新依赖。\n"
-        "最终返回一个 JSON 代码块，格式:\n"
-        '{"changes": [{"file_path": "src/openbiliclaw/llm/prompts.py", "old_text": "...", '
-        '"new_text": "...", "reason": "..."}], "summary": "总结"}\n\n'
+        "原则：最小化修改，不破坏函数签名和导入，每次只改 1-2 处。\n"
+        "如果偏差根因在策略代码（如过滤逻辑、topic_key 分配），优先修改代码而非 prompt。\n"
+        "对代码的修改必须通过 pytest 验证。\n\n"
+        "⚠️ 关键输出要求：\n"
+        "1. old_text 和 new_text 只包含需要修改的最小片段（3-10 行），不要复制整个函数\n"
+        "2. old_text 必须是文件中能精确匹配到的原文（包括缩进和换行）\n"
+        "3. 你的最后一条消息必须且只能包含一个 ```json 代码块\n\n"
+        "最终返回格式（```json 代码块）:\n"
+        '{"changes": [{"file_path": "src/openbiliclaw/...", "old_text": "最小修改片段", '
+        '"new_text": "替换后的片段", "reason": "修改原因"}], "summary": "一句话总结"}\n\n'
         f"评估报告:\n{report_text}"
     )
 
@@ -833,11 +840,16 @@ async def run_discovery_optimizer_agent(
             options=ClaudeAgentOptions(
                 system_prompt=(
                     "你是发现系统优化专家。你的目标是提高 B 站内容发现的质量。\n"
-                    "你只能修改 src/openbiliclaw/llm/prompts.py 中的 prompt 模板文本。\n"
-                    "绝对不要修改策略代码、引擎代码、阈值或权重参数。\n"
-                    "先用 Read 工具阅读 prompts.py 中相关函数理解当前 prompt 结构，\n"
+                    "你可以修改 prompt 模板和发现策略 Python 代码。\n"
+                    "先用 Read 工具阅读相关代码文件理解当前结构，\n"
                     "然后提出精确的文本修改。最后返回一个 JSON 代码块包含修改方案。\n"
-                    "原则：最小化修改，不破坏函数签名和导入，每次只改 1-2 处。"
+                    "原则：最小化修改，不破坏函数签名和导入，每次只改 1-2 处。\n"
+                    "如果偏差根因在策略代码（如过滤逻辑、topic_key 分配），优先修改代码而非 prompt。\n\n"
+                    "⚠️ 输出格式硬性要求：\n"
+                    "- 你的最后一条消息必须是且仅是一个 ```json 代码块\n"
+                    "- 不要在 JSON 前后添加任何解释文字\n"
+                    "- old_text/new_text 只取最小必要片段（3-10 行），不要复制大段代码\n"
+                    "- 如果没有可行修改，返回 {\"changes\": [], \"summary\": \"原因\"}"
                 ),
                 allowed_tools=["Read", "Grep", "Glob"],
                 cwd=str(project_root),
