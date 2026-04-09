@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-import json
+import logging
 from dataclasses import dataclass
 from typing import Protocol
 
 from openbiliclaw.llm.base import LLMProviderError, LLMResponse
+from openbiliclaw.llm.json_utils import (
+    DEFAULT_STRUCTURED_MAX_TOKENS,
+    format_parse_failure,
+    parse_llm_json_tolerant,
+)
 from openbiliclaw.llm.prompts import build_dialogue_insight_prompt
 from openbiliclaw.llm.service import LLMServiceError
+
+logger = logging.getLogger(__name__)
 
 
 class SupportsCoreMemoryTask(Protocol):
@@ -56,6 +63,7 @@ class DialogueInsightAnalyzer:
             response = await self.registry.complete_structured_task(
                 system_instruction=messages[0]["content"],
                 user_input=messages[1]["content"],
+                max_tokens=DEFAULT_STRUCTURED_MAX_TOKENS,
             )
         except (LLMProviderError, LLMServiceError) as exc:
             raise DialogueInsightAnalysisError(str(exc)) from exc
@@ -63,17 +71,17 @@ class DialogueInsightAnalyzer:
         return self._parse_response(response.content)
 
     def _parse_response(self, content: str) -> list[dict[str, object]]:
-        text = content.strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if text.startswith("json"):
-                text = text[4:].strip()
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
+        parsed = parse_llm_json_tolerant(content)
+        if parsed is None:
+            exc = ValueError("unrecoverable JSON")
+            logger.error(
+                "%s",
+                format_parse_failure(content, exc, label="dialogue insight analysis"),
+            )
             raise DialogueInsightAnalysisError(
-                "LLM returned invalid JSON for dialogue insight analysis."
-            ) from exc
+                f"LLM returned invalid JSON for dialogue insight analysis "
+                f"(raw_len={len(content.strip())})"
+            )
         if not isinstance(parsed, dict):
             raise DialogueInsightAnalysisError("Dialogue insight response must be a JSON object.")
         raw_candidates = parsed.get("candidates", [])

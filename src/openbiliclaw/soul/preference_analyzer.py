@@ -2,127 +2,21 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
 from openbiliclaw.llm.base import LLMProviderError, LLMResponse
+from openbiliclaw.llm.json_utils import (
+    DEFAULT_STRUCTURED_MAX_TOKENS,
+    format_parse_failure,
+    parse_llm_json_tolerant,
+)
 from openbiliclaw.llm.prompts import build_preference_analysis_prompt
 from openbiliclaw.llm.service import LLMServiceError
 
 logger = logging.getLogger(__name__)
-
-# Structured preference output for 20 events routinely approaches 6-8k chars;
-# keep a wide headroom so Gemini/Claude do not silently truncate mid-field.
-_PREFERENCE_MAX_TOKENS = 16384
-
-
-def _salvage_truncated_json(text: str) -> dict[str, object] | None:
-    """Best-effort recovery of a JSON object that was cut off mid-value.
-
-    Walks the string tracking brace/bracket depth and string state; when the
-    truncation point is reached, closes any still-open containers and retries
-    the parse. Returns None if salvage does not yield a JSON object.
-    """
-    start = text.find("{")
-    if start < 0:
-        return None
-
-    depth_stack: list[str] = []
-    in_string = False
-    escape = False
-    last_safe: int | None = None
-
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-            continue
-        if ch in "{[":
-            depth_stack.append(ch)
-            continue
-        if ch in "}]":
-            if not depth_stack:
-                continue
-            depth_stack.pop()
-            if not depth_stack:
-                last_safe = i + 1
-            continue
-        if ch == "," and depth_stack:
-            # Record a safe truncation point at the comma boundary.
-            last_safe = i
-
-    # Try progressively: last fully-closed object, then a repaired tail.
-    candidates: list[str] = []
-    if last_safe is not None:
-        candidates.append(text[start:last_safe])
-
-    # Attempt to auto-close: trim to last comma, drop any in-progress key/value,
-    # then append the missing closing brackets in reverse order.
-    trimmed = text[start:]
-    # Drop trailing partial token (anything after the last comma or open brace)
-    for cut_char in (",", "{", "["):
-        idx = trimmed.rfind(cut_char)
-        if idx >= 0:
-            candidate_tail = trimmed[: idx + (0 if cut_char == "," else 1)]
-            # Walk again to compute remaining open depth for this candidate
-            closers = _remaining_closers(candidate_tail)
-            if closers is not None:
-                candidates.append(candidate_tail + closers)
-
-    for candidate in candidates:
-        candidate = candidate.strip().rstrip(",")
-        if not candidate:
-            continue
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            return parsed
-    return None
-
-
-def _remaining_closers(partial: str) -> str | None:
-    """Return the string of closing brackets needed to balance ``partial``.
-
-    Returns None if the partial string has unbalanced strings that cannot be
-    safely closed.
-    """
-    stack: list[str] = []
-    in_string = False
-    escape = False
-    for ch in partial:
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-            continue
-        if ch in "{[":
-            stack.append(ch)
-        elif ch in "}]":
-            if not stack:
-                return None
-            stack.pop()
-    if in_string:
-        return None
-    return "".join("}" if opener == "{" else "]" for opener in reversed(stack))
 
 
 class SupportsCoreMemoryTask(Protocol):
@@ -170,7 +64,7 @@ class PreferenceAnalyzer:
             response = await self.registry.complete_structured_task(
                 system_instruction=messages[0]["content"],
                 user_input=messages[1]["content"],
-                max_tokens=_PREFERENCE_MAX_TOKENS,
+                max_tokens=DEFAULT_STRUCTURED_MAX_TOKENS,
             )
         except (LLMProviderError, LLMServiceError) as exc:
             raise PreferenceAnalysisError(str(exc)) from exc
@@ -304,41 +198,17 @@ class PreferenceAnalyzer:
         return decayed
 
     def _parse_response(self, content: str) -> dict[str, object]:
-        text = content.strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if text.startswith("json"):
-                text = text[4:].strip()
-
-        parsed: object
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
-            salvaged = _salvage_truncated_json(text)
-            if salvaged is None:
-                snippet = content.strip()
-                preview = snippet[:400]
-                tail = snippet[-400:]
-                logger.error(
-                    "preference analysis JSON parse failed at %s; "
-                    "total_chars=%d head=%r tail=%r",
-                    exc,
-                    len(snippet),
-                    preview,
-                    tail,
-                )
-                raise PreferenceAnalysisError(
-                    f"LLM returned invalid JSON for preference analysis "
-                    f"({exc}); raw_len={len(snippet)} head={preview!r}"
-                ) from exc
-            logger.warning(
-                "preference analysis response was truncated; "
-                "salvaged %d keys from %d chars",
-                len(salvaged),
-                len(text),
+        parsed = parse_llm_json_tolerant(content)
+        if parsed is None:
+            exc = ValueError("unrecoverable JSON")
+            logger.error(
+                "%s",
+                format_parse_failure(content, exc, label="preference analysis"),
             )
-            parsed = salvaged
-
+            raise PreferenceAnalysisError(
+                f"LLM returned invalid JSON for preference analysis "
+                f"(raw_len={len(content.strip())})"
+            )
         if not isinstance(parsed, dict):
             raise PreferenceAnalysisError("LLM preference response must be a JSON object.")
         return parsed

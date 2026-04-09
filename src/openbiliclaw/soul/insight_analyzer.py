@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
-import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
 from openbiliclaw.llm.base import LLMProviderError, LLMResponse
+from openbiliclaw.llm.json_utils import (
+    DEFAULT_STRUCTURED_MAX_TOKENS,
+    format_parse_failure,
+    parse_llm_json_tolerant,
+)
 from openbiliclaw.llm.prompts import build_insight_prompt
 from openbiliclaw.llm.service import LLMServiceError
 
 from .profile import AwarenessNote, InsightHypothesis
+
+logger = logging.getLogger(__name__)
 
 
 class SupportsCoreMemoryTask(Protocol):
@@ -58,6 +65,7 @@ class InsightAnalyzer:
             response = await self.registry.complete_structured_task(
                 system_instruction=messages[0]["content"],
                 user_input=messages[1]["content"],
+                max_tokens=DEFAULT_STRUCTURED_MAX_TOKENS,
             )
         except (LLMProviderError, LLMServiceError) as exc:
             raise InsightGenerationError(str(exc)) from exc
@@ -90,15 +98,19 @@ class InsightAnalyzer:
         return list(merged.values())
 
     def _parse_response(self, content: str) -> list[object]:
-        text = content.strip()
-        if not text:
+        if not content.strip():
             return []
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
+        parsed = parse_llm_json_tolerant(content)
+        if parsed is None:
+            exc = ValueError("unrecoverable JSON")
+            logger.error(
+                "%s",
+                format_parse_failure(content, exc, label="insight generation"),
+            )
             raise InsightGenerationError(
-                "LLM returned invalid JSON for insight generation."
-            ) from exc
+                f"LLM returned invalid JSON for insight generation "
+                f"(raw_len={len(content.strip())})"
+            )
         if not isinstance(parsed, list):
             raise InsightGenerationError("LLM insight response must be a JSON array.")
         return parsed

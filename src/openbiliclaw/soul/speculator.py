@@ -14,6 +14,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from openbiliclaw.llm.json_utils import (
+    DEFAULT_STRUCTURED_MAX_TOKENS,
+    parse_llm_json_tolerant,
+)
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -645,6 +650,7 @@ class InterestSpeculator:
             response = await self._llm_service.complete_structured_task(
                 system_instruction=messages[0]["content"],
                 user_input=messages[1]["content"],
+                max_tokens=DEFAULT_STRUCTURED_MAX_TOKENS,
             )
             raw = _parse_speculation_response(response.content)
         except (LLMProviderError, LLMServiceError):
@@ -686,29 +692,17 @@ class InterestSpeculator:
 
 
 def _parse_speculation_response(content: str) -> list[dict[str, Any]]:
-    """Extract speculations list from LLM response."""
-    # Try parsing as JSON directly
-    try:
-        data = json.loads(content)
-        if isinstance(data, dict):
-            return list(data.get("speculations", []))
-        if isinstance(data, list):
-            return data
-    except json.JSONDecodeError:
-        pass
+    """Extract speculations list from an LLM response.
 
-    # Try extracting JSON from markdown code block
-    import re
-
-    match = re.search(r"```(?:json)?\s*\n(.*?)\n```", content, re.DOTALL)
-    if match:
-        try:
-            data = json.loads(match.group(1))
-            if isinstance(data, dict):
-                return list(data.get("speculations", []))
-            if isinstance(data, list):
-                return data
-        except json.JSONDecodeError:
-            pass
-
+    Accepts either a raw list or a ``{"speculations": [...]}`` object, and
+    falls back to truncation salvage for responses that were cut off mid-field.
+    """
+    data = parse_llm_json_tolerant(content)
+    if isinstance(data, dict):
+        speculations = data.get("speculations", [])
+        if isinstance(speculations, list):
+            return [item for item in speculations if isinstance(item, dict)]
+        return []
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
     return []

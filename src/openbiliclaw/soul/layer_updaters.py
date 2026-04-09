@@ -10,6 +10,11 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from openbiliclaw.llm.json_utils import (
+    DEFAULT_STRUCTURED_MAX_TOKENS,
+    parse_llm_json_tolerant,
+)
+
 if TYPE_CHECKING:
     from openbiliclaw.memory.manager import MemoryManager
     from openbiliclaw.soul.preference_analyzer import PreferenceAnalyzer
@@ -285,9 +290,11 @@ async def _update_role(
         response = await profile_builder.registry.complete_structured_task(
             system_instruction=messages[0]["content"],
             user_input=messages[1]["content"],
+            max_tokens=DEFAULT_STRUCTURED_MAX_TOKENS,
         )
-        import json
-        result = json.loads(response.content)
+        result = parse_llm_json_tolerant(response.content)
+        if not isinstance(result, dict):
+            raise ValueError("role delta response must be a JSON object")
     except Exception:
         logger.exception("Role delta LLM call failed")
         return LayerUpdateResult(layer=OnionLayer.ROLE, changed=False,
@@ -372,9 +379,11 @@ async def _update_values(
         response = await profile_builder.registry.complete_structured_task(
             system_instruction=messages[0]["content"],
             user_input=messages[1]["content"],
+            max_tokens=DEFAULT_STRUCTURED_MAX_TOKENS,
         )
-        import json
-        result = json.loads(response.content)
+        result = parse_llm_json_tolerant(response.content)
+        if not isinstance(result, dict):
+            raise ValueError("values delta response must be a JSON object")
     except Exception:
         logger.exception("Values delta LLM call failed")
         return LayerUpdateResult(layer=OnionLayer.VALUES, changed=False,
@@ -477,9 +486,11 @@ async def _update_core(
         response = await profile_builder.registry.complete_structured_task(
             system_instruction=messages[0]["content"],
             user_input=messages[1]["content"],
+            max_tokens=DEFAULT_STRUCTURED_MAX_TOKENS,
         )
-        import json
-        result = json.loads(response.content)
+        result = parse_llm_json_tolerant(response.content)
+        if not isinstance(result, dict):
+            raise ValueError("core delta response must be a JSON object")
     except Exception:
         logger.exception("Core delta LLM call failed")
         return LayerUpdateResult(layer=OnionLayer.CORE, changed=False,
