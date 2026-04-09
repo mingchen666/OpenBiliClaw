@@ -100,17 +100,12 @@ curl -fsSL https://raw.githubusercontent.com/OpenBiliClaw/OpenBiliClaw/main/scri
 **Paste to an AI coding agent (Claude Code / Codex CLI / OpenClaw / Cursor etc.):**
 
 ```text
-Run `curl -fsSL https://raw.githubusercontent.com/OpenBiliClaw/OpenBiliClaw/main/scripts/install.sh | bash` via Bash, then follow the "OpenBiliClaw install" Status / Missing / Next action block the script prints at the end. If it asks for missing credentials, ask me for them, run the exact fix command the script suggested, and report the result.
+Please follow https://raw.githubusercontent.com/OpenBiliClaw/OpenBiliClaw/main/docs/agent-install.md to deploy the OpenBiliClaw backend for me (use Bash `curl` to fetch the document, NOT WebFetch — WebFetch summarises markdown and drops critical commands).
 ```
 
-Works on macOS, Linux and WSL2 (native Windows is not supported — install WSL2). The only prerequisites are `git` and `python3` (3.11+). The script will:
+Works on macOS, Linux and WSL2 (native Windows is not supported — install WSL2). The only prerequisites are `git` and `python3` (3.11+). The linked `agent-install.md` tells the agent to run the one-line `install.sh` above, which then auto-clones the repo, discovers any existing install under `~/workspace/OpenBiliClaw`, `~/OpenBiliClaw`, `~/projects/OpenBiliClaw` or `~/code/OpenBiliClaw` and reuses its LLM API keys + Bilibili cookie, starts the backend, runs a health check, and prints a self-contained **Status / Missing / Next action** block for the agent to consume.
 
-1. Clone the repo (default `~/OpenBiliClaw`, override with `INSTALL_DIR=/path`)
-2. Auto-detect an existing install under `~/workspace/OpenBiliClaw`, `~/OpenBiliClaw`, `~/projects/OpenBiliClaw` or `~/code/OpenBiliClaw` and reuse its LLM API keys + Bilibili cookie
-3. Start the backend, run a health check, and print a self-contained **Status / Missing / Next action** block for the agent to consume
-
-> ⚠️ Do NOT ask the AI to WebFetch `docs/agent-install.md` — the WebFetch tool hands markdown to an internal small model which may summarize and drop critical flags or commands. Agents only need to read the final block `install.sh` prints to stdout.
-> Human reference: [docs/agent-install.md](docs/agent-install.md) (machine contract) and [docs/agent-deployment.md](docs/agent-deployment.md) (long-form troubleshooting). The bootstrap script uses only the Python stdlib and never reads stdin, so it works with any AI coding agent — including those without an interactive TTY.
+> Human reference: [docs/agent-install.md](docs/agent-install.md) (short agent-facing contract) and [docs/agent-deployment.md](docs/agent-deployment.md) (long-form troubleshooting).
 
 ### Manual installation
 

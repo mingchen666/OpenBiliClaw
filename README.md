@@ -102,17 +102,12 @@ curl -fsSL https://raw.githubusercontent.com/OpenBiliClaw/OpenBiliClaw/main/scri
 **复制粘贴给 AI 智能体(Claude Code / Codex CLI / OpenClaw / Cursor 等):**
 
 ```text
-请在 Bash 里跑 `curl -fsSL https://raw.githubusercontent.com/OpenBiliClaw/OpenBiliClaw/main/scripts/install.sh | bash`,照脚本末尾那段 "OpenBiliClaw install" 的 Status / Missing / Next action 继续——如果提示缺凭据就向我要,然后按脚本给出的补齐命令再跑一次,最后把结果汇报给我。
+请按照 https://raw.githubusercontent.com/OpenBiliClaw/OpenBiliClaw/main/docs/agent-install.md 的说明帮我部署 OpenBiliClaw 后端(务必用 Bash 的 curl 下载这个文档,不要用 WebFetch — 会丢关键指令)
 ```
 
-支持 macOS / Linux / WSL2(Windows 请先装 WSL2)。依赖只有 `git` 和 `python3`(3.11+)。脚本会自动:
+支持 macOS / Linux / WSL2(Windows 请先装 WSL2)。依赖只有 `git` 和 `python3`(3.11+)。`agent-install.md` 会让智能体跑上面那条 `install.sh` 一键命令,脚本会自动克隆仓库、在 `~/workspace/OpenBiliClaw` / `~/OpenBiliClaw` / `~/projects/OpenBiliClaw` / `~/code/OpenBiliClaw` 里发现已有安装并复用 LLM API Key 和 B 站 Cookie、起后端、做健康检查,最后打印一个自包含的 Status / Missing / Next action 状态块给智能体消费。
 
-1. 克隆仓库(默认 `~/OpenBiliClaw`,可用 `INSTALL_DIR=/path` 覆盖)
-2. 在 `~/workspace/OpenBiliClaw` / `~/OpenBiliClaw` / `~/projects/OpenBiliClaw` / `~/code/OpenBiliClaw` 里自动发现已有安装,复用里面的 LLM API Key 和 B 站 Cookie
-3. 起后端服务做健康检查,最后打印一个自包含的状态块(Status / Missing / Next action)给智能体消费
-
-> ⚠️ 不要让 AI 用 WebFetch 拉 `docs/agent-install.md` — WebFetch 会把文档喂给内部小模型总结,关键 flag 会丢。智能体只需要看 `install.sh` 自己打印的结束状态块就够了。
-> 人类维护者可以参考 [docs/agent-install.md](docs/agent-install.md) 看机器契约,[docs/agent-deployment.md](docs/agent-deployment.md) 看详细排查说明。
+> 人类维护者可以参考 [docs/agent-install.md](docs/agent-install.md)(给智能体看的精简契约)和 [docs/agent-deployment.md](docs/agent-deployment.md)(详细排查说明)。
 
 ### 手动安装
 
