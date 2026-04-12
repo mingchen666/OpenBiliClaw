@@ -214,6 +214,6 @@ docker exec -it openbiliclaw-backend openbiliclaw init
 
 - `docs/docker-deployment.md` — 手动 Docker 步骤（给人看的）。
 - `docs/openclaw-quickstart.md` — OpenClaw 调用 OpenBiliClaw 的 CLI bridge 契约。
-- 本文 `docs/agent-deployment.md` — AI 智能体**一键**部署契约（新增）。
+- 本文 `docs/agent-deployment.md` — AI 智能体**一键**部署契约。
 
 三份文档互补：docker-deployment 说明 Docker 怎么跑；openclaw-quickstart 说明部署完成后 OpenClaw 怎么调；本文说明**从零到完成部署**这一跳该怎么走。

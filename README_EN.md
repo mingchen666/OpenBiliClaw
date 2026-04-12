@@ -2,7 +2,7 @@
 
 # 🦀 OpenBiliClaw
 
-**Your personal AI companion for Bilibili — discovers content you'll love but can't find on your own**
+**An open-source alternative to Bilibili's recommendation algorithm — runs on your machine, understands only you**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -13,29 +13,46 @@ English | [中文](README.md)
 
 ---
 
-OpenBiliClaw is an open-source AI Agent for personalized content recommendation on [Bilibili](https://www.bilibili.com). It's not a cold recommendation algorithm — it's like a friend who truly understands you: who you are, why you enjoy certain content, and proactively discovers things on Bilibili that you'd love but could never find on your own.
+## Why OpenBiliClaw?
 
-> 🔐 **Strictly single-user · fully local · yours and yours alone**
+Bilibili's recommendation engine does "people who watched A also watched B" — it pushes you into an ever-narrowing filter bubble.
+
+**OpenBiliClaw is fundamentally different.** It's a locally-running AI Agent that doesn't care what everyone else watches. Instead, it understands **who you are**:
+
+### 🧠 Understands *why* you like things, not just *what* you've watched
+
+It infers your MBTI, cognitive style, and deep psychological needs from your behaviour, building a five-layer soul profile (Event → Preference → Awareness → Insight → Soul). It's not matching video tags — it's understanding you as a person.
+
+### 🔮 Actively breaks your filter bubble
+
+This is the core differentiator: the system **guesses domains you might enjoy but have never explored**. Someone into mechanical watches might love architectural aesthetics; a quantum physics viewer might resonate with philosophy — it uses psychological bridging logic to proactively explore, promotes correct guesses to real interests, and quietly retires wrong ones.
+
+### 🔒 100% local, 100% yours
+
+All data lives in a single SQLite file on your disk. LLM calls use your own API key. No cloud, no accounts, no one else can see your profile. How this Agent grows is entirely your call — send feedback, chat with it, swap LLMs, edit the database, whatever you want.
+
+> 💡 **How it compares**
 >
-> OpenBiliClaw is not a SaaS and not a multi-tenant platform. Each user installs a private instance that builds an understanding of one person — you — and never mixes your profile, memories, or recommendation signals with anyone else's.
->
-> - **Your data stays on your disk** — The soul profile, five-layer memory, dialogue history, and Bilibili behaviour logs all live in a local SQLite file (`data/openbiliclaw.db`). No cloud accounts, no server-side aggregation, no third-party brokers; no remote switch can change your instance.
-> - **Your keys, your call** — LLM calls use your own API key, Bilibili auth uses your own cookie, and you can revoke both at any moment.
-> - **A profile that can't be duplicated** — Each Agent's MBTI, cognitive style, deep needs, and speculative interests are generated from your behaviour alone, with zero overlap with any other OpenBiliClaw user, and cannot be copied or transferred.
-> - **Train it any way you want** — This is not a black-box recommender. You can reshape the profile on the fly by sending feedback on every recommendation, tell the Agent who you are through Socratic dialogue, write custom Skills to extend the discovery strategies, swap in a different LLM per module (soul / discovery / recommendation / evaluation), or edit the profile fields directly in `data/openbiliclaw.db`. How this Agent grows is entirely your call.
->
-> Every recommendation comes from an AI that knows exactly one person: you.
+> | | Bilibili Official | Keyword Filter Plugins | OpenBiliClaw |
+> |---|---|---|---|
+> | Recommendation logic | Collaborative filtering | Tag matching | Psychological profiling + 5-layer memory |
+> | Filter bubble | Gets narrower | Doesn't address it | Speculative interests actively break it |
+> | Data ownership | Platform-owned | Usually cloud | 100% local |
+> | Explains why | "Guess you'll like" | None | Friend-like explanations |
+> | Customizable | No | Low | Swap LLMs / edit profile / write Skills |
 
 ## ✨ Key Features
 
-- 🧠 **Deep User Understanding** — Five-layer memory architecture (Event → Preference → Awareness → Insight → Soul) that understands you from a psychological perspective, inferring MBTI, cognitive style, and deep needs
-- 🔍 **Multi-Strategy Discovery** — Four coordinated strategies (Search, Trending, Related Chain, Cross-domain Explore) with fair quota distribution, working like an expert Bilibili user finding content for you
-- 🔮 **Speculative Interest Exploration** — Uses psychological bridging logic to proactively guess domains you might enjoy but have never explored, breaking the filter bubble
+- 🧠 **Five-Layer Soul Profile** — Event → Preference → Awareness → Insight → Soul, inferring MBTI, cognitive style, and deep needs — like a psychologist understanding you
+- 🔮 **Speculative Interest System** — Uses psychological bridging logic to guess unexplored domains you might love; promotes correct guesses, retires wrong ones, continuously breaking the filter bubble
+- 🔍 **Four Discovery Strategies** — Search, Related Chain, Trending, and Cross-domain Explore working in coordination with fair quotas, like an expert Bilibili user finding content for you
+- 🎯 **Smart Diversity** — PoolCurator scores on five dimensions (relevance · freshness · topic fatigue · source monotony · serendipity), ensuring every batch has surprises instead of more of the same
 - 💬 **Warm Recommendations** — Not "because you watched similar videos", but friend-like explanations of why you'd enjoy something
-- 🎯 **Smart Diversity** — Source balancing, topic deduplication, cross-domain coverage — every recommendation batch brings surprises
-- 🔄 **Continuous Learning** — Socratic dialogue + behavioral analysis, constantly deepening its understanding of you
-- 🔧 **Skill System** — Extensible skill architecture supporting custom discovery strategies
-- 🔒 **Fully private · single-user by design** — All profiles, memories, and data stay on your machine; LLM calls use your own key; each install is a unique instance built for one person
+- 🔄 **Continuous Learning** — Socratic dialogue + behavioral analysis + instant feedback, understands you better over time
+- 🧩 **Chrome Extension** — Side panel for recommendations, real-time behavior collection, chat, and cognition update cards — install and go
+- 🔬 **Self-Optimizing Eval Loops** — Five modules each have an LLM-as-judge SGD/RL loop that automatically improves prompt quality over rounds — no manual tuning needed
+- 🔒 **Fully Private** — All data in local SQLite; LLM calls use your own key; each instance is built for exactly one person
+- 🔧 **Fully Controllable** — Swap LLMs per module, edit your profile directly, write custom Skills to extend discovery
 
 ## 🏛️ Architecture Overview
 
@@ -95,7 +112,7 @@ OpenBiliClaw/
 ├── extension/                 # Chrome browser extension
 ├── skills/                    # Built-in Skill definitions
 ├── docs/                      # Documentation
-└── tests/                     # Tests (497+)
+└── tests/                     # Tests (650+)
 ```
 
 ## 🚀 Quick Start

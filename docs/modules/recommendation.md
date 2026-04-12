@@ -180,6 +180,61 @@ Recommendation(
 - API：`POST /api/feedback`
 - 插件 popup：卡片上的 `喜欢` / `不喜欢` / `写一句`
 
+### PoolCurator
+
+```python
+from openbiliclaw.recommendation.curator import PoolCurator
+```
+
+`PoolCurator` 提供推荐侧的独立评分，不依赖 Discovery 的结果。它从候选池中读取内容，按照一套专属权重对每条候选打分，供上层调用方叠加使用。
+
+#### ScoringWeights
+
+| 维度 | 权重 |
+|------|------|
+| `relevance` | 0.30 |
+| `freshness` | 0.20 |
+| `topic_fatigue` | 0.15 |
+| `source_monotony` | 0.15 |
+| `serendipity` | 0.20 |
+
+#### 关键数据结构
+
+**FeedbackSignals**：追踪用户反馈信号，包含三个字段：
+- `disliked_up_mids` — 被 dislike 的 UP 主 mid 集合
+- `disliked_topic_keys` — 被 dislike 的话题键集合
+- `liked_topic_keys` — 被 like 的话题键集合
+
+**ScoringContext**：评分时的上下文快照，包含：
+- `recent_topic_keys` — 近期已推荐话题键列表
+- `recent_sources` — 近期已推荐来源列表
+- `feedback` — `FeedbackSignals` 实例
+
+#### 常量
+
+| 常量 | 值 |
+|------|----|
+| 新鲜度半衰期 | 3 天 |
+| dislike UP 主惩罚 | 0.20 |
+| dislike 话题惩罚 | 0.10 |
+| like 话题加成 | 0.05 |
+| 候选池低水位阈值 | 50 |
+
+#### 公开 API
+
+```python
+# 从当前数据库状态构建评分上下文
+context: ScoringContext = curator.build_context()
+
+# 对候选列表评分，返回 bvid → rec_score 的映射（不修改输入）
+scores: dict[str, float] = curator.score_candidates(candidates, context)
+
+# 检查候选池健康状态
+report: PoolHealthReport = curator.check_pool_health()
+```
+
+`score_candidates()` 以叠加覆盖层的形式返回新的分数映射，不会修改传入的候选对象。`PoolCurator` 的所有方法均不修改输入数据。
+
 ## 示例：记忆如何影响推荐结果
 
 继续沿用一个典型场景：
@@ -265,11 +320,11 @@ Recommendation(
 8. **反馈驱动学习延迟触发**：推荐反馈不会逐条立刻重写画像，而是累计到阈值后统一重分析，降低噪声
 9. **推荐语气跟着用户变**：表达风格不只看内容匹配度，还会根据画像和近期反馈动态调节“老B友”程度，尽量减少机械解释感
 10. **缓存候选不能退化成只看播放量**：一旦从 `content_cache` 回读候选，也必须恢复 `relevance_score`、`candidate_tier` 和时间字段，保持与实时发现同一排序标准
-10. **候选池先可展示，再做文案增强**：`discover` 入池时就要带 `relevance_reason`，popup “换一批”先秒级从池子里出片，`expression` 只是增强层，不再阻塞展示
-11. **同批推荐需要显式做多样性约束**：高分不是唯一目标，排序后仍要对重复 topic/tag 做软限流，避免一批里全是同一类内容
-12. **多样性要优先吃稳定 topic_key**：只靠 `tags` 不够稳，推荐层现在会优先使用 discovery 入池时生成的 `topic_key` 做分桶，再退回 `tags`
-13. **topic 多样性还不够，要再控风格**：用户体感里的“全是很干很学术”往往不是同一 topic，而是同一种内容风格，所以 `reshuffle` 现在会同时约束 `style_key`
-14. **快速换一批也要有说话味道**：快路径可以不等完整 `expression`，但不能直接退化成生硬说明句；当前 fallback 会按 `style_key` 生成更自然的短文案
-15. **10 条一批必须加来源硬上限**：批量变大后，单靠 topic/style 还不够；现在 `reshuffle` 会同时控制 `source`，避免整批重新被 `explore` 或 `related_chain` 吞掉
-16. **来源补齐优先于风格重复**：如果 `trending` 还没出场，就不该因为它和 `search` 同属 `light_chat` 而被挡在批次外；先让不同来源进来，再做风格均摊
-17. **下游挑得再花，也救不了偏掉的池子**：推荐层的多样性约束只能做第二道保险；真正想让一批内容更丰富，必须让 runtime 在补货时先把各来源补到合理区间
+11. **候选池先可展示，再做文案增强**：`discover` 入池时就要带 `relevance_reason`，popup “换一批”先秒级从池子里出片，`expression` 只是增强层，不再阻塞展示
+12. **同批推荐需要显式做多样性约束**：高分不是唯一目标，排序后仍要对重复 topic/tag 做软限流，避免一批里全是同一类内容
+13. **多样性要优先吃稳定 topic_key**：只靠 `tags` 不够稳，推荐层现在会优先使用 discovery 入池时生成的 `topic_key` 做分桶，再退回 `tags`
+14. **topic 多样性还不够，要再控风格**：用户体感里的”全是很干很学术”往往不是同一 topic，而是同一种内容风格，所以 `reshuffle` 现在会同时约束 `style_key`
+15. **快速换一批也要有说话味道**：快路径可以不等完整 `expression`，但不能直接退化成生硬说明句；当前 fallback 会按 `style_key` 生成更自然的短文案
+16. **10 条一批必须加来源硬上限**：批量变大后，单靠 topic/style 还不够；现在 `reshuffle` 会同时控制 `source`，避免整批重新被 `explore` 或 `related_chain` 吞掉
+17. **来源补齐优先于风格重复**：如果 `trending` 还没出场，就不该因为它和 `search` 同属 `light_chat` 而被挡在批次外；先让不同来源进来，再做风格均摊
+18. **下游挑得再花，也救不了偏掉的池子**：推荐层的多样性约束只能做第二道保险；真正想让一批内容更丰富，必须让 runtime 在补货时先把各来源补到合理区间

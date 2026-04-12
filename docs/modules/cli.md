@@ -137,6 +137,39 @@ $ openbiliclaw start --host 0.0.0.0 --port 9000
 
 适合本地直接运行或调试场景。
 
+启动前会先做两件事：
+
+1. 检查 `data/openbiliclaw.db` 是否完整；如果检测到损坏，会拒绝启动并提示先执行 `openbiliclaw db-repair`
+2. 在数据库健康且距离上次冷备超过 24 小时时，自动生成一份冷备到 `data/backups/`
+
+如果数据库已损坏：
+
+```bash
+$ openbiliclaw start
+数据库损坏
+检测到本地数据库损坏，请先执行 `openbiliclaw db-repair` 再启动服务。
+```
+
+当前 `start` 不只是提供静态接口，还会顺手启动候选池运行时：
+
+- 监听插件上报的强信号行为
+- 在阈值满足时自动刷新推荐候选
+- 定时做榜单/探索补货
+- 为插件 popup 和 service worker 提供 `/api/runtime-status` 与通知接口
+
+启动后除了现有候选池刷新 loop，还会常驻一个低频账户同步 loop：
+- 定期检查观看历史
+- 定期检查收藏夹变化
+- 定期检查关注 UP 主变化
+
+这些账户侧长期信号会统一转成事件，再进入现有偏好/画像更新链。
+
+当前 `start` 会启动这些接口：
+
+- `GET /api/health`
+- `POST /api/events`
+- `GET /api/recommendations`
+
 ### `openbiliclaw serve-api`
 
 启动更适合 Docker / 脚本调用的 API 服务入口。默认监听 `0.0.0.0:8420`。
@@ -266,6 +299,11 @@ $ openbiliclaw feedback 7 dislike --note "太浅了"
 $ openbiliclaw feedback 7 comment --note "方向对，但我想看更深一点。"
 ```
 
+每次反馈执行以下两个写入操作：
+
+- 更新 `recommendations` 表中的 `feedback_type` / `feedback_note` / `feedback_at`
+- 写入一条 `event_type="feedback"` 的事件，供后续记忆系统使用
+
 ### `openbiliclaw discover`
 
 读取当前画像并执行一次真实内容发现，结果会写入 `content_cache`，并展示本次发现摘要与前几条预览。
@@ -335,7 +373,7 @@ $ openbiliclaw start
 
 ### `openbiliclaw db-repair`
 
-显式检查并修复本地 SQLite 数据库。命令遵循“先检查、先备份、后修复”的顺序：
+显式检查并修复本地 SQLite 数据库。命令遵循”先检查、先备份、后修复”的顺序：
 
 1. 运行完整性检查
 2. 若数据库正在被进程占用则拒绝继续
@@ -352,36 +390,6 @@ $ openbiliclaw db-repair
 
 如果数据库本来就是健康的，命令会直接退出并提示无需修复；如果仍被运行中服务占用，会返回非零退出码并列出占用进程。
 
-启动后除了现有候选池刷新 loop，还会常驻一个低频账户同步 loop：
-- 定期检查观看历史
-- 定期检查收藏夹变化
-- 定期检查关注 UP 主变化
-
-这些账户侧长期信号会统一转成事件，再进入现有偏好/画像更新链。
-
-当前 `start` 不只是提供静态接口，还会顺手启动候选池运行时：
-
-- 监听插件上报的强信号行为
-- 在阈值满足时自动刷新推荐候选
-- 定时做榜单/探索补货
-- 为插件 popup 和 service worker 提供 `/api/runtime-status` 与通知接口
-
-```bash
-$ openbiliclaw start
-启动 OpenBiliClaw
-API 服务
-  正在启动本地后端，默认监听 127.0.0.1:8420。
-```
-
-当前 `start` 会启动这些接口：
-
-- `GET /api/health`
-- `POST /api/events`
-- `GET /api/recommendations`
-
 ### Stub 命令的输出约定
 
-当前仍是 stub 的命令会统一使用“开发中”占位态输出，避免与真实错误混淆，并会附带建议的下一步命令。
-
-- 更新 `recommendations` 表中的 `feedback_type` / `feedback_note` / `feedback_at`
-- 写入一条 `event_type="feedback"` 的事件，供后续记忆系统使用
+当前仍是 stub 的命令会统一使用”开发中”占位态输出，避免与真实错误混淆，并会附带建议的下一步命令。

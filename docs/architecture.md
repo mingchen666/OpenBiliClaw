@@ -1,7 +1,5 @@
 # 架构设计
 
-> 详细的系统架构文档，将在开发过程中持续完善。
-
 ## 系统概览
 
 OpenBiliClaw 采用分层架构设计，从上到下依次为：
@@ -29,7 +27,8 @@ OpenBiliClaw 采用分层架构设计，从上到下依次为：
 
 ### User Soul Engine (`soul/`)
 - 行为数据分析和画像构建
-- 四层理解模型（行为→偏好→动机→人格）
+- 五层灵魂模型（事件→偏好→觉察→洞察→灵魂）
+- `InterestSpeculator` — 兴趣推测与投机性发现
 - 苏格拉底式用户对话
 
 ### Memory System (`memory/`)
@@ -48,6 +47,12 @@ OpenBiliClaw 采用分层架构设计，从上到下依次为：
 - 朋友式推荐表达生成
 - 缓存候选与实时候选统一排序
 - 个性化专题生成
+- `PoolCurator` — 推荐侧候选池评分与筛选
+
+### Runtime (`runtime/`)
+- 系统生命周期管理和服务编排
+- `ContinuousRefreshController` — 后台定时刷新候选池
+- `AccountSyncService` — 历史记录、收藏夹、关注列表同步
 
 ### Bilibili Client (`bilibili/`)
 - B 站 API 封装

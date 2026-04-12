@@ -89,7 +89,7 @@ OpenBiliClaw 是一个**通用开源的 Bilibili 个性化内容推荐 AI Agent*
 |---------|------|--------|---------|
 | **核心记忆** (Core Memory) | 始终在 Agent 上下文中的关键信息 | 灵魂层 + 偏好层摘要 | JSON 文件(可自编辑) |
 | **情景记忆** (Episodic Memory) | 具体的交互片段和发现故事 | 事件层 + 觉察层 | SQLite + 向量索引 |
-| **语义记忆** (Semantic Memory) | 用户相关的事实和知识 | 偏好层 + 洞察层 | 知识图谱/JSON |
+| **语义记忆** (Semantic Memory) | 用户相关的事实和知识 | 偏好层 + 洞察层 | 知识图谱/JSON（当前实现使用 JSON，未引入知识图谱） |
 | **工作记忆** (Working Memory) | 当前会话的即时上下文 | 运行时 | 内存 |
 
 **自我编辑能力**：Agent 可以自主决定什么信息该记住、什么该遗忘、什么该从事件层提升到灵魂层。
@@ -251,7 +251,7 @@ Agent：那我理解了。这是一个很有意思的特质——你可能也会
 |------|---------|------|
 | 编程语言 | **Python** (后端) + **TypeScript** (插件) | 后端 AI 生态 + 前端插件 |
 | LLM 接入 | **多模型**：OpenAI / Claude / DeepSeek / 本地模型等 | 全部支持，优先效果 |
-| B 站交互 | **API 优先** (bilibili-api-python) + **agent-browser** (浏览器操作) | API 快速高效，agent-browser 补充复杂交互 |
+| B 站交互 | **API 优先** (bilibili-api-python)（实际实现使用自研 `BilibiliAPIClient`，不依赖此库）+ **agent-browser** (浏览器操作) | API 快速高效，agent-browser 补充复杂交互 |
 | 浏览器操作 | **[agent-browser](https://github.com/vercel-labs/agent-browser)** | Vercel 的 AI Agent 专用浏览器 CLI |
 | 浏览器插件 | **Chrome Extension** (Manifest V3) | 行为采集 + 交互 UI + LUI |
 | Agent 框架 | **自研轻量框架**，按需扩展 | 灵活可控，支持 Skill 系统 |
@@ -295,6 +295,8 @@ Agent：那我理解了。这是一个很有意思的特质——你可能也会
 - [ ] UP 主追踪和新视频提醒
 
 ### v1.0 — 成熟的开源工具
+
+> 注：项目已确定为严格单用户设计，不再计划多用户支持。
 
 - [ ] 多用户支持 + 配置系统
 - [ ] 完善的安装和使用文档

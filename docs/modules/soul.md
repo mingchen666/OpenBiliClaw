@@ -46,6 +46,7 @@
 | Cognition updates | ✅ | 在反馈刷新和聊天学习后生成 `interest_added / dislike_added / profile_shift` 结构化 cognition card，包含 `summary / context_line / source_label / expand_hint / impact / reasoning / evidence / source / created_at`，供插件提醒与画像页展开展示；即时反馈和聊天会尽量指出具体内容或本轮聊天，聚合判断则保守回退到”基于最近几条相关内容” |
 | Layered profile cognition | ✅ | `OnionProfile` 新增 MBTI / Values / Interest 等分层，画像生成会同时消费 `history + preference + awareness + insights`，避免把兴趣 topic 堆成整段画像 |
 | 猜测兴趣系统 | ✅ | `InterestSpeculator` 定期通过 LLM 生成 3-5 个猜测兴趣方向，通过事件确认后转正为正式兴趣，未确认则拒绝并冷却 |
+| ROLE/VALUES/CORE 增量更新器 | ✅ | `_update_role`（`build_role_delta_prompt`，基于信号证据 + LLM diff-protection）、`_update_values`（LLM delta，每周期最多 add/remove 1 条，注入完整画像上下文）、`_update_core`（`build_core_delta_prompt`，更新 traits/needs/MBTI，强 diff-protection）均已完整实现 |
 
 ## 猜测兴趣系统 (Speculative Interest Lifecycle)
 
@@ -81,7 +82,7 @@
 | 配置 | 默认值 | 说明 |
 |------|--------|------|
 | `scheduler.speculation_interval_minutes` | 10 | 生成间隔（分钟） |
-| `scheduler.speculation_ttl_days` | 3 | 猜测存活期 |
+| `scheduler.speculation_ttl_days` | 3 | 猜测存活期。注意：`SpeculativeInterest` 数据类本身的 `ttl_days` 字段默认值为 14，仅作为反序列化不含该字段的历史数据时的兜底值；实际新产生的猜测兴趣均使用此配置项的 3 天 |
 | `scheduler.speculation_cooldown_days` | 7 | 拒绝后冷却期 |
 | `scheduler.speculation_confirmation_threshold` | 3 | 转正所需确认数 |
 | `scheduler.speculation_max_active` | 5 | 最大活跃猜测数 |

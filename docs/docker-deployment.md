@@ -192,3 +192,7 @@ docker compose up -d --build
 ports:
   - "9090:8420"  # 宿主机 9090 → 容器 8420
 ```
+
+**Q: 数据库出现问题怎么修复？**
+
+如果数据库出现问题，可以在容器内运行 `docker exec openbiliclaw-backend openbiliclaw db-repair` 进行检查和修复。

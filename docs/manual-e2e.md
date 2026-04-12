@@ -37,10 +37,14 @@ curl http://127.0.0.1:8420/api/recommendations
 
 ## 加载插件
 
+```bash
+cd extension && npm install && npm run build
+```
+
 1. 进入 Chrome 扩展管理页
-2. 打开“开发者模式”
+2. 打开”开发者模式”
 3. 加载 `extension/` 目录
-4. 固定 popup 图标
+4. 固定侧边栏图标
 
 ## 插件采集与持续补货
 
@@ -62,7 +66,7 @@ curl http://127.0.0.1:8420/api/runtime-status
 - `runtime-status.pending_signal_events` 会先升高，再在自动刷新后归零
 - `runtime-status.last_refresh_at` 发生变化
 
-## Popup 验证
+## 侧边栏验证
 
 ### 推荐 tab
 
@@ -82,7 +86,7 @@ curl http://127.0.0.1:8420/api/runtime-status
 
 ## 推荐反馈
 
-在 popup 中分别测试：
+在侧边栏中分别测试：
 
 - `喜欢`
 - `不喜欢`
@@ -114,6 +118,6 @@ sqlite3 data/openbiliclaw.db "select bvid,notification_sent,notified_at from con
 - CLI 能完成首跑初始化
 - 插件能持续上报行为
 - 后端能自动补货候选池
-- popup 能读到运行状态与新推荐
+- 侧边栏能读到运行状态与新推荐
 - 高置信推荐会触发浏览器通知
 - 反馈和聊天都会继续推动系统理解用户

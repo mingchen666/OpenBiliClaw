@@ -232,9 +232,9 @@ result = await pipeline.flush(layers=...)    # 强制刷新
 |----|---------|---------|
 | **SURFACE** | 纯计算（depth_preference） | 已实现 |
 | **INTEREST** | LLM（PreferenceAnalyzer） | 已实现 |
-| **ROLE** | LLM Delta | TODO (stub) |
-| **VALUES** | LLM Delta | TODO (stub) |
-| **CORE** | LLM Delta | TODO (stub) |
+| **ROLE** | LLM Delta（`_update_role`，基于 `build_role_delta_prompt`，处理信号证据并应用 diff-protection） | 已实现 |
+| **VALUES** | LLM Delta（`_update_values`，add/remove 各最多 1 条/周期，注入完整画像上下文） | 已实现 |
+| **CORE** | LLM Delta（`_update_core`，基于 `build_core_delta_prompt`，更新 traits/needs/MBTI，强 diff-protection） | 已实现 |
 
 **输出格式（LayerUpdateResult）：**
 ```python
@@ -248,8 +248,8 @@ timestamp: str             # ISO时间戳
 ```
 
 **可优化点：**
-- Role/Values/Core 目前为 stub 实现，是评估分数低的主因
 - Surface 层仅调整 depth_preference 一个参数
+- Role/Values/Core 已有完整 LLM Delta 实现，但各层触发阈值较高（CORE 需 8+ 信号、48h 间隔），初期数据稀疏时更新频率有限
 
 ---
 
@@ -266,8 +266,10 @@ Generate(LLM) -> Active -> Observe(关键字匹配) -> {Promote | Reject + Coold
 
 **数据模型 SpeculativeInterest：**
 - `domain`, `category`, `reason`, `confidence`
-- `ttl_days`(默认14), `confirmation_count`, `confirmation_threshold`(默认3)
+- `ttl_days`, `confirmation_count`, `confirmation_threshold`(默认3)
 - `status`: "active" | "promoted" | "rejected"
+
+**TTL 说明：** `SpeculativeInterest` 数据类的 `ttl_days` 字段默认值为 14（反序列化旧数据时的兜底值），但 `InterestSpeculator` 类在创建新猜测兴趣时会使用配置中的 `default_ttl_days`（默认 3 天）。实际运行中，新产生的猜测兴趣 TTL 均为 3 天（来自配置 `scheduler.speculation_ttl_days`），14 天仅作为反序列化无 `ttl_days` 字段的历史数据时的向后兼容默认值。
 
 **可优化点：**
 - 关键字匹配无语义理解，易误匹配或漏匹配
@@ -341,7 +343,7 @@ SURFACE    INTEREST -----> PreferenceAnalyzer (LLM)
          |                   |
          v                   v
   ROLE/VALUES/CORE     OnionProfile 更新
-  (LLM Delta, TODO)         |
+  (LLM Delta, 已实现)        |
          |                   v
          +----> PORTRAIT 触发 (Core/Values 变化时)
                      |
@@ -362,6 +364,6 @@ observe(events) -> tick(generate LLM) -> promote_ready() -> interest.likes
 | interest.dislikes | 0.00 | 模拟事件缺少负面信号（已修复事件生成 prompt） |
 | interest.favorite_up_users | 0.00-0.19 | 模拟事件缺少 up_name（已修复）；LLM 幻觉 UP 主名 |
 | surface.cognitive_style | 0.00 | prompt 输出格式与评估期望不对齐（已优化） |
-| role.life_stage | 0.35 | _update_role 为 TODO stub |
-| values.motivational_drivers | 0.08 | _update_values 为 TODO stub |
+| role.life_stage | 0.35 | ROLE 层已有完整 LLM 更新器，但需积累 5+ 信号且间隔 24h 才触发；证据不足时置信度偏低属预期行为 |
+| values.motivational_drivers | 0.08 | VALUES 层已有完整 LLM 更新器，但每周期最多 add/remove 1 条，需充足证据才会更新；初期数据稀疏时分数偏低属预期行为 |
 | core.mbti | 低 | 空规则压制 + ground truth 不一致 |

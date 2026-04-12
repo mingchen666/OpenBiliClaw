@@ -2,9 +2,9 @@
 
 # 🦀 OpenBiliClaw
 
-**你的 B 站专属 AI 朋友，比你更懂你想看什么**
+**B 站推荐算法的开源替代品——跑在你自己电脑上，只懂你一个人**
 
-*Your personal AI companion for Bilibili — discovers content you'll love but can't find on your own*
+*An open-source alternative to Bilibili's recommendation algorithm — runs on your machine, understands only you*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -15,29 +15,98 @@
 
 ---
 
-OpenBiliClaw 是一个开源的 Bilibili 个性化内容推荐 AI Agent。它不是一个冷冰冰的推荐算法，而是像一个真正了解你的朋友——理解你是什么样的人、为什么喜欢某些内容，然后主动在 B 站帮你发现你会喜欢但自己找不到的东西。
+## 为什么需要 OpenBiliClaw？
 
-> 🔐 **严格单用户 · 完全本地 · 专属于你一个人**
+传统推荐系统——无论是协同过滤（「看了 A 的人也看了 B」）还是深度排序模型——本质上都在优化点击率和完播率。它们知道你*会点什么*，却从不问你*为什么点*。结果就是：推荐越来越像你已经看过的东西，偶尔的惊喜全靠运气。
+
+**OpenBiliClaw 反过来。** 它是一个本地运行的 AI Agent——先深度理解你，再根据对你的理解**主动**去全站搜寻你会喜欢的内容：
+
+### 🧠 先懂你，再找内容
+
+不是从视频出发匹配标签，而是从你出发。通过行为分析推断 MBTI、认知风格、深层心理需求，构建五层灵魂画像（事件→偏好→觉察→洞察→灵魂）。它理解的是你这个人，不是你的点击记录。
+
+### 🔮 根据理解主动探索，而非被动匹配
+
+这是和传统推荐最核心的差异：系统会基于对你的理解，**主动猜测你可能感兴趣但从未接触过的领域**。一个关注机械表的人可能会喜欢建筑美学，一个看量子物理科普的人可能对哲学感兴趣——它用心理学桥接逻辑主动出击，猜对了升级为正式兴趣，猜错了安静退出。协同过滤永远不会推给你「没人从这条路径走过」的内容，但 OpenBiliClaw 会。
+
+### 🔒 100% 本地，100% 你的
+
+所有数据留在你硬盘上的一个 SQLite 文件里。LLM 用你自己的 API Key。没有云端，没有账号，没有任何人能看到你的画像。这个 Agent 怎么长，完全你说了算——反馈推荐、对话调教、换 LLM、改数据库，随你。
+
+> 💡 **和其他推荐工具的对比**
 >
-> OpenBiliClaw 不是 SaaS，不是多用户平台。每个人安装一份独立的实例，每份实例只围绕你一个人建立理解——你的画像、记忆和推荐权重永远不会和其他用户混在一起。
->
-> - **你的数据留在你硬盘上** — 灵魂画像、五层记忆、对话历史、B 站行为日志全部存在本地 SQLite 文件（`data/openbiliclaw.db`）。没有云端账号，没有服务器聚合，没有任何第三方中介；没有任何远程开关能改动你的实例
-> - **你的密钥，你做主** — LLM 调用用你自己的 API Key，B 站身份用你自己的 Cookie，随时可以吊销
-> - **独一无二的画像** — 每份 Agent 的 MBTI、认知风格、深层需求、猜测兴趣都只从你自己的行为里长出来，和任何其他 OpenBiliClaw 用户零重叠，也无法复制或转让
-> - **随你调教，随你训练** — 这不是黑盒推荐系统。你可以反馈每一条推荐来即时改变画像走向、用苏格拉底对话主动告诉它你是谁、写自定义 Skill 扩展发现策略、给 soul / discovery / recommendation 每个模块单独换 LLM，甚至直接编辑 `data/openbiliclaw.db` 里的画像字段。这个 Agent 往哪儿长，完全你说了算
->
-> 每一条推荐，都是"只懂你一个人"的 AI 给出的。
+> | | B 站官方 | 关键词过滤插件 | OpenBiliClaw |
+> |---|---|---|---|
+> | 推荐逻辑 | 协同过滤 | 标签匹配 | 心理画像 + 五层记忆 |
+> | 信息茧房 | 越推越窄 | 不解决 | 猜测兴趣主动破茧 |
+> | 数据归属 | 平台所有 | 通常云端 | 100% 本地 |
+> | 推荐解释 | "猜你喜欢" | 无 | 像朋友一样告诉你为什么 |
+> | 可定制 | 不可以 | 低 | 换 LLM / 改画像 / 写 Skill |
+
+## 📸 功能预览
+
+<table>
+  <tr>
+    <td align="center" width="25%">
+      <img src="docs/images/screenshot-recommend.png" width="200" /><br/>
+      <b>智能推荐</b><br/>
+      <sub>像朋友一样解释为什么你会喜欢</sub>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/images/screenshot-profile-portrait.png" width="200" /><br/>
+      <b>灵魂画像</b><br/>
+      <sub>自然语言描述的深度人格分析</sub>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/images/screenshot-profile-traits.png" width="200" /><br/>
+      <b>结构化特质</b><br/>
+      <sub>MBTI · 核心特质 · 深层需求</sub>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/images/screenshot-chat.png" width="200" /><br/>
+      <b>对话调教</b><br/>
+      <sub>聊天告诉它你想看什么</sub>
+    </td>
+  </tr>
+</table>
+
+<details>
+<summary>更多截图</summary>
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/images/screenshot-recommend-feedback.png" width="200" /><br/>
+      <b>推荐反馈</b><br/>
+      <sub>点赞 / 多来点 / 少来点 / 没兴趣</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/images/screenshot-profile-values.png" width="200" /><br/>
+      <b>价值偏好与兴趣</b><br/>
+      <sub>内在驱动力 · 猜测兴趣方向</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/images/screenshot-profile-style.png" width="200" /><br/>
+      <b>认知风格</b><br/>
+      <sub>信息处理偏好 · 内容口味</sub>
+    </td>
+  </tr>
+</table>
+
+</details>
 
 ## ✨ 核心特性
 
-- 🧠 **深度用户理解** — 五层网状记忆架构（事件→偏好→觉察→洞察→灵魂），从心理学角度理解你，推断 MBTI、认知风格和深层需求
-- 🔍 **多策略内容发现** — 搜索、关联链、趋势、跨域探索四大策略协同，均衡配额分配，像资深 B 站用户一样帮你找好内容
-- 🔮 **兴趣猜测与探索** — 基于心理学桥接逻辑，主动猜测你可能感兴趣但从未接触的领域，打破信息茧房
+- 🧠 **五层灵魂画像** — 事件→偏好→觉察→洞察→灵魂，推断 MBTI、认知风格和深层需求，像心理咨询师一样理解你
+- 🔮 **猜测兴趣系统** — 基于心理学桥接逻辑主动猜测你可能喜欢的未知领域，猜对升级、猜错退出，持续打破信息茧房
+- 🔍 **四大发现策略** — 搜索、关联链、趋势、跨域探索协同工作，均衡配额，像资深 B 站用户一样帮你找好内容
+- 🎯 **智能多样性** — PoolCurator 五维评分（相关性 · 新鲜度 · 主题疲劳 · 来源单调度 · 惊喜度），确保每次推荐都有惊喜而不是千篇一律
 - 💬 **有温度的推荐** — 不是"因为你看过类似视频"，而是像朋友一样解释为什么你会喜欢
-- 🎯 **智能多样性** — 来源均衡、主题去重、跨领域覆盖，确保每次推荐都有惊喜
-- 🔄 **持续学习** — 苏格拉底式对话 + 行为分析，不断深化对你的理解
-- 🔧 **Skill 系统** — 可扩展的技能架构，支持自定义发现策略
-- 🔒 **完全私有 · 专属单用户** — 所有画像、记忆、数据留在你本地；LLM 用你自己的 key；每个实例都是只为一个人构建的独一无二的 Agent
+- 🔄 **持续学习** — 苏格拉底式对话 + 行为分析 + 反馈即时生效，越用越懂你
+- 🧩 **Chrome 浏览器插件** — 侧边栏展示推荐、实时行为采集、对话交互、认知更新卡片推送，装上就能用
+- 🔬 **自动化评测优化** — 5 个模块各有 LLM-as-judge 的 SGD/RL 自优化循环，prompt 质量随轮次自动提升，不需要人工调参
+- 🔒 **完全私有** — 所有数据本地 SQLite；LLM 用你自己的 Key；每个实例只为你一个人构建
+- 🔧 **完全可控** — 给每个模块单独换 LLM、直接编辑画像、写自定义 Skill 扩展发现策略
 
 ## 🏛️ 架构概览
 
@@ -97,7 +166,7 @@ OpenBiliClaw/
 ├── extension/                 # Chrome 浏览器插件
 ├── skills/                    # 内置 Skill 定义
 ├── docs/                      # 项目文档
-└── tests/                     # 测试 (497+)
+└── tests/                     # 测试 (650+)
 ```
 
 ## 🚀 快速开始
@@ -161,6 +230,26 @@ openbiliclaw recommend
 # 查看用户画像
 openbiliclaw profile
 ```
+
+### 浏览器插件安装
+
+后端运行后，安装 Chrome 插件即可在 B 站页面使用推荐和行为采集：
+
+```bash
+cd extension
+npm install
+npm run package        # 构建 + 打包为 .zip
+```
+
+打包完成后在 `extension/` 目录下生成 `openbiliclaw-extension-v*.zip`。
+
+**加载到 Chrome：**
+
+1. 打开 `chrome://extensions/`，开启右上角「开发者模式」
+2. 方式一：点击「加载已解压的扩展程序」，选择 `extension/` 目录（开发调试用）
+3. 方式二：将生成的 `.zip` 文件拖入扩展页面安装
+
+安装后访问 bilibili.com，插件侧边栏即可展示推荐内容。
 
 ### Docker 部署
 

@@ -103,6 +103,13 @@ cp config.example.toml config.toml
 | `discovery_cron` | string | `"0 */4 * * *"` | 发现任务 cron 表达式 |
 | `pool_target_count` | int | `300` | discovery pool 期望保有的可换候选数量；允许范围 `1..300`。运行时会持续补货直到接近该目标，给 popup 连续“换一批”和自动续页留出更充足余量 |
 | `account_sync_interval_hours` | int | `6` | 账户侧长期信号同步间隔；运行时会低频拉取 history / favorites / following |
+| `speculation_interval_minutes` | int | `10` | 猜测兴趣推测的运行间隔（分钟） |
+| `speculation_ttl_days` | int | `3` | 猜测兴趣的默认存活天数 |
+| `speculation_cooldown_days` | int | `7` | 猜测兴趣被否定后的冷却天数 |
+| `speculation_confirmation_threshold` | int | `3` | 需要多少次正向信号确认猜测兴趣 |
+| `speculation_max_active` | int | `5` | 最多同时活跃的猜测兴趣数 |
+| `speculation_max_primary_interests` | int | `15` | 主要兴趣域的最大数量 |
+| `speculation_max_secondary_interests` | int | `60` | 次要兴趣域的最大数量 |
 
 > 运行时护栏：
 > 即使 `pool_target_count` 设得较高，单次 refresh 里的单轮 discover 补货请求也会封顶在 `60`，避免一次性把全部缺口都打满。

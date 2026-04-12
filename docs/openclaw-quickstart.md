@@ -84,6 +84,10 @@ docker exec -it openbiliclaw-backend openbiliclaw init
 同时，宿主机最好保留一套轻量 Python 环境，方便 OpenClaw 或维护者执行 bridge / doctor 命令：
 
 ```bash
+# 推荐：使用 uv（更快）
+uv sync
+
+# 或使用传统 venv
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
@@ -96,6 +100,11 @@ pip install -e ".[dev]"
 在仓库根目录执行：
 
 ```bash
+# 推荐：使用 uv（更快）
+uv sync
+cp config.example.toml config.toml
+
+# 或使用传统 venv
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"

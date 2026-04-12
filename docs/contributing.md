@@ -9,11 +9,12 @@
 git clone https://github.com/OpenBiliClaw/OpenBiliClaw.git
 cd OpenBiliClaw
 
-# 创建虚拟环境
+# 推荐：使用 uv
+uv sync
+
+# 或使用 pip
 python -m venv .venv
 source .venv/bin/activate
-
-# 安装开发依赖
 pip install -e ".[dev]"
 ```
 
@@ -57,9 +58,21 @@ refactor: extract common LLM interface
 test: add soul engine unit tests
 ```
 
+## 浏览器插件开发
+
+```bash
+# 浏览器插件开发
+cd extension
+npm install
+npm run build
+npm test
+```
+
 ## Skill 开发
 
-参见 `skills/` 目录下的内置 Skill 示例，了解如何创建自定义 Skill。
+Skill 定义为 `skills/<skill-name>/SKILL.md` 格式的 Markdown 文件。可参考 `skills/openbiliclaw-adapter/SKILL.md` 作为示例。
+
+Skill 文件描述该 Skill 的能力边界、CLI bridge 命令列表，以及与主系统的集成工作流。参见 `skills/` 目录下的内置 Skill 示例，了解如何创建自定义 Skill。
 
 ## 文档更新清单
 
