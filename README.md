@@ -101,11 +101,13 @@
 
 插件是你和 OpenBiliClaw 交互的主要界面——在 B 站页面侧边栏展示推荐、采集行为、对话调教。
 
-1. 下载最新的 [`openbiliclaw-extension.zip`](https://github.com/whiteguo233/OpenBiliClaw/releases/latest)
-2. 打开 `chrome://extensions/`，开启右上角「开发者模式」
-3. 将 `.zip` 文件拖入页面安装
+```bash
+cd extension && npm install && npm run package
+```
 
-> 开发者也可以 `cd extension && npm install && npm run build`，然后「加载已解压的扩展程序」选择 `extension/` 目录。
+1. 打开 `chrome://extensions/`，开启右上角「开发者模式」
+2. 将生成的 `extension/openbiliclaw-extension-v*.zip` 拖入页面安装
+   （或点击「加载已解压的扩展程序」选择 `extension/` 目录）
 
 ### ⚡ 第二步：部署后端
 
