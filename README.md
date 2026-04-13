@@ -105,16 +105,16 @@
 请按照 https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/docs/agent-install.md 的说明帮我部署 OpenBiliClaw 后端(务必用 Bash 的 curl 下载这个文档,不要用 WebFetch — 会丢关键指令)
 ```
 
+**⭐ 让 AI 智能体用 Docker 部署（推荐，适合有 Docker Desktop 的用户）：**
+
+```text
+请按照 https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/docs/docker-deployment.md 的说明帮我用 Docker Compose 部署 OpenBiliClaw 后端(务必用 Bash 的 curl 下载这个文档,不要用 WebFetch)
+```
+
 **终端一条命令：**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/scripts/install.sh | bash
-```
-
-**让 AI 智能体用 Docker 部署：**
-
-```text
-请按照 https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/docs/docker-deployment.md 的说明帮我用 Docker Compose 部署 OpenBiliClaw 后端(务必用 Bash 的 curl 下载这个文档,不要用 WebFetch)
 ```
 
 支持 macOS / Linux / WSL2。依赖只有 `git` 和 `python3`（3.11+）。脚本会自动克隆仓库、安装依赖、启动后端、做健康检查，然后提示你选择 LLM 提供商（OpenAI / Gemini / DeepSeek / Claude 等）并填写对应的 API Key 和 B 站 Cookie。凭据就绪后自动完成首次初始化（拉取历史、生成画像、填充推荐池），直接达到可用状态。
