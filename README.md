@@ -280,6 +280,10 @@ OpenBiliClaw/
 - [CLI 参考](docs/modules/cli.md) · [配置参考](docs/modules/config.md)
 - [开发指南](docs/contributing.md) — 如何参与贡献
 
+## 🗺️ 后续规划
+
+- **多渠道内容源接入** — 不止于 B 站。计划接入通用搜索引擎、小红书、抖音、各大网页 BBS / 论坛等内容源，让推荐覆盖你真正关心的全网信息，而不是被困在单一平台里。
+
 ## 🤝 贡献
 
 欢迎贡献！请查看 [开发指南](docs/contributing.md) 了解如何参与。

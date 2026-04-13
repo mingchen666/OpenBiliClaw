@@ -141,6 +141,17 @@ class Database:
             raise RuntimeError("Database not initialized. Call initialize() first.")
         return self._conn
 
+    def _ensure_fresh_read(self) -> None:
+        """Close any implicit transaction so the next SELECT sees the latest WAL state.
+
+        When a CLI command (a separate process) writes to the same database,
+        this server process may still hold a stale read snapshot inside an
+        implicit transaction.  Committing closes that transaction so the next
+        query starts a new one against the current WAL head.
+        """
+        if self.conn.in_transaction:
+            self.conn.commit()
+
     def _execute_write(
         self,
         sql: str,
@@ -400,6 +411,7 @@ class Database:
 
     def get_pool_candidates(self, limit: int = 20) -> list[dict[str, Any]]:
         """Get fresh recommendation candidates directly from the discovery pool."""
+        self._ensure_fresh_read()
         cursor = self.conn.execute(
             """
             SELECT *
@@ -857,6 +869,7 @@ class Database:
 
     def get_recommendations(self, limit: int = 100) -> list[dict[str, Any]]:
         """Get recommendation history ordered by newest first."""
+        self._ensure_fresh_read()
         cursor = self.conn.execute(
             """
             SELECT
@@ -875,12 +888,14 @@ class Database:
 
     def count_recommendations(self) -> int:
         """Return the total number of stored recommendations."""
+        self._ensure_fresh_read()
         cursor = self.conn.execute("SELECT COUNT(*) AS count FROM recommendations")
         row = cursor.fetchone()
         return int(row["count"]) if row is not None else 0
 
     def count_unread_recommendations(self) -> int:
         """Return the number of unpresented recommendations."""
+        self._ensure_fresh_read()
         cursor = self.conn.execute(
             "SELECT COUNT(*) AS count FROM recommendations WHERE presented = 0"
         )
@@ -949,6 +964,7 @@ class Database:
 
     def get_recommendation_by_id(self, recommendation_id: int) -> dict[str, Any] | None:
         """Return a single recommendation row by primary key."""
+        self._ensure_fresh_read()
         cursor = self.conn.execute(
             """
             SELECT r.*, c.title AS title, c.up_name AS up_name

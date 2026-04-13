@@ -226,6 +226,10 @@ OpenBiliClaw/
 - [CLI Reference](docs/modules/cli.md) · [Config Reference](docs/modules/config.md)
 - [Contributing Guide](docs/contributing.md)
 
+## 🗺️ Roadmap
+
+- **Multi-platform content sources** — Beyond Bilibili. We plan to integrate general-purpose search engines, Xiaohongshu (Little Red Book), Douyin (TikTok China), and various web forums / BBS as content sources, so recommendations cover the content you actually care about across the entire web — not just a single platform.
+
 ## 🤝 Contributing
 
 Contributions welcome! See the [Contributing Guide](docs/contributing.md) to get started.

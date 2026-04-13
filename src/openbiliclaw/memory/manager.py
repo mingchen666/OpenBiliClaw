@@ -44,23 +44,39 @@ class MemoryLayer:
         self.name = name
         self.storage_path = storage_path
         self._data: dict[str, Any] = {}
+        self._loaded_mtime: float | None = None
 
     def load(self) -> None:
         """Load layer data from disk."""
         if self.storage_path.exists():
             with open(self.storage_path) as f:
                 self._data = json.load(f)
+            self._loaded_mtime = self.storage_path.stat().st_mtime
             logger.debug("Loaded %s layer from %s", self.name, self.storage_path)
+
+    def _reload_if_stale(self) -> None:
+        """Reload from disk if the file was modified by another process."""
+        if not self.storage_path.exists():
+            return
+        try:
+            current_mtime = self.storage_path.stat().st_mtime
+        except OSError:
+            return
+        if self._loaded_mtime is None or current_mtime > self._loaded_mtime:
+            logger.debug("Detected external change to %s layer, reloading", self.name)
+            self.load()
 
     def save(self) -> None:
         """Persist layer data to disk."""
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.storage_path, "w") as f:
             json.dump(self._data, f, ensure_ascii=False, indent=2)
+        self._loaded_mtime = self.storage_path.stat().st_mtime
         logger.debug("Saved %s layer to %s", self.name, self.storage_path)
 
     @property
     def data(self) -> dict[str, Any]:
+        self._reload_if_stale()
         return self._data
 
     def update(self, key: str, value: Any) -> None:
