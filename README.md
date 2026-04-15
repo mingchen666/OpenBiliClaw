@@ -109,6 +109,16 @@
 
 ### ⚡ 第二步：部署后端
 
+**⭐ 直接从 Releases 下载后端桌面包（推荐普通用户）：**
+
+1. 打开 [OpenBiliClaw Releases](https://github.com/whiteguo233/OpenBiliClaw/releases/latest)
+2. 按系统下载后端包：
+   - macOS：`OpenBiliClaw-macos-*.zip`
+   - Windows：`OpenBiliClaw-windows-*.zip`
+3. 解压后直接运行后端程序，再让插件连接本地 `http://127.0.0.1:8420`
+
+> ⚠️ 首版后端桌面包暂未做系统签名。macOS 可能出现 Gatekeeper 提示，Windows 可能出现 SmartScreen 提示；如果你不想处理系统安全弹窗，继续使用下面的一键安装脚本或 Docker 方式即可。
+
 **⭐ 复制粘贴给 AI 智能体一键部署（推荐，Claude Code / Codex CLI / Cursor 等都支持）：**
 
 ```text
@@ -127,7 +137,7 @@
 curl -fsSL https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/scripts/install.sh | bash
 ```
 
-支持 macOS / Linux / WSL2。依赖只有 `git` 和 `python3`（3.11+）。脚本会自动克隆仓库、安装依赖、启动后端、做健康检查，然后提示你选择 LLM 提供商（OpenAI / Gemini / DeepSeek / Claude 等）并填写对应的 API Key 和 B 站 Cookie。凭据就绪后自动完成首次初始化（拉取历史、生成画像、填充推荐池），直接达到可用状态。
+桌面包适合 macOS / Windows 用户直接下载即用；`install.sh` 仍推荐给 macOS / Linux / WSL2 用户和喜欢可控环境的开发者。脚本依赖只有 `git` 和 `python3`（3.11+）。它会自动克隆仓库、安装依赖、启动后端、做健康检查，然后提示你选择 LLM 提供商（OpenAI / Gemini / DeepSeek / Claude 等）并填写对应的 API Key 和 B 站 Cookie。凭据就绪后自动完成首次初始化（拉取历史、生成画像、填充推荐池），直接达到可用状态。
 
 > 💡 **Windows 用户？** 如果你已经装了 Docker Desktop，推荐直接用上面的 Docker 方式部署，开箱即用。否则请先安装 [WSL2](https://learn.microsoft.com/zh-cn/windows/wsl/install) 再用终端命令安装。
 

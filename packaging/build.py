@@ -9,14 +9,19 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import os
 import platform
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DIST_DIR = PROJECT_ROOT / "dist"
+RELEASE_DIR = DIST_DIR / "release"
+PYPROJECT_FILE = PROJECT_ROOT / "pyproject.toml"
 SPEC_FILE = PROJECT_ROOT / "packaging" / "openbiliclaw.spec"
 
 
@@ -26,7 +31,10 @@ def ensure_pyinstaller() -> None:
         import PyInstaller  # noqa: F401
     except ImportError:
         print("[build] Installing PyInstaller ...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
+        install_cmd = build_pyinstaller_install_command()
+        subprocess.check_call(install_cmd)
+        if install_cmd[2:4] == ["ensurepip", "--upgrade"]:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
 
 
 def clean() -> None:
@@ -37,9 +45,95 @@ def clean() -> None:
             shutil.rmtree(d)
 
 
-def build() -> None:
+def read_project_version() -> str:
+    """Read the project version from pyproject.toml."""
+    data = tomllib.loads(PYPROJECT_FILE.read_text(encoding="utf-8"))
+    version = data["project"]["version"]
+    return str(version)
+
+
+def build_pyinstaller_install_command(
+    *,
+    pip_available: bool | None = None,
+    uv_executable: str | None = None,
+) -> list[str]:
+    """Return the best install command for PyInstaller in the current environment."""
+    resolved_pip_available = (
+        pip_available
+        if pip_available is not None
+        else importlib.util.find_spec("pip") is not None
+    )
+    if resolved_pip_available:
+        return [sys.executable, "-m", "pip", "install", "pyinstaller"]
+
+    resolved_uv = uv_executable if uv_executable is not None else shutil.which("uv")
+    if resolved_uv:
+        return [resolved_uv, "pip", "install", "pyinstaller"]
+
+    return [sys.executable, "-m", "ensurepip", "--upgrade"]
+
+
+def make_bundle_version(version: str) -> str:
+    """Normalize a tag-style version for bundle metadata."""
+    return version[1:] if version.startswith("v") else version
+
+
+def detect_target(platform_name: str | None = None) -> str:
+    """Map runtime platform names to archive target labels."""
+    resolved = platform_name or platform.system()
+    if resolved == "Darwin":
+        return "macos"
+    if resolved == "Windows":
+        return "windows"
+    return "linux"
+
+
+def make_archive_name(version: str, target: str) -> str:
+    """Return the versioned archive filename for a packaged backend."""
+    return f"OpenBiliClaw-{target}-{version}.zip"
+
+
+def find_packaged_root(dist_dir: Path, platform_name: str | None = None) -> Path:
+    """Return the packaged root directory or bundle produced by PyInstaller."""
+    resolved = platform_name or platform.system()
+    if resolved == "Darwin":
+        app_bundle = dist_dir / "OpenBiliClaw.app"
+        if app_bundle.exists():
+            return app_bundle
+
+    package_dir = dist_dir / "OpenBiliClaw"
+    if package_dir.exists():
+        return package_dir
+
+    raise FileNotFoundError(f"No packaged output found under {dist_dir}")
+
+
+def create_archive(
+    *,
+    packaged_root: Path,
+    output_dir: Path,
+    version: str,
+    target: str,
+) -> Path:
+    """Create a zip archive containing the packaged backend root."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    archive_name = make_archive_name(version, target)
+    archive_base = output_dir / archive_name.removesuffix(".zip")
+    archive_path = Path(
+        shutil.make_archive(
+            str(archive_base),
+            "zip",
+            root_dir=str(packaged_root.parent),
+            base_dir=packaged_root.name,
+        ),
+    )
+    return archive_path
+
+
+def build(*, archive_version: str | None = None) -> None:
     """Run PyInstaller."""
     ensure_pyinstaller()
+    bundle_version = make_bundle_version(archive_version or read_project_version())
     cmd = [
         sys.executable,
         "-m",
@@ -50,8 +144,11 @@ def build() -> None:
         "--noconfirm",
     ]
     print(f"[build] Running: {' '.join(cmd)}")
-    subprocess.check_call(cmd, cwd=str(PROJECT_ROOT))
+    env = os.environ.copy()
+    env["OPENBILICLAW_BUNDLE_VERSION"] = bundle_version
+    subprocess.check_call(cmd, cwd=str(PROJECT_ROOT), env=env)
 
+    packaged_root = find_packaged_root(DIST_DIR)
     output = DIST_DIR / "OpenBiliClaw"
     if output.exists():
         # Copy config.example.toml into the output directory
@@ -62,7 +159,7 @@ def build() -> None:
         print()
         print("=" * 60)
         print(f"  Build complete!  {platform.system()} / {platform.machine()}")
-        print(f"  Output: {output}")
+        print(f"  Output: {packaged_root}")
         print()
         print("  To run:")
         if platform.system() == "Windows":
@@ -75,6 +172,17 @@ def build() -> None:
                 print(f"    {output / 'OpenBiliClaw'}")
         else:
             print(f"    {output / 'OpenBiliClaw'}")
+
+        if archive_version:
+            target = detect_target()
+            archive_path = create_archive(
+                packaged_root=packaged_root,
+                output_dir=RELEASE_DIR,
+                version=archive_version,
+                target=target,
+            )
+            print()
+            print(f"  Release archive: {archive_path}")
         print("=" * 60)
     else:
         print("[build] WARNING: Expected output directory not found!")
@@ -84,11 +192,15 @@ def build() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build OpenBiliClaw desktop app")
     parser.add_argument("--clean", action="store_true", help="Clean previous builds first")
+    parser.add_argument(
+        "--archive-version",
+        help="Also create a release zip using the given version tag, e.g. v0.1.1",
+    )
     args = parser.parse_args()
 
     if args.clean:
         clean()
-    build()
+    build(archive_version=args.archive_version)
 
 
 if __name__ == "__main__":

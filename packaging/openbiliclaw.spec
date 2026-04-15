@@ -9,11 +9,13 @@ Build:
 Output:  dist/OpenBiliClaw/
 """
 
+import os
 import platform
 from pathlib import Path
 
 block_cipher = None
 project_root = Path(SPECPATH).parent
+bundle_version = os.environ.get("OPENBILICLAW_BUNDLE_VERSION", "0.1.0")
 
 a = Analysis(
     [str(project_root / "packaging" / "entry.py")],
@@ -151,8 +153,8 @@ if platform.system() == "Darwin":
         info_plist={
             "CFBundleName": "OpenBiliClaw",
             "CFBundleDisplayName": "OpenBiliClaw",
-            "CFBundleVersion": "0.1.0",
-            "CFBundleShortVersionString": "0.1.0",
+            "CFBundleVersion": bundle_version,
+            "CFBundleShortVersionString": bundle_version,
             "LSMinimumSystemVersion": "10.15",
             "NSHighResolutionCapable": True,
         },

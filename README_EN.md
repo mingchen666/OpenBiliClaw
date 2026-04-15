@@ -55,6 +55,16 @@ The extension is your main interface — it shows recommendations in a Bilibili 
 
 ### ⚡ Step 2: Deploy the Backend
 
+**⭐ Download the backend desktop package from Releases (recommended for most users):**
+
+1. Open [OpenBiliClaw Releases](https://github.com/whiteguo233/OpenBiliClaw/releases/latest)
+2. Download the backend package for your OS:
+   - macOS: `OpenBiliClaw-macos-*.zip`
+   - Windows: `OpenBiliClaw-windows-*.zip`
+3. Unzip it, launch the backend, then connect the extension to local `http://127.0.0.1:8420`
+
+> ⚠️ The first desktop backend packages are unsigned. macOS may show Gatekeeper prompts and Windows may show SmartScreen warnings. If you would rather avoid OS security prompts, use the installer script or Docker paths below instead.
+
 **⭐ Paste to an AI coding agent for one-click deploy (recommended — works with Claude Code / Codex CLI / Cursor etc.):**
 
 ```text
@@ -73,7 +83,7 @@ Please follow https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/do
 curl -fsSL https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/scripts/install.sh | bash
 ```
 
-Works on macOS, Linux and WSL2. The only prerequisites are `git` and `python3` (3.11+). The script auto-clones the repo, installs dependencies, starts the backend, runs a health check, and prompts you to choose an LLM provider (OpenAI / Gemini / DeepSeek / Claude etc.) and fill in the corresponding API key and Bilibili cookie. Once credentials are set, it automatically runs first-time init (fetches history, builds your soul profile, fills the recommendation pool) so you're ready to go immediately.
+The desktop package is the easiest path for macOS and Windows users. `install.sh` remains the recommended path for macOS / Linux / WSL2 users who want a source-based setup. The only prerequisites for the script are `git` and `python3` (3.11+). It auto-clones the repo, installs dependencies, starts the backend, runs a health check, and prompts you to choose an LLM provider (OpenAI / Gemini / DeepSeek / Claude etc.) and fill in the corresponding API key and Bilibili cookie. Once credentials are set, it automatically runs first-time init (fetches history, builds your soul profile, fills the recommendation pool) so you're ready to go immediately.
 
 > 💡 **On Windows?** If you already have Docker Desktop, use the Docker method above — it works out of the box. Otherwise, install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) first, then use the terminal command.
 
