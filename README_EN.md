@@ -142,6 +142,58 @@ openbiliclaw profile
 
 </details>
 
+## 🤖 Integrate with OpenClaw / AI Coding Agents
+
+This repo ships a [workspace skill](skills/openbiliclaw-adapter/SKILL.md). Point any skill-aware AI coding agent (OpenClaw / Claude Code / Codex CLI / Cursor, etc.) at this checkout and it can drive your local OpenBiliClaw directly.
+
+### What you get after integration
+
+- 📖 **Read the current soul profile** — MBTI, core traits, deep needs, interest domains
+- 🎯 **Fetch personalized recommendations on demand** — with explanations, confidence scores, and topic labels
+- 💬 **Write feedback back into the learning loop** — `like` / `dislike` / `comment` instantly update the profile and pool scoring
+- ✨ **Receive delight pushes** — poll or WebSocket stream; the runtime proactively surfaces content it thinks will delight you
+- 🔄 **Sync Bilibili account signals** — pull history / favorites / following and feed them into the memory system
+- 🩺 **Self-check & runtime diagnostics** — `doctor` / `runtime-status` for fast connectivity checks
+
+### One-sentence integration prompt
+
+Paste the following into OpenClaw (or Claude Code / Codex CLI / Cursor) — it will read the guide and wire everything up:
+
+```text
+Please follow https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/docs/openclaw-quickstart.md to integrate this repository into OpenClaw (use Bash `curl` to fetch the document, NOT WebFetch — WebFetch summarises markdown and drops critical commands).
+```
+
+### Usage example
+
+Once integrated, just talk to OpenClaw in natural language — it dispatches skills for you. Example:
+
+> **You**: "Recommend three Bilibili videos worth watching today, skip the anime stuff."
+>
+> **OpenClaw** (internally runs):
+> ```bash
+> uv run python -m openbiliclaw.integrations.openclaw.cli recommend --limit 3
+> ```
+> Parses the returned JSON, filters out anime topics, and replies:
+>
+> > Here are 3 picks, all aligned with what you've been chewing on for the past two weeks:
+> > 1. **"Why You Can't Actually Lie Flat Even Back in a Small Town"** — the Minsky moment of county economies. You've been deep in geopolitics and macro debt; this one dissects how land finance and the debt cycle mesh together using cold, hard reasoning. `[BV1KMwuzdEcB]`
+> > 2. **"Infinite Xiao Liang's Online Creature ID #59"** — no tolerance for BS. You've been tense from staring at LLM logic; Xiao Liang picks apart filtered fake videos with biology, stress-relief without dumbing down. `[BV1PRDxBuET9]`
+> > 3. ……
+> >
+> > Tell me which one lands and I'll tag the feedback.
+>
+> **You**: "The first one nailed it."
+>
+> **OpenClaw** (internally runs):
+> ```bash
+> uv run python -m openbiliclaw.integrations.openclaw.cli submit-feedback \
+>   --recommendation-id 4268 --feedback-type like
+> ```
+
+The whole loop stays local — OpenClaw just calls the CLI bridge; your profile and data never leave the SQLite file on your disk.
+
+> 📖 Full command reference and troubleshooting: [OpenClaw Integration Guide](docs/openclaw-quickstart.md).
+
 ## ✨ Key Features
 
 - 🧠 **Five-Layer Soul Profile** — Event → Preference → Awareness → Insight → Soul, inferring MBTI, cognitive style, and deep needs — like a psychologist understanding you

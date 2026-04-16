@@ -196,6 +196,58 @@ openbiliclaw profile
 
 </details>
 
+## 🤖 接入 OpenClaw / AI 编码助手
+
+OpenBiliClaw 仓库内置了一个 [workspace skill](skills/openbiliclaw-adapter/SKILL.md)。把仓库挂到任何支持 skill 的 AI 编码助手（OpenClaw / Claude Code / Codex CLI / Cursor 等），助手就能直接调用你本机上的 OpenBiliClaw。
+
+### 接入之后能干什么
+
+- 📖 **读当前灵魂画像** — MBTI、核心特质、深层需求、兴趣领域
+- 🎯 **按需拉个性化推荐** — 带解释、带置信度、带主题标签
+- 💬 **把反馈写回学习闭环** — `like` / `dislike` / `comment` 即时更新画像与池子评分
+- ✨ **接收惊喜推荐（Delight）** — 轮询或 WebSocket 长连接，系统主动推送"会让你眼前一亮"的内容
+- 🔄 **同步 B 站账号行为** — 拉历史、收藏、关注等长期信号，注入记忆系统
+- 🩺 **自检与运行时诊断** — `doctor` / `runtime-status` 快速判断接线是否健康
+
+### 一句话让 OpenClaw 完成接入
+
+把下面这段粘给 OpenClaw（或 Claude Code / Codex CLI / Cursor），它会自动读指南并完成接入：
+
+```text
+请按照 https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/docs/openclaw-quickstart.md 的说明帮我把当前仓库接入 OpenClaw(务必用 Bash 的 curl 下载这个文档,不要用 WebFetch — 会丢关键指令)
+```
+
+### 用户使用示例
+
+接入完成后，直接用自然语言对 OpenClaw 说话就行，它会替你调 skill。例如：
+
+> **你**："给我推三条今天值得看的 B 站内容，别要二次元的。"
+>
+> **OpenClaw**（内部执行）：
+> ```bash
+> uv run python -m openbiliclaw.integrations.openclaw.cli recommend --limit 3
+> ```
+> 解析返回的 JSON，过滤掉二次元主题，整理后回你：
+>
+> > 挑了 3 条，都压在你这两周关心的方向上：
+> > 1. **《为什么说回县城你也躺不平》** — 县域经济的明斯基时刻。你最近一直在盯地缘政治和宏观债务，这条用硬核推演把土地财政和债务周期的齿轮咬合讲清楚了。`[BV1KMwuzdEcB]`
+> > 2. **《无穷小亮网络热传生物鉴定 第59期》** — 不惯着糊弄学。平时盯大模型逻辑太紧绷，小亮用生物学一条条拆解加滤镜视频，解压还不降智。`[BV1PRDxBuET9]`
+> > 3. ……
+> >
+> > 看完告诉我哪条对胃口，我顺手把反馈打上。
+>
+> **你**："第一条非常到位。"
+>
+> **OpenClaw**（内部执行）：
+> ```bash
+> uv run python -m openbiliclaw.integrations.openclaw.cli submit-feedback \
+>   --recommendation-id 4268 --feedback-type like
+> ```
+
+整个闭环都是本地的——OpenClaw 只是调 CLI 桥接，画像和数据仍留在你自己的 SQLite 文件里，一条都不会上云。
+
+> 📖 完整命令参考与常见问题，见 [OpenClaw 接入指南](docs/openclaw-quickstart.md)。
+
 ## ✨ 核心特性
 
 - 🧠 **五层灵魂画像** — 事件→偏好→觉察→洞察→灵魂，推断 MBTI、认知风格和深层需求，像心理咨询师一样理解你
