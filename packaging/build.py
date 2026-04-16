@@ -115,11 +115,30 @@ def create_archive(
     version: str,
     target: str,
 ) -> Path:
-    """Create a zip archive containing the packaged backend root."""
+    """Create a zip archive containing the packaged backend root.
+
+    On macOS the ``.app`` bundle contains directory symlinks (notably
+    ``Contents/Frameworks/python3.X`` → ``python3__dot__X``) that must
+    survive the roundtrip — otherwise the bundled interpreter fails to
+    import ``_struct`` on first run.  ``shutil.make_archive('zip')``
+    silently flattens symlinks into empty directories, so we shell out
+    to the system ``zip`` with ``-y`` (store symbolic links as symlinks).
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     archive_name = make_archive_name(version, target)
+    archive_path = output_dir / archive_name
+    if archive_path.exists():
+        archive_path.unlink()
+
+    if target == "macos" and shutil.which("zip"):
+        subprocess.check_call(
+            ["zip", "-r", "-y", "-q", str(archive_path), packaged_root.name],
+            cwd=str(packaged_root.parent),
+        )
+        return archive_path
+
     archive_base = output_dir / archive_name.removesuffix(".zip")
-    archive_path = Path(
+    return Path(
         shutil.make_archive(
             str(archive_base),
             "zip",
@@ -127,7 +146,42 @@ def create_archive(
             base_dir=packaged_root.name,
         ),
     )
-    return archive_path
+
+
+def apply_macos_bundle_fixes(dist_dir: Path) -> None:
+    """Post-build fixups required for the macOS ``.app`` bundle.
+
+    PyInstaller substitutes dots in bundle-internal directory names
+    (``python3.13`` → ``python3__dot__13``) for code-signing reasons,
+    but the Python bootloader inside the bundled interpreter still
+    resolves ``lib-dynload`` through the dotted path.  Without the
+    symlink the very first ``import struct`` during bootstrap fails
+    with ``ModuleNotFoundError: No module named '_struct'``.
+
+    We add a compatibility symlink alongside the dot-substituted
+    directory so both names resolve to the same contents.
+    """
+    app_bundle = dist_dir / "OpenBiliClaw.app"
+    if not app_bundle.exists():
+        return
+
+    frameworks_dir = app_bundle / "Contents" / "Frameworks"
+    if not frameworks_dir.is_dir():
+        return
+
+    for entry in frameworks_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        if "__dot__" not in name:
+            continue
+        # e.g. python3__dot__13 → python3.13
+        alias_name = name.replace("__dot__", ".")
+        alias = frameworks_dir / alias_name
+        if alias.exists() or alias.is_symlink():
+            continue
+        alias.symlink_to(entry.name)
+        print(f"[build] Added .app compatibility symlink: {alias_name} -> {name}")
 
 
 def build(*, archive_version: str | None = None) -> None:
@@ -147,6 +201,9 @@ def build(*, archive_version: str | None = None) -> None:
     env = os.environ.copy()
     env["OPENBILICLAW_BUNDLE_VERSION"] = bundle_version
     subprocess.check_call(cmd, cwd=str(PROJECT_ROOT), env=env)
+
+    if platform.system() == "Darwin":
+        apply_macos_bundle_fixes(DIST_DIR)
 
     packaged_root = find_packaged_root(DIST_DIR)
     output = DIST_DIR / "OpenBiliClaw"
