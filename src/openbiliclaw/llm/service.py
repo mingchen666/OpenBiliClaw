@@ -60,13 +60,17 @@ class LLMService:
         json_mode: bool = False,
     ) -> LLMResponse:
         """Execute a task with automatically injected core memory context."""
-        system_content = "\n\n".join(
-            [
-                system_instruction.strip(),
-                "以下是当前用户的 core memory，请作为理解背景：",
-                self.memory.render_core_memory_prompt(),
-            ]
-        )
+        core_memory_block = ""
+        if self.memory is not None:
+            try:
+                core_memory_block = self.memory.render_core_memory_prompt()
+            except Exception:
+                pass
+        parts = [system_instruction.strip()]
+        if core_memory_block:
+            parts.append("以下是当前用户的 core memory，请作为理解背景：")
+            parts.append(core_memory_block)
+        system_content = "\n\n".join(parts)
         messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
         if history:
             messages.extend(history)
