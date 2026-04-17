@@ -63,3 +63,29 @@ class TestDiscoveredContentMultisourceFields:
         assert item.content_url == "https://www.xiaohongshu.com/explore/abc123"
         assert item.author_name == "小红书用户"
         assert item.title == "机械键盘开箱"
+
+
+class TestPlatformPromptLabels:
+    """Verify prompt label helpers produce correct platform-specific text."""
+
+    def test_bilibili_content_label(self) -> None:
+        from openbiliclaw.llm.prompts import _platform_content_label
+
+        assert _platform_content_label("bilibili") == "B 站内容"
+
+    def test_non_bilibili_content_label(self) -> None:
+        from openbiliclaw.llm.prompts import _platform_content_label
+
+        assert _platform_content_label("xiaohongshu") == "内容"
+        assert _platform_content_label("web") == "内容"
+
+    def test_bilibili_friend_label(self) -> None:
+        from openbiliclaw.llm.prompts import _platform_friend_label
+
+        assert _platform_friend_label("bilibili") == "老B友"
+
+    def test_non_bilibili_friend_label(self) -> None:
+        from openbiliclaw.llm.prompts import _platform_friend_label
+
+        assert _platform_friend_label("xiaohongshu") == "朋友"
+        assert _platform_friend_label("web") == "朋友"

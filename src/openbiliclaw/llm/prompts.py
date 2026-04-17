@@ -9,6 +9,16 @@ if TYPE_CHECKING:
     from openbiliclaw.soul.tone import ToneProfile
 
 
+def _platform_content_label(source_platform: str) -> str:
+    """Return platform-specific content label for prompts."""
+    return "B 站内容" if source_platform == "bilibili" else "内容"
+
+
+def _platform_friend_label(source_platform: str) -> str:
+    """Return platform-specific friend label for prompts."""
+    return "老B友" if source_platform == "bilibili" else "朋友"
+
+
 def _render_tone_profile(tone_profile: ToneProfile | None) -> str:
     """Render tone profile guidance for prompt builders."""
     tone = tone_profile or {
@@ -683,6 +693,7 @@ def build_content_evaluation_prompt(
     profile_summary: dict[str, object],
     content_summary: dict[str, object],
     source_context: str = "",
+    source_platform: str = "bilibili",
 ) -> list[dict[str, str]]:
     """Build a structured prompt for content relevance evaluation.
 
@@ -690,6 +701,7 @@ def build_content_evaluation_prompt(
         profile_summary: User profile summary.
         content_summary: Content metadata.
         source_context: Discovery context hint (e.g. search / trending / explore).
+        source_platform: Platform identifier for dynamic prompt wording.
     """
     source_hint = ""
     if source_context:
@@ -702,7 +714,7 @@ def build_content_evaluation_prompt(
     system_prompt = (
         "<task>\n"
         + source_hint
-        + "你要评估一个 B 站内容与这个用户画像的匹配度。\n"
+        + "你要评估一个 " + _platform_content_label(source_platform) + "与这个用户画像的匹配度。\n"
         "</task>\n\n"
         "<rules>\n"
         "1. 输出必须是严格 JSON，不要附带解释。\n"
@@ -822,12 +834,15 @@ def build_recommendation_expression_prompt(
     profile_summary: dict[str, object],
     content_summary: dict[str, object],
     tone_profile: ToneProfile | None,
+    source_platform: str = "bilibili",
 ) -> list[dict[str, str]]:
     """Build a structured prompt for friend-style recommendation expression."""
+    _friend = _platform_friend_label(source_platform)
+    _content = _platform_content_label(source_platform)
     system_prompt = """
 <task>
-你要像一个真正懂这个人的老B友一样，给出一段推荐这条 B 站内容的话。
-</task>
+你要像一个真正懂这个人的{friend}一样，给出一段推荐这条 {content}的话。
+</task>""".replace("{friend}", _friend).replace("{content}", _content) + """
 
 <rules>
 1. 输出必须是严格 JSON，不要附带解释。
@@ -873,11 +888,14 @@ def build_batch_expression_prompt(
     profile_summary: dict[str, object],
     content_items: list[dict[str, object]],
     tone_profile: ToneProfile | None,
+    source_platform: str = "bilibili",
 ) -> list[dict[str, str]]:
     """Build a prompt that generates expressions for multiple items in one call."""
+    _friend = _platform_friend_label(source_platform)
+    _content = _platform_content_label(source_platform)
     system_prompt = (
         "<task>\n"
-        "你要像一个真正懂这个人的老B友一样，为多条 B 站内容各写一段推荐话。\n"
+        "你要像一个真正懂这个人的" + _friend + "一样，为多条 " + _content + "各写一段推荐话。\n"
         "</task>\n\n"
         "<rules>\n"
         "1. 输出必须是严格 JSON 数组，数组长度与输入内容数量一致，顺序一一对应。\n"

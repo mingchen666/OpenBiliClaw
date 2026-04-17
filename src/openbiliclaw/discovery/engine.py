@@ -532,6 +532,7 @@ class ContentDiscoveryEngine:
                 "source_strategy": content.source_strategy,
             },
             source_context=source_context or content.source_strategy,
+            source_platform=content.source_platform or "bilibili",
         )
         try:
             llm_call = self._llm_service.complete_structured_task(

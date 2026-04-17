@@ -313,9 +313,12 @@ class Database:
                 pool_topic_label,
                 candidate_tier,
                 last_scored_at,
-                source
+                source,
+                content_id,
+                content_url,
+                source_platform
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
             ON CONFLICT(bvid) DO UPDATE SET
                 title = excluded.title,
                 up_name = excluded.up_name,
@@ -343,7 +346,10 @@ class Database:
                 ),
                 candidate_tier = excluded.candidate_tier,
                 last_scored_at = CURRENT_TIMESTAMP,
-                source = excluded.source
+                source = excluded.source,
+                content_id = excluded.content_id,
+                content_url = excluded.content_url,
+                source_platform = excluded.source_platform
             """,
             (
                 bvid,
@@ -365,6 +371,9 @@ class Database:
                 kwargs.get("pool_topic_label", ""),
                 kwargs.get("candidate_tier", "primary"),
                 kwargs.get("source", ""),
+                kwargs.get("content_id", bvid),
+                kwargs.get("content_url", ""),
+                kwargs.get("source_platform", "bilibili"),
             ),
         )
 

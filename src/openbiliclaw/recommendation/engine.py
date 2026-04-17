@@ -509,6 +509,7 @@ class RecommendationEngine:
             },
             content_items=content_items,
             tone_profile=tone_profile,
+            source_platform=batch[0].source_platform if batch else "bilibili",
         )
 
         try:
@@ -690,6 +691,7 @@ class RecommendationEngine:
                 "relevance_score": content.relevance_score,
             },
             tone_profile=tone_profile,
+            source_platform=content.source_platform or "bilibili",
         )
         try:
             response = await self._llm.complete_structured_task(

@@ -1293,6 +1293,12 @@ function renderRecommendations(items, { append = false } = {}) {
       badge.textContent = item.topic_label;
       top.append(badge);
     }
+    if (item.source_platform && item.source_platform !== "bilibili") {
+      const sourceBadge = document.createElement("span");
+      sourceBadge.className = "topic-badge source-badge";
+      sourceBadge.textContent = item.source_platform;
+      top.append(sourceBadge);
+    }
     top.append(stateBadge);
 
     const copyBlock = document.createElement("div");
