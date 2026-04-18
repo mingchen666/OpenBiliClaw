@@ -41,8 +41,16 @@ export interface CollectOptions {
   toleranceAbovePx?: number;
 }
 
+export interface XhsNoteMetadata {
+  url: string;
+  title: string;
+  author: string;
+  cover_url: string;
+}
+
 export interface XhsUrlObservation {
   urls: string[];
+  notes: XhsNoteMetadata[];
   page_type: XhsPageType;
   observed_at: number;
 }
@@ -117,6 +125,43 @@ export function collectInViewportNoteUrls(
   }
 
   return ordered;
+}
+
+/**
+ * Extract metadata from a note card's DOM. Best-effort — returns partial
+ * data if selectors don't match (xhs DOM changes frequently).
+ *
+ * The caller passes the ``<a>`` element; we walk up to find the card
+ * container, then query inside it for title/author/cover.
+ */
+export function extractNoteMetadataFromAnchor(
+  anchor: HTMLAnchorElement,
+  baseUrl: string,
+): XhsNoteMetadata | null {
+  const url = extractXhsNoteUrl(anchor.href, baseUrl);
+  if (!url) return null;
+
+  // Walk up to the card container — xhs uses .note-item or a nearby section/div
+  const card =
+    anchor.closest(".note-item, section, [class*='note'], [class*='card']") ?? anchor;
+
+  const titleEl = card.querySelector(
+    ".title, .note-title, [class*='title'] span, [class*='title']",
+  );
+  const title = titleEl?.textContent?.trim() || anchor.title || "";
+
+  const authorEl = card.querySelector(
+    ".author-wrapper .name, .author .name, .user-name, [class*='author'] .name, .nickname",
+  );
+  const author = authorEl?.textContent?.trim() || "";
+
+  const coverImg = card.querySelector(
+    "img.cover, .cover img, img[src*='xhscdn'], img[src*='sns-img'], img",
+  );
+  const cover_url =
+    coverImg?.getAttribute("src") || coverImg?.getAttribute("data-src") || "";
+
+  return { url, title, author, cover_url };
 }
 
 /**

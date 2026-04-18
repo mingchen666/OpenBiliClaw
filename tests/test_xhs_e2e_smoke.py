@@ -1,12 +1,10 @@
 """End-to-end smoke test for the xhs safe-discovery pipeline.
 
 Guarded by ``XHS_E2E_SMOKE=1`` so CI and local dev default do not need
-docker. When enabled, expects the xhs-sidecar container to be running
-and reachable.
+docker. Tests the backend API endpoints for xhs content ingestion.
 
 Usage::
 
-    docker compose up -d xhs-sidecar
     XHS_E2E_SMOKE=1 .venv/bin/pytest tests/test_xhs_e2e_smoke.py -q
 """
 
@@ -23,7 +21,7 @@ _SMOKE_ENABLED = os.environ.get("XHS_E2E_SMOKE", "") == "1"
 
 pytestmark = pytest.mark.skipif(
     not _SMOKE_ENABLED,
-    reason="XHS_E2E_SMOKE=1 not set; skipping live sidecar test",
+    reason="XHS_E2E_SMOKE=1 not set; skipping live test",
 )
 
 
@@ -36,10 +34,6 @@ def smoke_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     db = Database(tmp_path / "smoke.db")
     db.initialize()
 
-    sidecar_url = os.environ.get(
-        "OPENBILICLAW_XHS_SIDECAR_URL", "http://127.0.0.1:5556"
-    )
-
     fake_config = SimpleNamespace(
         data_path=tmp_path,
         bilibili=SimpleNamespace(cookie="", browser_executable="", browser_headed=False),
@@ -47,7 +41,6 @@ def smoke_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
             browser_cdp_url="",
             browser_headed=False,
             xiaohongshu=SimpleNamespace(
-                sidecar_url=sidecar_url,
                 daily_search_budget=20,
                 daily_creator_budget=10,
                 task_interval_seconds=45,
@@ -63,19 +56,6 @@ def smoke_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     app = create_app(database=db)
     return TestClient(app)
-
-
-@pytest.mark.integration
-def test_sidecar_health(smoke_client: TestClient) -> None:
-    """Sidecar /health must respond with 200."""
-    import httpx
-
-    sidecar_url = os.environ.get(
-        "OPENBILICLAW_XHS_SIDECAR_URL", "http://127.0.0.1:5556"
-    )
-    resp = httpx.get(f"{sidecar_url}/health", timeout=5)
-    assert resp.status_code == 200
-    assert resp.json()["ok"] is True
 
 
 @pytest.mark.integration

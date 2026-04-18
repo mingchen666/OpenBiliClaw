@@ -178,16 +178,13 @@ class RuntimeContext:
         )
         new_discovery_engine.register_adapter(bilibili_adapter)
 
-        # Register Xiaohongshu adapter — HTTP client that talks to the
-        # GPL-isolated xhs-downloader sidecar container. Discovery (finding
-        # note URLs) happens in the user's real browser via the extension;
-        # this adapter only enriches known URLs. If the sidecar URL is not
-        # configured the adapter stays registered but returns empty results.
+        # Register Xiaohongshu adapter — content enters the pool via the
+        # extension's API endpoints (POST /api/sources/xhs/observed-urls),
+        # not via adapter.fetch(). The adapter is a stub so the registry
+        # knows "xiaohongshu" is a valid source type.
         from openbiliclaw.sources.xiaohongshu_adapter import XiaohongshuAdapter
 
-        xiaohongshu_adapter = XiaohongshuAdapter(
-            sidecar_url=new_config.sources.xiaohongshu.sidecar_url,
-        )
+        xiaohongshu_adapter = XiaohongshuAdapter()
         new_discovery_engine.register_adapter(xiaohongshu_adapter)
 
         # 8. Continuous refresh controller

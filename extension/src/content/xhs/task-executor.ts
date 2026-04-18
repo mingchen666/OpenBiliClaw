@@ -14,8 +14,10 @@
 
 import {
   collectInViewportNoteUrls,
+  extractNoteMetadataFromAnchor,
   type AnchorLike,
   type ViewportRect,
+  type XhsNoteMetadata,
 } from "./passive.js";
 
 const MAX_URLS = 20;
@@ -31,6 +33,7 @@ export interface TaskExecuteMessage {
 export interface TaskResultPayload {
   task_id: string;
   urls: string[];
+  notes: XhsNoteMetadata[];
   status: "ok" | "empty" | "error";
   error?: string;
 }
@@ -114,26 +117,40 @@ async function executeTaskInPage(
   try {
     const found = await waitForCards(doc);
     if (!found) {
-      return { task_id: msg.task_id, urls: [], status: "empty" };
+      return { task_id: msg.task_id, urls: [], notes: [], status: "empty" };
     }
 
     const anchors = snapshotAllAnchors(doc);
     const viewport = buildLargeViewport(win);
+    const baseUrl = win.location.href;
     const urls = collectInViewportNoteUrls(anchors, viewport, {
-      baseUrl: win.location.href,
+      baseUrl,
       toleranceBelowPx: 500,
       toleranceAbovePx: 500,
     });
 
     if (urls.length === 0) {
-      return { task_id: msg.task_id, urls: [], status: "empty" };
+      return { task_id: msg.task_id, urls: [], notes: [], status: "empty" };
     }
 
-    return { task_id: msg.task_id, urls: urls.slice(0, MAX_URLS), status: "ok" };
+    // Extract metadata from DOM for each discovered URL
+    const urlSet = new Set(urls.slice(0, MAX_URLS));
+    const notes: XhsNoteMetadata[] = [];
+    const anchorEls = doc.querySelectorAll<HTMLAnchorElement>(ANCHOR_SELECTOR);
+    anchorEls.forEach((el) => {
+      const meta = extractNoteMetadataFromAnchor(el, baseUrl);
+      if (meta && urlSet.has(meta.url)) {
+        notes.push(meta);
+        urlSet.delete(meta.url);
+      }
+    });
+
+    return { task_id: msg.task_id, urls: urls.slice(0, MAX_URLS), notes, status: "ok" };
   } catch (err) {
     return {
       task_id: msg.task_id,
       urls: [],
+      notes: [],
       status: "error",
       error: String(err),
     };

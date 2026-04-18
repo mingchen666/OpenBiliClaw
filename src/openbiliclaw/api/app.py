@@ -940,19 +940,62 @@ def create_app(
     _XHS_MAX_URLS_PER_BATCH = 50
     _XHS_URL_PREFIX = "https://www.xiaohongshu.com/"
 
+    def _cache_xhs_notes(
+        database: Any, notes: list[dict[str, Any]], page_type: str
+    ) -> int:
+        """Store xhs note metadata from the extension directly into content_cache."""
+        from urllib.parse import urlparse
+
+        cached = 0
+        for note in notes:
+            url = note.get("url", "")
+            if not isinstance(url, str) or not url.startswith(_XHS_URL_PREFIX):
+                continue
+            # Extract note ID from URL path
+            try:
+                path = urlparse(url).path.strip("/")
+                note_id = path.rsplit("/", 1)[-1] if path else ""
+            except Exception:
+                note_id = ""
+            if not note_id:
+                continue
+
+            title = str(note.get("title", "") or "").strip()
+            author = str(note.get("author", "") or "").strip()
+            cover_url = str(note.get("cover_url", "") or "").strip()
+
+            # Cache as DiscoveredContent with multi-source fields
+            database.cache_content(
+                bvid=note_id,
+                title=title,
+                up_name=author,
+                cover_url=cover_url,
+                source_strategy=f"xhs-extension-{page_type}",
+                content_id=note_id,
+                content_url=url,
+                source_platform="xiaohongshu",
+                author_name=author,
+            )
+            cached += 1
+        return cached
+
     @app.post("/api/sources/xhs/observed-urls")
     def ingest_xhs_observed_urls(payload: dict[str, Any]) -> dict[str, Any]:
-        """Accept xhs note URLs the extension passively collected.
+        """Accept xhs note URLs + optional metadata the extension collected.
 
-        Body: ``{ "urls": [...], "page_type": "search" | "profile" | ... }``
+        Body: ``{ "urls": [...], "notes": [{url, title, author, cover_url}], "page_type": "..." }``
+
+        When ``notes`` is present, metadata is stored directly into content_cache
+        as DiscoveredContent — no sidecar enrichment needed.
         """
         from fastapi import HTTPException
 
         urls_raw: list[str] = payload.get("urls", [])
+        notes_raw: list[dict[str, Any]] = payload.get("notes", [])
         page_type: str = payload.get("page_type", "other")
 
-        if not urls_raw:
-            raise HTTPException(status_code=422, detail="urls must be a non-empty list")
+        if not urls_raw and not notes_raw:
+            raise HTTPException(status_code=422, detail="urls or notes must be non-empty")
         if len(urls_raw) > _XHS_MAX_URLS_PER_BATCH:
             raise HTTPException(
                 status_code=422,
@@ -965,11 +1008,16 @@ def create_app(
             if isinstance(u, str) and u.startswith(_XHS_URL_PREFIX) and "/explore/" in u
         ]
 
-        if not valid_urls:
-            return {"ok": True, "accepted": 0}
+        # Store bare URLs for tracking
+        if valid_urls:
+            ctx.database.save_xhs_observed_urls(valid_urls, page_type)
 
-        accepted = ctx.database.save_xhs_observed_urls(valid_urls, page_type)
-        return {"ok": True, "accepted": accepted}
+        # Store rich notes directly into content_cache
+        cached = 0
+        if notes_raw:
+            cached = _cache_xhs_notes(ctx.database, notes_raw, page_type)
+
+        return {"ok": True, "accepted": max(len(valid_urls), cached)}
 
     # ── XHS task queue endpoints (extension dispatcher) ──────────────
 
@@ -1020,13 +1068,16 @@ def create_app(
 
         if status == "ok":
             _xhs_task_queue.complete(task_id, urls=urls)
-            # Also store discovered URLs for enrichment
+            # Store discovered URLs + metadata
             valid_urls = [
                 u for u in urls
                 if isinstance(u, str) and u.startswith(_XHS_URL_PREFIX)
             ]
             if valid_urls:
                 ctx.database.save_xhs_observed_urls(valid_urls, "task")
+            notes = payload.get("notes", [])
+            if notes:
+                _cache_xhs_notes(ctx.database, notes, "task")
         else:
             _xhs_task_queue.fail(task_id, error=payload.get("error", ""))
 

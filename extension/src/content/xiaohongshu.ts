@@ -16,8 +16,10 @@ import {
   classifyXhsPageType,
   collectInViewportNoteUrls,
   dedupeObservedUrls,
+  extractNoteMetadataFromAnchor,
   type AnchorLike,
   type ViewportRect,
+  type XhsNoteMetadata,
   type XhsUrlObservation,
 } from "./xhs/passive.js";
 import { registerTaskExecutor } from "./xhs/task-executor.js";
@@ -58,9 +60,24 @@ function runPassiveCollection(): void {
   const fresh = dedupeObservedUrls(visible, reportedUrls);
   if (fresh.length === 0) return;
 
+  const freshSet = new Set(fresh);
+  const baseUrl = window.location.href;
+
+  // Extract metadata from DOM for fresh URLs
+  const notes: XhsNoteMetadata[] = [];
+  const anchorEls = document.querySelectorAll<HTMLAnchorElement>(PASSIVE_ANCHOR_SELECTOR);
+  anchorEls.forEach((el) => {
+    const meta = extractNoteMetadataFromAnchor(el, baseUrl);
+    if (meta && freshSet.has(meta.url) && notes.length < PASSIVE_MAX_URLS_PER_BATCH) {
+      notes.push(meta);
+      freshSet.delete(meta.url); // avoid duplicates from multiple anchors with same URL
+    }
+  });
+
   const observation: XhsUrlObservation = {
     urls: fresh.slice(0, PASSIVE_MAX_URLS_PER_BATCH),
-    page_type: classifyXhsPageType(window.location.href),
+    notes,
+    page_type: classifyXhsPageType(baseUrl),
     observed_at: Date.now(),
   };
   chrome.runtime.sendMessage({ action: "XHS_URLS_OBSERVED", data: observation });

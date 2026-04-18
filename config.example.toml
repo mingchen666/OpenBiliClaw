@@ -109,13 +109,10 @@ cdp_url = ""
 headed = false
 
 # ── 小红书（xhs）专用配置 ──
-# 详情富化（title / author / tags 等）通过 GPL 隔离的 xhs-downloader sidecar
-# 容器完成，主后端从不直接 import xhs 代码。内容发现（找到要富化的 URL）
-# 由浏览器扩展在真实登录态下完成，不在后端做主动爬取，避免触发风控。
+# 内容发现和元数据提取完全由浏览器扩展在真实登录态下完成：
+# 被动收集（用户浏览时自动提取）+ 后台标签页搜索 + 创作者订阅。
+# 后端不做主动爬取，避免触发风控。
 [sources.xiaohongshu]
-# xhs-downloader sidecar 的 HTTP 地址。留空则禁用小红书源。
-# docker compose 启动时会注入 OPENBILICLAW_XHS_SIDECAR_URL 环境变量覆盖本字段。
-sidecar_url = ""
 # 每天后端允许入队的 Soul 驱动搜索任务数上限
 daily_search_budget = 20
 # 每天每位订阅创作者的抓取任务上限

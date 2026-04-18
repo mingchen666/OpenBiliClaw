@@ -1,4 +1,0 @@
-# Wrapper-only deps. XHS-Downloader's own requirements are installed separately
-# from the cloned upstream repo during docker build.
-fastapi>=0.115,<0.200
-uvicorn>=0.30,<1.0

@@ -196,7 +196,6 @@ class TestBackendAPI:
                 browser_cdp_url="",
                 browser_headed=False,
                 xiaohongshu=SimpleNamespace(
-                    sidecar_url=None,
                     daily_search_budget=20,
                     daily_creator_budget=10,
                     task_interval_seconds=45,
