@@ -31,6 +31,7 @@ const NOTIFICATION_ACK_URL = "http://127.0.0.1:8420/api/notifications/sent";
 const COGNITION_POLL_URL = "http://127.0.0.1:8420/api/cognition-updates/pending";
 const COGNITION_ACK_URL = "http://127.0.0.1:8420/api/cognition-updates/seen";
 const DELIGHT_ACK_URL = "http://127.0.0.1:8420/api/delight/sent";
+const XHS_OBSERVED_URLS_URL = "http://127.0.0.1:8420/api/sources/xhs/observed-urls";
 const RUNTIME_STREAM_URL = "ws://127.0.0.1:8420/api/runtime-stream";
 const WS_RECONNECT_DELAY = 5_000;
 type PendingNotification = import("./notifications.js").PendingNotification;
@@ -241,7 +242,23 @@ chrome.action.onClicked.addListener((tab) => {
   });
 });
 
+async function postXhsObservedUrls(payload: Record<string, unknown>): Promise<void> {
+  try {
+    await fetch(XHS_OBSERVED_URLS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    // Best-effort — missing a batch just means less enrichment coverage.
+  }
+}
+
 chrome.runtime.onMessage.addListener((message) => {
+  if (message.action === "XHS_URLS_OBSERVED") {
+    void postXhsObservedUrls(message.data as Record<string, unknown>);
+    return;
+  }
   if (message.action !== "BEHAVIOR_EVENT") return;
 
   eventBuffer = enqueueBufferedEvent(eventBuffer, message.data as BehaviorEvent, BUFFER_MAX_SIZE);
