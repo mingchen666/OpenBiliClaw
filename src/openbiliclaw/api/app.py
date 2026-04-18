@@ -971,6 +971,106 @@ def create_app(
         accepted = ctx.database.save_xhs_observed_urls(valid_urls, page_type)
         return {"ok": True, "accepted": accepted}
 
+    # ── XHS task queue endpoints (extension dispatcher) ──────────────
+
+    from openbiliclaw.sources.xhs_tasks import XhsTaskQueue, XhsCreatorStore
+
+    # Guard: only initialise when ctx.database is a real Database (has .conn).
+    # Tests that pass database=object() as a stub won't trigger table creation.
+    _xhs_task_queue: XhsTaskQueue | None = None
+    _xhs_creator_store: XhsCreatorStore | None = None
+    if hasattr(ctx.database, "conn"):
+        _xhs_task_queue = XhsTaskQueue(ctx.database)
+        _xhs_creator_store = XhsCreatorStore(ctx.database)
+
+    @app.get("/api/sources/xhs/next-task")
+    def xhs_next_task(response: Any = None) -> Any:
+        """Return the oldest pending xhs task, or 204 if none."""
+        from fastapi.responses import JSONResponse
+
+        if _xhs_task_queue is None:
+            return JSONResponse(status_code=204, content=None)
+        task = _xhs_task_queue.next_pending()
+        if task is None:
+            return JSONResponse(status_code=204, content=None)
+
+        import json as _json
+
+        payload = _json.loads(task["payload_json"]) if task.get("payload_json") else {}
+        return {
+            "id": task["id"],
+            "type": task["type"],
+            **payload,
+        }
+
+    @app.post("/api/sources/xhs/task-result")
+    def xhs_task_result(payload: dict[str, Any]) -> dict[str, Any]:
+        """Accept a task result from the extension dispatcher."""
+        task_id = payload.get("task_id", "")
+        status = payload.get("status", "")
+        urls = payload.get("urls", [])
+
+        if not task_id:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=422, detail="task_id is required")
+
+        if _xhs_task_queue is None:
+            return {"ok": True}
+
+        if status == "ok":
+            _xhs_task_queue.complete(task_id, urls=urls)
+            # Also store discovered URLs for enrichment
+            valid_urls = [
+                u for u in urls
+                if isinstance(u, str) and u.startswith(_XHS_URL_PREFIX)
+            ]
+            if valid_urls:
+                ctx.database.save_xhs_observed_urls(valid_urls, "task")
+        else:
+            _xhs_task_queue.fail(task_id, error=payload.get("error", ""))
+
+        return {"ok": True}
+
+    @app.get("/api/sources/xhs/creators")
+    def xhs_list_creators() -> dict[str, Any]:
+        """List all xhs creator subscriptions."""
+        if _xhs_creator_store is None:
+            return {"items": []}
+        return {"items": _xhs_creator_store.list_all()}
+
+    @app.post("/api/sources/xhs/creators", status_code=201)
+    def xhs_add_creator(payload: dict[str, Any]) -> dict[str, Any]:
+        """Add an xhs creator subscription."""
+        from fastapi import HTTPException
+
+        creator_id = payload.get("creator_id", "")
+        creator_url = payload.get("creator_url", "")
+        display_name = payload.get("display_name", "")
+
+        if not creator_id or not creator_url:
+            raise HTTPException(
+                status_code=422,
+                detail="creator_id and creator_url are required",
+            )
+
+        if _xhs_creator_store is None:
+            raise HTTPException(status_code=503, detail="xhs not configured")
+        _xhs_creator_store.add(creator_id, creator_url, display_name)
+        return {"ok": True}
+
+    @app.delete("/api/sources/xhs/creators/{sub_id}")
+    def xhs_delete_creator(sub_id: int) -> dict[str, Any]:
+        """Delete an xhs creator subscription."""
+        from fastapi import HTTPException
+
+        if _xhs_creator_store is None:
+            raise HTTPException(status_code=503, detail="xhs not configured")
+        deleted = _xhs_creator_store.delete(sub_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        return {"ok": True}
+
     # ── Configuration management endpoints ──────────────────────────
 
     def _config_to_response(
