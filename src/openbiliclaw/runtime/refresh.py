@@ -36,6 +36,7 @@ class SupportsEventDatabase(Protocol):
     def count_pool_candidates(self) -> int: ...
     def count_pool_candidates_by_source(self) -> dict[str, int]: ...
     def trim_explore_cluster_overflow(self, *, max_per_cluster: int = 3) -> int: ...
+    def trim_pool_to_target_count(self, *, target: int) -> int: ...
     def evict_stale_pool_items(self, *, max_age_days: int = 14) -> int: ...
     def get_notification_candidate(
         self,
@@ -62,7 +63,8 @@ class SupportsProfileEngine(Protocol):
     # Optional: the soul engine exposes a ProfileUpdatePipeline that the
     # refresh loop ticks periodically. The attribute may be missing on
     # older test doubles, so callers should `getattr(..., "pipeline", None)`.
-    pipeline: Any
+    @property
+    def pipeline(self) -> Any: ...
 
 
 class SupportsDiscoveryEngine(Protocol):
@@ -139,9 +141,7 @@ class ContinuousRefreshController:
             parsed = self._parse_iso_datetime(value)
             if parsed is not None:
                 parsed_refresh_values.append(parsed)
-        last_refresh_at = (
-            max(parsed_refresh_values).isoformat() if parsed_refresh_values else ""
-        )
+        last_refresh_at = max(parsed_refresh_values).isoformat() if parsed_refresh_values else ""
         pending_delight_count = 0
         with suppress(Exception):
             pending_delight_count = self.database.count_delight_candidates(
@@ -157,16 +157,12 @@ class ContinuousRefreshController:
             "pool_available_count": self.database.count_pool_candidates(),
             "pool_target_count": self.pool_target_count,
             "last_discovered_count": self._int_state_value(state, "last_discovered_count"),
-            "last_replenished_count": self._int_state_value(
-                state, "last_replenished_count"
-            ),
+            "last_replenished_count": self._int_state_value(state, "last_replenished_count"),
             "recent_pool_topics": self._list_state_value(state, "recent_pool_topics"),
             "manual_refresh_state": self._manual_refresh_state,
             "manual_refresh_message": self._manual_refresh_message,
             "pending_delight_count": pending_delight_count,
-            "last_delight_notification_at": str(
-                state.get("last_delight_notification_at", "")
-            ),
+            "last_delight_notification_at": str(state.get("last_delight_notification_at", "")),
         }
 
     async def refresh_if_needed(self) -> dict[str, object]:
@@ -174,6 +170,9 @@ class ContinuousRefreshController:
         state = self.memory_manager.load_discovery_runtime_state()
         if not self._is_initialized():
             return {"refreshed": False, "strategies": [], "reason": "not_initialized"}
+
+        if self._enforce_pool_cap():
+            return {"refreshed": False, "strategies": [], "reason": "pool_at_cap"}
 
         profile = await self.soul_engine.get_profile()
         plan = self._build_refresh_plan(state)
@@ -191,11 +190,16 @@ class ContinuousRefreshController:
         """Run a full refresh immediately, bypassing runtime thresholds.
 
         Runs all 4 strategies in a single discover() call so they execute
-        concurrently via asyncio.gather, maximizing pool diversity.
+        concurrently via asyncio.gather, maximizing pool diversity. The pool
+        target still applies as a hard cap — if the pool is already full, no
+        discovery runs and overflow is trimmed.
         """
         state = self.memory_manager.load_discovery_runtime_state()
         if not self._is_initialized():
             return {"refreshed": False, "strategies": [], "reason": "not_initialized"}
+
+        if self._enforce_pool_cap():
+            return {"refreshed": False, "strategies": [], "reason": "pool_at_cap"}
 
         profile = await self.soul_engine.get_profile()
         plan = [
@@ -208,6 +212,20 @@ class ContinuousRefreshController:
             plan=plan,
             reason="manual",
         )
+
+    def _enforce_pool_cap(self) -> bool:
+        """Trim any overflow and report whether the pool is at/above target.
+
+        Returns ``True`` when the pool sits at or above ``pool_target_count``
+        *after* trimming, signalling the caller to skip discovery. A return of
+        ``False`` means there is room to replenish.
+        """
+        pool_available = self.database.count_pool_candidates()
+        if pool_available > self.pool_target_count:
+            with suppress(Exception):
+                self.database.trim_pool_to_target_count(target=self.pool_target_count)
+            pool_available = self.database.count_pool_candidates()
+        return pool_available >= self.pool_target_count
 
     async def trigger_manual_refresh(self) -> dict[str, object]:
         """Schedule one background manual refresh without blocking the caller."""
@@ -226,9 +244,7 @@ class ContinuousRefreshController:
     def get_pending_notification(self) -> dict[str, object] | None:
         """Return one recommendation candidate for browser notification."""
         state = self.memory_manager.load_discovery_runtime_state()
-        last_notification_at = self._parse_iso_datetime(
-            str(state.get("last_notification_at", ""))
-        )
+        last_notification_at = self._parse_iso_datetime(str(state.get("last_notification_at", "")))
         if last_notification_at is not None and self._now() - last_notification_at < timedelta(
             hours=self.notification_cooldown_hours
         ):
@@ -280,28 +296,57 @@ class ContinuousRefreshController:
         self.memory_manager.save_discovery_runtime_state(state)
 
     async def run_forever(self) -> None:
-        """Run the refresh loop until cancelled.
+        """Launch all background tasks as independent concurrent loops.
 
-        Each iteration runs three independent tasks in sequence:
-          1. ``refresh_if_needed()`` — replenishes the discovery pool
-          2. ``soul_engine.pipeline.tick()`` — drives time-gated profile work:
-             buffer flushes, speculator promotion, and the half-day cognition
-             cycle (awareness + insight regeneration)
-          3. sleep until next iteration
+        Each task runs on its own timer so a slow discovery refresh
+        (10+ minutes when B站 API challenges every request) never
+        blocks proactive notifications, soul pipeline ticks, or XHS
+        keyword production.
 
-        Each call is wrapped in ``suppress(Exception)`` so a failure in any
-        task does not break the loop or stall the others.
+        Architecture::
+
+            ┌─ _loop_refresh()       60s   LLM-heavy, may take minutes
+            ├─ _loop_soul_pipeline()  60s   profile updates, speculator
+            ├─ _loop_xhs_producer()   60s   keyword generation
+            └─ _loop_proactive_push() 60s   delight + interest probe
         """
+        tasks = [
+            asyncio.create_task(self._loop_refresh()),
+            asyncio.create_task(self._loop_soul_pipeline()),
+            asyncio.create_task(self._loop_xhs_producer()),
+            asyncio.create_task(self._loop_proactive_push()),
+        ]
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _loop_refresh(self) -> None:
+        """Discovery refresh — fills the candidate pool."""
         while True:
             with suppress(Exception):
                 await self.refresh_if_needed()
+            await asyncio.sleep(self.check_interval_seconds)
+
+    async def _loop_soul_pipeline(self) -> None:
+        """Soul profile pipeline — buffer flushes, speculator, cognition."""
+        while True:
             with suppress(Exception):
                 await self._tick_soul_pipeline()
+            await asyncio.sleep(self.check_interval_seconds)
+
+    async def _loop_xhs_producer(self) -> None:
+        """XHS keyword production — Soul-driven search task generation."""
+        while True:
             with suppress(Exception):
                 await self._tick_xhs_producer()
-            # Proactive push: delight + interest probe are independent of
-            # discovery refresh — they should fire even when the pool is
-            # full and no _run_refresh_plan executes.
+            await asyncio.sleep(self.check_interval_seconds)
+
+    async def _loop_proactive_push(self) -> None:
+        """Delight + interest probe push — lightweight, never blocks."""
+        while True:
             with suppress(Exception):
                 await self._publish_delight_if_available()
             with suppress(Exception):
@@ -448,7 +493,7 @@ class ContinuousRefreshController:
 
         for strategies, requested_limit in plan:
             current_pool_count = self.database.count_pool_candidates()
-            if initial_pool_below_target and current_pool_count >= self.pool_target_count:
+            if current_pool_count >= self.pool_target_count:
                 break
 
             await self._publish_event(
@@ -550,6 +595,8 @@ class ContinuousRefreshController:
                 "delight_score": candidate.get("delight_score", 0.0),
                 "delight_hook": candidate.get("delight_hook", ""),
                 "cover_url": candidate.get("cover_url", ""),
+                "content_url": candidate.get("content_url", ""),
+                "source_platform": candidate.get("source_platform", "bilibili"),
             }
         )
 

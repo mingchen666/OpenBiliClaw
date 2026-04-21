@@ -138,7 +138,7 @@ cp config.example.toml config.toml
 |----|------|--------|------|
 | `enabled` | bool | `true` | 是否启用定时发现 |
 | `discovery_cron` | string | `"0 */4 * * *"` | 发现任务 cron 表达式 |
-| `pool_target_count` | int | `600` | discovery pool 期望保有的可换候选数量；允许范围 `1..600`。运行时会持续补货直到接近该目标；到达目标后不再触发新 discover，直到 pool 掉回目标以下再补货 |
+| `pool_target_count` | int | `600` | discovery pool 的硬上限，同时作为期望保有的可换候选数量；允许范围 `1..600`。pool < 目标时会持续补货；pool ≥ 目标时任何 refresh（含 `force_refresh`）都直接返回 `pool_at_cap` 不再 discover；pool > 目标时会先按 `relevance_score` / 时间 / `explore` 优先顺序把溢出部分降为 `suppressed` |
 | `account_sync_interval_hours` | int | `6` | 账户侧长期信号同步间隔；运行时会低频拉取 history / favorites / following |
 | `speculation_interval_minutes` | int | `10` | 猜测兴趣推测的运行间隔（分钟） |
 | `speculation_ttl_days` | int | `3` | 猜测兴趣的默认存活天数 |

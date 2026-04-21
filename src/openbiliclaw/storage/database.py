@@ -115,9 +115,7 @@ class Database:
     def initialize(self) -> None:
         """Initialize the database and run migrations if needed."""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(
-            str(self._db_path), timeout=30.0, check_same_thread=False
-        )
+        self._conn = sqlite3.connect(str(self._db_path), timeout=30.0, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout = 30000")
@@ -322,7 +320,10 @@ class Database:
                 source_platform,
                 author_name
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                CURRENT_TIMESTAMP, ?, ?, ?, ?, ?
+            )
             ON CONFLICT(bvid) DO UPDATE SET
                 title = excluded.title,
                 up_name = excluded.up_name,
@@ -590,6 +591,58 @@ class Database:
         )
         return len(clean_bvids)
 
+    def trim_pool_to_target_count(self, *, target: int) -> int:
+        """Suppress overflow fresh items so the pool does not exceed *target*.
+
+        Ranking (what we keep): higher ``relevance_score`` > newer
+        ``last_scored_at`` > non-``explore`` source > stable ``bvid``. Items
+        already surfaced as recommendations are excluded from the count — the
+        recommendation side treats the pool as a queue, so consumed rows are
+        never trimmed here.
+        """
+        if target <= 0:
+            return 0
+
+        cursor = self.conn.execute(
+            """
+            SELECT bvid, source, relevance_score, last_scored_at
+            FROM content_cache
+            WHERE COALESCE(pool_status, 'fresh') = 'fresh'
+              AND COALESCE(feedback_type, '') != 'dislike'
+              AND NOT EXISTS (
+                SELECT 1 FROM recommendations AS r WHERE r.bvid = content_cache.bvid
+              )
+            """
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        if len(rows) <= target:
+            return 0
+
+        ranked = sorted(
+            rows,
+            key=lambda row: (
+                -float(row.get("relevance_score", 0.0) or 0.0),
+                -self._sort_timestamp_score(str(row.get("last_scored_at", ""))),
+                1 if str(row.get("source", "") or "") == "explore" else 0,
+                str(row.get("bvid", "")),
+            ),
+        )
+        overflow_bvids = [str(row.get("bvid", "")).strip() for row in ranked[target:]]
+        clean_bvids = [bvid for bvid in overflow_bvids if bvid]
+        if not clean_bvids:
+            return 0
+
+        placeholders = ", ".join("?" for _ in clean_bvids)
+        self._execute_write(
+            f"""
+            UPDATE content_cache
+            SET pool_status = 'suppressed'
+            WHERE bvid IN ({placeholders})
+            """,
+            clean_bvids,
+        )
+        return len(clean_bvids)
+
     @staticmethod
     def _balance_pool_rows(rows: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
         if limit <= 0 or len(rows) <= limit:
@@ -729,9 +782,7 @@ class Database:
         # throughout — topic values may contain SQL metacharacters that must
         # not be interpolated into the query string.
         exact_placeholders = ", ".join("?" for _ in clean)
-        like_conditions = " OR ".join(
-            "title LIKE ? OR pool_topic_label LIKE ?" for _ in clean
-        )
+        like_conditions = " OR ".join("title LIKE ? OR pool_topic_label LIKE ?" for _ in clean)
 
         params: list[Any] = []
         params.extend(clean)  # topic_key IN (...)
@@ -762,7 +813,9 @@ class Database:
         return cursor.rowcount
 
     def get_fresh_pool_candidates_for_purge_scan(
-        self, *, limit: int = 500,
+        self,
+        *,
+        limit: int = 500,
     ) -> list[dict[str, Any]]:
         """Return fresh, not-yet-recommended pool candidates for a semantic scan.
 
@@ -1155,9 +1208,7 @@ class Database:
         for column_name, column_type in required_columns.items():
             if column_name in existing_columns:
                 continue
-            self.conn.execute(
-                f"ALTER TABLE recommendations ADD COLUMN {column_name} {column_type}"
-            )
+            self.conn.execute(f"ALTER TABLE recommendations ADD COLUMN {column_name} {column_type}")
 
     def _ensure_content_cache_runtime_columns(self) -> None:
         """Backfill content-cache runtime columns for continuous refresh."""
@@ -1177,9 +1228,7 @@ class Database:
         for column_name, column_type in required_columns.items():
             if column_name in existing_columns:
                 continue
-            self.conn.execute(
-                f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}"
-            )
+            self.conn.execute(f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}")
 
     def _ensure_content_cache_relevance_columns(self) -> None:
         """Backfill relevance fields for existing content-cache rows."""
@@ -1195,9 +1244,7 @@ class Database:
         for column_name, column_type in required_columns.items():
             if column_name in existing_columns:
                 continue
-            self.conn.execute(
-                f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}"
-            )
+            self.conn.execute(f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}")
 
     def _ensure_content_cache_topic_columns(self) -> None:
         """Backfill topic bucketing fields for existing content-cache rows."""
@@ -1206,17 +1253,11 @@ class Database:
             for row in self.conn.execute("PRAGMA table_info(content_cache)").fetchall()
         }
         if "topic_key" not in existing_columns:
-            self.conn.execute(
-                "ALTER TABLE content_cache ADD COLUMN topic_key TEXT DEFAULT ''"
-            )
+            self.conn.execute("ALTER TABLE content_cache ADD COLUMN topic_key TEXT DEFAULT ''")
         if "topic_group" not in existing_columns:
-            self.conn.execute(
-                "ALTER TABLE content_cache ADD COLUMN topic_group TEXT DEFAULT ''"
-            )
+            self.conn.execute("ALTER TABLE content_cache ADD COLUMN topic_group TEXT DEFAULT ''")
         if "style_key" not in existing_columns:
-            self.conn.execute(
-                "ALTER TABLE content_cache ADD COLUMN style_key TEXT DEFAULT ''"
-            )
+            self.conn.execute("ALTER TABLE content_cache ADD COLUMN style_key TEXT DEFAULT ''")
 
     def _ensure_content_cache_pool_copy_columns(self) -> None:
         """Backfill precomputed pool-copy fields for existing databases."""
@@ -1231,9 +1272,7 @@ class Database:
         for column_name, column_type in required_columns.items():
             if column_name in existing_columns:
                 continue
-            self.conn.execute(
-                f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}"
-            )
+            self.conn.execute(f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}")
 
     def _ensure_content_cache_delight_columns(self) -> None:
         """Backfill proactive delight scoring fields for existing databases."""
@@ -1251,9 +1290,7 @@ class Database:
         for column_name, column_type in required_columns.items():
             if column_name in existing_columns:
                 continue
-            self.conn.execute(
-                f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}"
-            )
+            self.conn.execute(f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}")
 
     def _ensure_content_cache_multisource_columns(self) -> None:
         """Add multi-source content identity fields for existing databases."""
@@ -1271,14 +1308,10 @@ class Database:
         for column_name, column_type in required_columns.items():
             if column_name in existing_columns:
                 continue
-            self.conn.execute(
-                f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}"
-            )
+            self.conn.execute(f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}")
             added = True
         if added:
-            self.conn.execute(
-                "UPDATE content_cache SET content_id = bvid WHERE content_id = ''"
-            )
+            self.conn.execute("UPDATE content_cache SET content_id = bvid WHERE content_id = ''")
 
     def _ensure_source_recipes_table(self) -> None:
         """Create the source_recipes table if it does not exist."""
@@ -1313,9 +1346,7 @@ class Database:
 
     # ── XHS observed URL ingest ───────────────────────────────────
 
-    def save_xhs_observed_urls(
-        self, urls: list[str], page_type: str
-    ) -> int:
+    def save_xhs_observed_urls(self, urls: list[str], page_type: str) -> int:
         """Insert observed xhs URLs, skipping duplicates. Returns count inserted."""
         inserted = 0
         for url in urls:
@@ -1366,9 +1397,7 @@ class Database:
     def get_all_recipes(self) -> list[dict[str, Any]]:
         """Return all source recipes."""
         self._ensure_fresh_read()
-        rows = self.conn.execute(
-            "SELECT * FROM source_recipes ORDER BY created_at"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM source_recipes ORDER BY created_at").fetchall()
         return [self._row_to_recipe(row) for row in rows]
 
     def get_enabled_recipes(self) -> list[dict[str, Any]]:
@@ -1556,7 +1585,5 @@ class Database:
     ) -> list[dict[str, Any]]:
         if not viewed_bvids:
             return rows[:limit]
-        filtered = [
-            row for row in rows if str(row.get("bvid", "")).strip() not in viewed_bvids
-        ]
+        filtered = [row for row in rows if str(row.get("bvid", "")).strip() not in viewed_bvids]
         return filtered[:limit]

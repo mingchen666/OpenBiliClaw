@@ -35,6 +35,7 @@ import {
   reportRecommendationClick,
   reshuffleRecommendations,
   refreshRecommendations,
+  respondToDelight,
   respondToInterestProbe,
   sendChatMessage,
   submitFeedback,
@@ -64,6 +65,7 @@ const state = {
   activeFeedbackProgress: null,
   refreshStatusMessage: "",
   pendingProbe: null,
+  messages: [],
 };
 
 const elements = {
@@ -121,6 +123,11 @@ const elements = {
   chatInput: document.getElementById("chatInput"),
   chatSendButton: document.getElementById("chatSendButton"),
   chatStatus: document.getElementById("chatStatus"),
+  messagesButton: document.getElementById("messagesButton"),
+  messageBadge: document.getElementById("messageBadge"),
+  messagesOverlay: document.getElementById("messagesOverlay"),
+  messagesBack: document.getElementById("messagesBack"),
+  messagesList: document.getElementById("messagesList"),
 };
 
 function setRefreshButtonState(loading, message = "") {
@@ -259,10 +266,30 @@ function connectRuntimeStream() {
         setHint("后端配置已热重载，正在刷新数据…", "success");
         void initializeRecommendations();
       }
-      // Interest probe: show interactive probe card
+      // Interest confirmed/rejected: refresh profile and show hint
+      if (event.type === "interest.confirmed" || event.type === "interest.rejected" || event.type === "interest.chat") {
+        setHint(String(event.message || ""), "success");
+        void loadProfileSummary({ force: true });
+      }
+      // Interest probe: add to messages inbox
       if (event.type === "interest.probe" && event.domain) {
         state.pendingProbe = event;
+        if (!state.messages.some((m) => m.type === "interest.probe" && m.domain === event.domain)) {
+          state.messages.push({ ...event, type: "interest.probe" });
+          updateMessageBadge();
+        }
         renderProbeCard();
+      }
+      // Delight candidate: add to messages inbox
+      if (event.type === "delight.candidate" && event.bvid) {
+        if (!state.messages.some((m) => m.type === "delight" && m.bvid === event.bvid)) {
+          state.messages.push({ ...event, type: "delight" });
+          updateMessageBadge();
+        }
+      }
+      // Delight feedback: show hint
+      if (event.type === "delight.disliked" || event.type === "delight.chat") {
+        setHint(String(event.message || ""), "success");
       }
       // Init completed: re-fetch everything including profile
       if (event.type === "init_completed") {
@@ -531,12 +558,12 @@ function renderProbeCard() {
 
   const confirmBtn = document.createElement("button");
   confirmBtn.className = "probe-btn is-confirm";
-  confirmBtn.textContent = "是";
+  confirmBtn.textContent = "\u559C\u6B22";
   confirmBtn.addEventListener("click", () => handleProbeResponse("confirm"));
 
   const rejectBtn = document.createElement("button");
   rejectBtn.className = "probe-btn is-reject";
-  rejectBtn.textContent = "不是";
+  rejectBtn.textContent = "\u4E0D\u559C\u6B22";
   rejectBtn.addEventListener("click", () => handleProbeResponse("reject"));
 
   const chatBtn = document.createElement("button");
@@ -556,22 +583,13 @@ async function handleProbeResponse(responseType) {
   if (!probe) return;
 
   const domain = probe.domain;
+  const probeCard = document.querySelector(".probe-card");
 
   if (responseType === "chat") {
-    // Switch to chat tab with pre-filled context
-    const chatTab = document.querySelector('[data-tab="chat"]');
-    if (chatTab) chatTab.click();
-
-    const message = `\u6211\u60f3\u804a\u804a\u4f60\u731c\u6211\u53ef\u80fd\u611f\u5174\u8da3\u7684\u300c${domain}\u300d\u8fd9\u4e2a\u65b9\u5411`;
-    if (elements.chatInput instanceof HTMLTextAreaElement) {
-      elements.chatInput.value = message;
-      elements.chatInput.focus();
+    // Expand inline chat directly on the probe card
+    if (probeCard) {
+      expandInlineChat(probeCard, domain);
     }
-
-    // Clear probe
-    state.pendingProbe = null;
-    const probeCard = document.querySelector(".probe-card");
-    if (probeCard) probeCard.remove();
     return;
   }
 
@@ -579,24 +597,404 @@ async function handleProbeResponse(responseType) {
     await respondToInterestProbe(domain, responseType);
 
     // Show feedback
-    const probeCard = document.querySelector(".probe-card");
     if (probeCard) {
       probeCard.replaceChildren();
       const msg = document.createElement("p");
       msg.className = "probe-result";
       msg.textContent = responseType === "confirm"
-        ? `好，「${domain}」记住了。`
-        : `好，「${domain}」先不看了。`;
+        ? `\u597D\uFF0C\u300C${domain}\u300D\u8BB0\u4F4F\u4E86\u3002`
+        : `\u597D\uFF0C\u300C${domain}\u300D\u5148\u4E0D\u770B\u4E86\u3002`;
       probeCard.append(msg);
       setTimeout(() => probeCard.remove(), 3000);
     }
 
     state.pendingProbe = null;
+    // Also remove from messages inbox
+    state.messages = state.messages.filter((m) => m.domain !== domain);
+    updateMessageBadge();
 
     // Refresh profile to show updated speculations
     void loadProfileSummary({ force: true });
   } catch (err) {
     console.error("Failed to respond to probe:", err);
+  }
+}
+
+// ── Messages inbox ─────────────────────────────────────────────
+
+function updateMessageBadge() {
+  const badge = elements.messageBadge;
+  if (!(badge instanceof HTMLElement)) return;
+  const count = state.messages.length;
+  badge.textContent = String(count);
+  badge.hidden = count === 0;
+}
+
+function openMessagesPanel() {
+  const overlay = elements.messagesOverlay;
+  if (!(overlay instanceof HTMLElement)) return;
+  overlay.hidden = false;
+  renderMessagesList();
+}
+
+function closeMessagesPanel() {
+  const overlay = elements.messagesOverlay;
+  if (overlay instanceof HTMLElement) overlay.hidden = true;
+}
+
+function renderMessagesList() {
+  const container = elements.messagesList;
+  if (!(container instanceof HTMLElement)) return;
+  container.replaceChildren();
+
+  if (state.messages.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "messages-empty";
+    empty.innerHTML = '<div class="messages-empty-icon">\u{1F4EC}</div><p>\u6682\u65F6\u6CA1\u6709\u65B0\u6D88\u606F\u3002<br>\u5174\u8DA3\u786E\u8BA4\u3001\u60CA\u559C\u63A8\u8350\u548C\u901A\u77E5\u90FD\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC\u3002</p>';
+    container.append(empty);
+    return;
+  }
+
+  for (const msg of state.messages) {
+    const type = msg.type || "interest.probe";
+    if (type === "delight") {
+      container.append(buildDelightCard(msg));
+    } else {
+      container.append(buildMessageCard(msg));
+    }
+  }
+}
+
+function buildMessageCard(probe) {
+  const item = document.createElement("div");
+  item.className = "message-item";
+  item.dataset.domain = probe.domain;
+
+  // Dismiss button (×)
+  const dismiss = document.createElement("button");
+  dismiss.className = "message-dismiss";
+  dismiss.textContent = "\u00D7";
+  dismiss.title = "\u5173\u95ED";
+  dismiss.addEventListener("click", () => dismissMessage(probe.domain));
+  item.append(dismiss);
+
+  const domain = document.createElement("div");
+  domain.className = "message-domain";
+  domain.textContent = probe.domain;
+  item.append(domain);
+
+  if (probe.reason) {
+    const reason = document.createElement("p");
+    reason.className = "message-reason";
+    reason.textContent = probe.reason;
+    item.append(reason);
+  }
+
+  if (probe.specifics && probe.specifics.length > 0) {
+    const chips = document.createElement("div");
+    chips.className = "message-specifics";
+    for (const s of probe.specifics.slice(0, 5)) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = typeof s === "string" ? s : s.name || s;
+      chips.append(chip);
+    }
+    item.append(chips);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "message-actions";
+
+  const confirmBtn = document.createElement("button");
+  confirmBtn.className = "probe-btn is-confirm";
+  confirmBtn.textContent = "\u559C\u6B22";
+  confirmBtn.addEventListener("click", () => handleMessageResponse(probe.domain, "confirm"));
+
+  const rejectBtn = document.createElement("button");
+  rejectBtn.className = "probe-btn is-reject";
+  rejectBtn.textContent = "\u4E0D\u559C\u6B22";
+  rejectBtn.addEventListener("click", () => handleMessageResponse(probe.domain, "reject"));
+
+  const chatBtn = document.createElement("button");
+  chatBtn.className = "probe-btn is-chat";
+  chatBtn.textContent = "\u591A\u804A\u804A";
+  chatBtn.addEventListener("click", () => expandInlineChat(item, probe.domain));
+
+  actions.append(confirmBtn, rejectBtn, chatBtn);
+  item.append(actions);
+  return item;
+}
+
+// ── Delight (surprise recommendation) card ─────────────────────
+
+function buildDelightCard(delight) {
+  const item = document.createElement("div");
+  item.className = "message-item is-delight";
+  item.dataset.bvid = delight.bvid;
+
+  // Dismiss ×
+  const dismiss = document.createElement("button");
+  dismiss.className = "message-dismiss";
+  dismiss.textContent = "\u00D7";
+  dismiss.title = "\u5173\u95ED";
+  dismiss.addEventListener("click", () => dismissMessageByBvid(delight.bvid));
+  item.append(dismiss);
+
+  // Hook badge + title
+  const header = document.createElement("div");
+  header.className = "message-domain";
+  const hook = delight.delight_hook ? `\u2728 ${delight.delight_hook} \u00B7 ` : "\u2728 ";
+  header.textContent = `${hook}${delight.title || ""}`;
+  item.append(header);
+
+  // Reason
+  if (delight.delight_reason) {
+    const reason = document.createElement("p");
+    reason.className = "message-reason";
+    reason.textContent = delight.delight_reason;
+    item.append(reason);
+  }
+
+  // Action buttons
+  const actions = document.createElement("div");
+  actions.className = "message-actions";
+
+  const viewBtn = document.createElement("button");
+  viewBtn.className = "probe-btn is-view";
+  viewBtn.textContent = "\u770B\u770B";
+  viewBtn.addEventListener("click", () => {
+    const url = delight.content_url || `https://www.bilibili.com/video/${delight.bvid}`;
+    window.open(url, "_blank");
+    respondToDelight(delight.bvid, "view", delight.title).catch(() => {});
+    dismissMessageByBvid(delight.bvid);
+  });
+
+  const dislikeBtn = document.createElement("button");
+  dislikeBtn.className = "probe-btn is-reject";
+  dislikeBtn.textContent = "\u4E0D\u611F\u5174\u8DA3";
+  dislikeBtn.addEventListener("click", () => handleDelightResponse(delight, "dislike"));
+
+  const chatBtn = document.createElement("button");
+  chatBtn.className = "probe-btn is-chat";
+  chatBtn.textContent = "\u804A\u4E00\u804A";
+  chatBtn.addEventListener("click", () => expandDelightChat(item, delight));
+
+  actions.append(viewBtn, dislikeBtn, chatBtn);
+  item.append(actions);
+  return item;
+}
+
+async function handleDelightResponse(delight, responseType) {
+  try {
+    await respondToDelight(delight.bvid, responseType, delight.title);
+    const item = elements.messagesList?.querySelector(`[data-bvid="${CSS.escape(delight.bvid)}"]`);
+    if (item) {
+      item.replaceChildren();
+      const msg = document.createElement("p");
+      msg.className = "message-result";
+      msg.textContent = "\u597D\uFF0C\u8FD9\u7C7B\u5148\u4E0D\u63A8\u4E86\u3002";
+      item.append(msg);
+      setTimeout(() => { item.remove(); renderMessagesEmptyIfNeeded(); }, 2000);
+    }
+    dismissMessageByBvid(delight.bvid, false);
+  } catch (err) {
+    console.error("Delight response failed:", err);
+  }
+}
+
+function expandDelightChat(itemEl, delight) {
+  if (itemEl.querySelector(".message-chat-area")) return;
+  const actions = itemEl.querySelector(".message-actions");
+  if (actions) actions.hidden = true;
+
+  const chatArea = document.createElement("div");
+  chatArea.className = "message-chat-area";
+
+  const input = document.createElement("textarea");
+  input.className = "message-chat-input";
+  input.rows = 1;
+  input.placeholder = `\u804A\u804A\u4F60\u5BF9\u8FD9\u6761\u63A8\u8350\u7684\u60F3\u6CD5\u2026`;
+
+  const sendBtn = document.createElement("button");
+  sendBtn.className = "message-chat-send";
+  sendBtn.textContent = "\u53D1\u9001";
+  sendBtn.addEventListener("click", async () => {
+    const message = input.value.trim();
+    if (!message) return;
+    sendBtn.disabled = true;
+    sendBtn.textContent = "\u601D\u8003\u4E2D\u2026";
+    try {
+      const result = await respondToDelight(delight.bvid, "chat", delight.title, message);
+      const reply = result?.reply || "\u6536\u5230\u4E86\uFF0C\u6211\u4F1A\u7EE7\u7EED\u89C2\u5BDF\u3002";
+      const replyEl = document.createElement("div");
+      replyEl.className = "message-chat-reply";
+      replyEl.textContent = reply;
+      itemEl.append(replyEl);
+      const ca = itemEl.querySelector(".message-chat-area");
+      if (ca) ca.remove();
+      setTimeout(() => { dismissMessageByBvid(delight.bvid); itemEl.remove(); renderMessagesEmptyIfNeeded(); }, 4000);
+    } catch (err) {
+      console.error("Delight chat failed:", err);
+      sendBtn.disabled = false;
+      sendBtn.textContent = "\u53D1\u9001";
+      const errEl = document.createElement("div");
+      errEl.className = "message-chat-reply";
+      errEl.textContent = "\u540E\u53F0\u6B63\u5FD9\uFF0C\u7B49\u4E00\u4E0B\u518D\u804A\u3002";
+      itemEl.append(errEl);
+      setTimeout(() => errEl.remove(), 3000);
+    }
+  });
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendBtn.click(); }
+  });
+
+  chatArea.append(input, sendBtn);
+  itemEl.append(chatArea);
+  input.focus();
+}
+
+function dismissMessageByBvid(bvid, removeFromDom = true) {
+  state.messages = state.messages.filter((m) => m.bvid !== bvid);
+  updateMessageBadge();
+  if (removeFromDom) {
+    const item = elements.messagesList?.querySelector(`[data-bvid="${CSS.escape(bvid)}"]`);
+    if (item) item.remove();
+    renderMessagesEmptyIfNeeded();
+  }
+}
+
+function expandInlineChat(itemEl, domain) {
+  // Don't add twice
+  if (itemEl.querySelector(".message-chat-area")) return;
+
+  // Hide the action buttons
+  const actions = itemEl.querySelector(".message-actions");
+  if (actions) actions.hidden = true;
+
+  const chatArea = document.createElement("div");
+  chatArea.className = "message-chat-area";
+
+  const input = document.createElement("textarea");
+  input.className = "message-chat-input";
+  input.rows = 1;
+  input.placeholder = `\u804A\u804A\u4F60\u5BF9\u300C${domain}\u300D\u7684\u60F3\u6CD5\u2026`;
+
+  const sendBtn = document.createElement("button");
+  sendBtn.className = "message-chat-send";
+  sendBtn.textContent = "\u53D1\u9001";
+  sendBtn.addEventListener("click", () => sendInlineChat(itemEl, domain, input, sendBtn));
+
+  // Allow Enter to send
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendBtn.click();
+    }
+  });
+
+  chatArea.append(input, sendBtn);
+  itemEl.append(chatArea);
+  input.focus();
+}
+
+async function sendInlineChat(itemEl, domain, input, sendBtn) {
+  const message = input.value.trim();
+  if (!message) return;
+
+  sendBtn.disabled = true;
+  sendBtn.textContent = "\u601D\u8003\u4E2D\u2026";
+
+  try {
+    const result = await respondToInterestProbe(domain, "chat", message);
+    const reply = result?.reply || result?.message || "\u6536\u5230\u4E86\uFF0C\u6211\u4F1A\u7ED3\u5408\u8FD9\u4E2A\u65B9\u5411\u7EE7\u7EED\u89C2\u5BDF\u3002";
+
+    // Show reply
+    const replyEl = document.createElement("div");
+    replyEl.className = "message-chat-reply";
+    replyEl.textContent = reply;
+    itemEl.append(replyEl);
+
+    // Remove chat area, show result, then remove card after delay
+    const chatArea = itemEl.querySelector(".message-chat-area");
+    if (chatArea) chatArea.remove();
+
+    // Remove from messages after showing reply
+    setTimeout(() => {
+      removeMessageFromState(domain);
+      itemEl.remove();
+      renderMessagesEmptyIfNeeded();
+    }, 4000);
+  } catch (err) {
+    console.error("Inline chat failed:", err);
+    sendBtn.disabled = false;
+    sendBtn.textContent = "\u53D1\u9001";
+    // Show error hint inline
+    const errEl = document.createElement("div");
+    errEl.className = "message-chat-reply";
+    errEl.textContent = "\u540E\u53F0\u6B63\u5FD9\uFF0C\u7B49\u4E00\u4E0B\u518D\u804A\u3002";
+    itemEl.append(errEl);
+    setTimeout(() => errEl.remove(), 3000);
+  }
+}
+
+function dismissMessage(domain) {
+  removeMessageFromState(domain);
+  const item = elements.messagesList?.querySelector(`[data-domain="${CSS.escape(domain)}"]`);
+  if (item) item.remove();
+  renderMessagesEmptyIfNeeded();
+}
+
+async function handleMessageResponse(domain, responseType) {
+  try {
+    await respondToInterestProbe(domain, responseType);
+
+    // Show feedback in-place
+    const item = elements.messagesList?.querySelector(`[data-domain="${CSS.escape(domain)}"]`);
+    if (item) {
+      item.replaceChildren();
+      const msg = document.createElement("p");
+      msg.className = "message-result";
+      msg.textContent = responseType === "confirm"
+        ? `\u597D\uFF0C\u300C${domain}\u300D\u8BB0\u4F4F\u4E86\u3002`
+        : `\u597D\uFF0C\u300C${domain}\u300D\u5148\u4E0D\u770B\u4E86\u3002`;
+      item.append(msg);
+      setTimeout(() => {
+        item.remove();
+        renderMessagesEmptyIfNeeded();
+      }, 2000);
+    }
+
+    removeMessageFromState(domain);
+    void loadProfileSummary({ force: true });
+  } catch (err) {
+    console.error("Failed to respond to message:", err);
+  }
+}
+
+function removeMessageFromState(domain) {
+  state.messages = state.messages.filter((m) => m.domain !== domain);
+  if (state.pendingProbe?.domain === domain) state.pendingProbe = null;
+  updateMessageBadge();
+}
+
+function renderMessagesEmptyIfNeeded() {
+  const container = elements.messagesList;
+  if (!(container instanceof HTMLElement)) return;
+  if (state.messages.length === 0 && container.children.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "messages-empty";
+    empty.innerHTML = '<div class="messages-empty-icon">\u{1F4EC}</div><p>\u6682\u65F6\u6CA1\u6709\u5F85\u786E\u8BA4\u7684\u6D88\u606F\u3002<br>\u5F53\u7CFB\u7EDF\u731C\u6D4B\u5230\u4F60\u53EF\u80FD\u611F\u5174\u8DA3\u7684\u65B9\u5411\u65F6\uFF0C\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC\u3002</p>';
+    container.append(empty);
+  }
+}
+
+function bindMessages() {
+  if (elements.messagesButton instanceof HTMLElement) {
+    elements.messagesButton.addEventListener("click", openMessagesPanel);
+  }
+  if (elements.messagesBack instanceof HTMLElement) {
+    elements.messagesBack.addEventListener("click", closeMessagesPanel);
   }
 }
 
@@ -2219,6 +2617,7 @@ async function initializePopup() {
   bindActivityToggle();
   bindChat();
   bindSettings();
+  bindMessages();
   setActiveTab(
     requestedTab === "profile" || requestedTab === "chat" || requestedTab === "recommend"
       ? requestedTab

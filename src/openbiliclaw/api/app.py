@@ -16,7 +16,6 @@ from openbiliclaw.api.models import (
     BehaviorEventBatchIn,
     BilibiliConfigOut,
     ChatIn,
-    ChatResponse,
     CognitionUpdateSeenIn,
     CognitionUpdateSeenResponse,
     CognitionUpdateSummary,
@@ -100,10 +99,19 @@ def create_app(
     auto_update_service: Any | None = None,
 ) -> FastAPI:
     """Create the local backend API app."""
+    from fastapi.responses import JSONResponse
+
     from openbiliclaw.api.runtime_context import RuntimeContext, build_runtime_context
     from openbiliclaw.config import load_config
 
-    app = FastAPI(title="OpenBiliClaw API")
+    app = FastAPI(title="OpenBiliClaw API", default_response_class=JSONResponse)
+
+    # Workaround for h11 Content-Length mismatch on CJK text.
+    # GZip middleware forces chunked transfer encoding, which bypasses
+    # h11's Content-Length check entirely.
+    from starlette.middleware.gzip import GZipMiddleware
+
+    app.add_middleware(GZipMiddleware, minimum_size=0)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -137,7 +145,9 @@ def create_app(
         ctx = RuntimeContext(
             database=_db,
             memory_manager=_mm,
-            event_hub=runtime_event_hub or getattr(runtime_controller, "event_hub", None) or _RuntimeEventHub(),
+            event_hub=runtime_event_hub
+            or getattr(runtime_controller, "event_hub", None)
+            or _RuntimeEventHub(),
             # config intentionally left None in injection path — matches
             # old behaviour where closures couldn't see config when all
             # core components were provided by the caller.
@@ -150,9 +160,11 @@ def create_app(
         )
         if ctx.dialogue is None:
             from openbiliclaw.soul.dialogue import SocraticDialogue
+
             ctx.dialogue = SocraticDialogue(llm=None, soul_engine=soul_engine, session="popup")
         if ctx.auto_update_service is None:
             from openbiliclaw.runtime.updater import AutoUpdateService
+
             ctx.auto_update_service = AutoUpdateService(enabled=True)
     else:
         # Production path: build everything from config.
@@ -188,10 +200,12 @@ def create_app(
         """
         # Broadcast to extension
         with suppress(Exception):
-            await ctx.event_hub.publish({
-                "type": "init_completed",
-                "message": "初始化完成，画像与发现池已就绪。",
-            })
+            await ctx.event_hub.publish(
+                {
+                    "type": "init_completed",
+                    "message": "初始化完成，画像与发现池已就绪。",
+                }
+            )
         # Kick refresh controller immediately
         trigger = getattr(ctx.runtime_controller, "trigger_manual_refresh", None)
         if callable(trigger):
@@ -285,9 +299,10 @@ def create_app(
         # ── Core layer ──
         mbti_obj = getattr(getattr(profile, "core", None), "mbti", None)
         mbti_out = MBTIOut()
-        if mbti_obj is not None and getattr(mbti_obj, "type", ""):
+        mbti_type = str(getattr(mbti_obj, "type", "") or "") if mbti_obj is not None else ""
+        if mbti_type:
             mbti_out = MBTIOut(
-                type=str(mbti_obj.type),
+                type=mbti_type,
                 dimensions={
                     k: MBTIDimensionOut(pole=str(v.pole), strength=float(v.strength))
                     for k, v in getattr(mbti_obj, "dimensions", {}).items()
@@ -371,10 +386,7 @@ def create_app(
             sliced_updates = raw_updates[start:end]
             has_more_cognition_updates = end < len(raw_updates)
             next_cognition_cursor = str(end) if has_more_cognition_updates else ""
-            cognition_updates = [
-                _normalize_cognition_update(item)
-                for item in sliced_updates
-            ]
+            cognition_updates = [_normalize_cognition_update(item) for item in sliced_updates]
 
         # ── Speculative interests ──
         spec_items: list[SpeculativeInterestOut] = []
@@ -476,7 +488,9 @@ def create_app(
             }
             await ctx.memory_manager.propagate_event(event)
             accepted += 1
-        refresh_after_event_ingest = getattr(ctx.runtime_controller, "refresh_after_event_ingest", None)
+        refresh_after_event_ingest = getattr(
+            ctx.runtime_controller, "refresh_after_event_ingest", None
+        )
         if callable(refresh_after_event_ingest):
             with suppress(Exception):
                 await refresh_after_event_ingest()
@@ -560,7 +574,8 @@ def create_app(
         try:
             profile = await ctx.soul_engine.get_profile()
             await ctx.recommendation_engine.classify_pool_backlog(
-                profile=profile, limit=30,
+                profile=profile,
+                limit=30,
             )
         except Exception:
             logger.exception("Background pool classification failed")
@@ -737,6 +752,96 @@ def create_app(
             ctx.database.mark_delight_notified(bvid)
         return DelightAckResponse(ok=True, bvid=bvid)
 
+    @app.post("/api/delight/respond")
+    async def respond_to_delight(payload: dict[str, Any]) -> Any:
+        """User responds to a delight (surprise) recommendation.
+
+        Body:
+        ``{ "bvid": "...", "title": "...", "response": "view"|"dislike"|"chat",
+        "message": "..." }``
+        """
+        from fastapi.responses import JSONResponse
+
+        bvid = str(payload.get("bvid", "")).strip()
+        title = str(payload.get("title", "")).strip()
+        response_type = str(payload.get("response", "")).strip().lower()
+        if not bvid:
+            raise HTTPException(status_code=422, detail="bvid is required")
+        if response_type not in {"view", "dislike", "chat"}:
+            raise HTTPException(status_code=422, detail="response must be view, dislike, or chat")
+
+        if response_type == "view":
+            return JSONResponse(content={"ok": True, "action": "viewed", "bvid": bvid})
+
+        if response_type == "dislike":
+            try:
+                ctx.database._execute_write(
+                    "UPDATE content_cache SET pool_status = 'purged_by_dislike' "
+                    "WHERE bvid = ? AND COALESCE(pool_status, 'fresh') = 'fresh'",
+                    (bvid,),
+                )
+            except Exception:
+                logger.debug("Failed to purge delight bvid %s", bvid)
+            label = title or bvid
+            _record_probe_cognition(
+                f"你对惊喜推荐「{label}」不感兴趣。",
+                bvid,
+                "delight_dislike",
+            )
+            await _publish_probe_event(
+                "delight.disliked",
+                f"好，「{label}」这类先不推了。",
+                bvid,
+            )
+            return JSONResponse(content={"ok": True, "action": "disliked", "bvid": bvid})
+
+        # Chat
+        raw_message = str(payload.get("message", "")).strip()
+        if not raw_message:
+            raw_message = f"聊聊你为什么觉得「{title or bvid}」我会喜欢"
+        contextual_message = f"[关于惊喜推荐「{title or bvid}」的反馈] {raw_message}"
+        if ctx.dialogue is None:
+            return JSONResponse(
+                content={"ok": False, "action": "chat", "bvid": bvid, "reply": "对话引擎暂不可用。"}
+            )
+        concurrency = getattr(ctx.discovery_engine, "_concurrency", None)
+        if concurrency is not None:
+            concurrency.chat_active = True
+            await asyncio.sleep(3)
+        try:
+            reply = await asyncio.wait_for(ctx.dialogue.respond(contextual_message), timeout=30)
+        except TimeoutError:
+            return JSONResponse(
+                content={
+                    "ok": False,
+                    "action": "chat",
+                    "bvid": bvid,
+                    "reply": "后台正忙，等一下再聊。",
+                }
+            )
+        except Exception:
+            logger.exception("Dialogue failed for delight chat: %s", bvid)
+            return JSONResponse(
+                content={
+                    "ok": False,
+                    "action": "chat",
+                    "bvid": bvid,
+                    "reply": "聊天出了点问题，稍后再试。",
+                }
+            )
+        finally:
+            if concurrency is not None:
+                concurrency.chat_active = False
+        label = title or bvid
+        _record_probe_cognition(
+            f"关于惊喜推荐「{label}」你说：{raw_message}",
+            bvid,
+            "delight_chat",
+            detail=f"你的反馈：{raw_message}\n阿b的回复：{reply}",
+        )
+        await _publish_probe_event("delight.chat", f"关于「{label}」你说：{raw_message}", bvid)
+        return JSONResponse(content={"ok": True, "action": "chat", "bvid": bvid, "reply": reply})
+
     @app.post("/api/notifications/sent", response_model=NotificationAckResponse)
     async def mark_notification_sent(payload: NotificationAckIn) -> NotificationAckResponse:
         bvid = payload.bvid.strip()
@@ -749,16 +854,186 @@ def create_app(
             ctx.database.mark_notification_sent(bvid)
         return NotificationAckResponse(ok=True, bvid=bvid)
 
-    @app.post("/api/chat", response_model=ChatResponse)
-    async def chat(payload: ChatIn) -> ChatResponse:
+    @app.post("/api/chat")
+    async def chat(payload: ChatIn) -> Any:
+        from fastapi.responses import JSONResponse
+
         message = payload.message.strip()
         if not message:
             raise HTTPException(status_code=422, detail="Chat message is required.")
-        reply = await ctx.dialogue.respond(message)
-        return ChatResponse(reply=reply)
+        # Pause discovery LLM calls and wait for RPM window to clear
+        concurrency = getattr(ctx.discovery_engine, "_concurrency", None)
+        if concurrency is not None:
+            concurrency.chat_active = True
+            await asyncio.sleep(3)  # Let RPM window drain
+        try:
+            reply = await asyncio.wait_for(ctx.dialogue.respond(message), timeout=30)
+        except TimeoutError:
+            reply = "后台正忙，等一下再聊。"
+        except Exception:
+            logger.exception("Chat dialogue failed")
+            reply = "聊天出了点问题，稍后再试。"
+        finally:
+            if concurrency is not None:
+                concurrency.chat_active = False
+        # Use JSONResponse to avoid h11 Content-Length mismatch on CJK text
+        return JSONResponse(content={"reply": reply})
+
+    def _record_probe_cognition(
+        summary: str,
+        domain: str,
+        action: str,
+        *,
+        detail: str = "",
+    ) -> None:
+        """Write a cognition update so probe feedback shows in '阿b最近记住了什么'."""
+        from datetime import datetime
+
+        try:
+            updates = ctx.memory_manager.load_cognition_updates()
+            updates.append(
+                {
+                    "summary": summary,
+                    "detail": detail or f"兴趣探针反馈：{action} — {domain}",
+                    "created_at": datetime.now().isoformat(),
+                    "source": "interest_probe",
+                    "tone": "success" if action == "confirmed" else "info",
+                }
+            )
+            ctx.memory_manager.save_cognition_updates(updates)
+        except Exception:
+            logger.exception("Failed to record probe cognition update")
+
+    async def _publish_probe_event(event_type: str, message: str, domain: str) -> None:
+        """Push a probe result event via WebSocket."""
+        event_hub = getattr(ctx.runtime_controller, "event_hub", None)
+        publish = getattr(event_hub, "publish", None)
+        if callable(publish):
+            await publish(
+                {
+                    "type": event_type,
+                    "phase": "ready",
+                    "message": message,
+                    "domain": domain,
+                }
+            )
+
+    async def _judge_probe_sentiment(
+        user_message: str,
+        ai_reply: str,
+        domain: str,
+    ) -> str:
+        """Judge whether the user's probe chat is positive, negative, or neutral.
+
+        Uses LLM first; falls back to keyword detection on failure.
+        Returns: "positive", "negative", or "neutral".
+        """
+        # Try LLM judgment
+        llm_result = await _llm_judge_sentiment(user_message, ai_reply, domain)
+        if llm_result in ("positive", "negative"):
+            return llm_result
+        # Fallback: keyword detection
+        return _keyword_judge_sentiment(user_message)
+
+    def _keyword_judge_sentiment(user_message: str) -> str:
+        """Fallback keyword-based sentiment detection."""
+        msg = user_message.lower()
+        neg = {
+            "不喜欢",
+            "太硬",
+            "太艰涩",
+            "没兴趣",
+            "不感兴趣",
+            "不想看",
+            "太深",
+            "太学术",
+            "无聊",
+            "不行",
+            "算了",
+            "不要",
+            "讨厌",
+        }
+        pos = {
+            "有意思",
+            "感兴趣",
+            "想看看",
+            "挺好",
+            "可以",
+            "继续",
+            "不错",
+            "有点意思",
+            "想了解",
+            "喜欢",
+        }
+        if any(kw in msg for kw in neg):
+            return "negative"
+        if any(kw in msg for kw in pos):
+            return "positive"
+        return "neutral"
+
+    async def _llm_judge_sentiment(
+        user_message: str,
+        ai_reply: str,
+        domain: str,
+    ) -> str:
+        """LLM-based sentiment judgment. Returns positive/negative/neutral."""
+        if ctx.recommendation_engine is None:
+            return "neutral"
+        llm = getattr(ctx.recommendation_engine, "_llm", None)
+        if llm is None:
+            return "neutral"
+        try:
+            response = await asyncio.wait_for(
+                llm.complete_structured_task(
+                    system_instruction=(
+                        "任务：判断用户对一个兴趣方向的态度。\n\n"
+                        "规则：\n"
+                        "1. 只输出一个英文单词：positive 或 negative 或 neutral\n"
+                        "2. 不要输出任何其他内容\n\n"
+                        "判断标准：\n"
+                        "- positive = 用户表达了兴趣、想了解、觉得有意思\n"
+                        "- negative = 用户表达了不喜欢、不感兴趣、太难、太无聊\n"
+                        "- neutral = 态度不明确\n"
+                    ),
+                    user_input=f"方向：{domain}\n用户：{user_message}",
+                    max_tokens=8,
+                    temperature=0.0,
+                ),
+                timeout=15,
+            )
+            raw = str(getattr(response, "content", "")).strip().lower()
+            # Extract the first recognizable word
+            for word in raw.split():
+                cleaned = word.strip("\"'.,:;!?")
+                if cleaned in ("negative", "positive", "neutral"):
+                    logger.info("Sentiment LLM for '%s': %s (raw=%r)", domain, cleaned, raw)
+                    return cleaned
+            logger.info(
+                "Sentiment LLM for '%s': unrecognized (raw=%r), trying keywords", domain, raw
+            )
+            return "neutral"
+        except Exception:
+            logger.info("Sentiment LLM for '%s' failed, trying keywords", domain)
+            return "neutral"
+
+    @app.post("/api/interest-probes/trigger")
+    async def trigger_interest_probe() -> dict[str, Any]:
+        """Manually trigger an interest probe push via WebSocket.
+
+        Useful when ``run_forever`` is blocked by a long refresh cycle
+        and the probe wouldn't fire on its own for several minutes.
+        """
+        controller = ctx.runtime_controller
+        if controller is None:
+            raise HTTPException(status_code=503, detail="Runtime controller not available")
+        publish = getattr(controller, "_publish_interest_probe_if_available", None)
+        if not callable(publish):
+            raise HTTPException(status_code=503, detail="Probe publisher not available")
+        await publish()
+        return {"ok": True, "action": "probe_triggered"}
 
     @app.post("/api/interest-probes/respond")
-    async def respond_to_interest_probe(payload: dict[str, Any]) -> dict[str, Any]:
+    async def respond_to_interest_probe(payload: dict[str, Any]) -> Any:
         """User responds to a speculated interest probe.
 
         Body: { "domain": "...", "response": "confirm" | "reject" | "chat", "message": "..." }
@@ -781,8 +1056,8 @@ def create_app(
 
         if response_type == "confirm":
             ok = speculator.user_confirm_speculation(domain)
-            # Trigger promotion cycle
             if ok:
+                # Trigger promotion cycle
                 tick_fn = getattr(speculator, "force_tick", None)
                 if callable(tick_fn):
                     try:
@@ -793,24 +1068,104 @@ def create_app(
                             tick_fn(profile)
                     except Exception:
                         pass
+                # Record cognition update so it shows in "阿b最近记住了什么"
+                _record_probe_cognition(
+                    f"你确认了对「{domain}」的兴趣，已加入画像。",
+                    domain,
+                    "confirmed",
+                )
+                # Notify frontend via WebSocket
+                await _publish_probe_event(
+                    "interest.confirmed",
+                    f"你确认了对「{domain}」的兴趣，已加入画像。",
+                    domain,
+                )
             return {"ok": ok, "action": "confirmed", "domain": domain}
 
         if response_type == "reject":
             ok = speculator.user_reject_speculation(domain)
+            if ok:
+                _record_probe_cognition(
+                    f"你对「{domain}」暂时不感兴趣，30 天内不再推送。",
+                    domain,
+                    "rejected",
+                )
+                await _publish_probe_event(
+                    "interest.rejected",
+                    f"已记录：你对「{domain}」暂时不感兴趣，30 天内不再推送。",
+                    domain,
+                )
             return {"ok": ok, "action": "rejected", "domain": domain}
 
-        # Chat: forward to dialogue with context
-        message = str(payload.get("message", "")).strip()
-        if not message:
-            message = f"我想聊聊你猜我可能感兴趣的「{domain}」这个方向"
+        # Chat: forward to dialogue with domain context injected
+        raw_message = str(payload.get("message", "")).strip()
+        if not raw_message:
+            raw_message = f"我想聊聊你猜我可能感兴趣的「{domain}」这个方向"
+        # Inject domain context so dialogue engine + learn_from_dialogue
+        # understand this is feedback on a specific speculated interest
+        contextual_message = f"[关于猜测兴趣「{domain}」的反馈] {raw_message}"
         if ctx.dialogue is None:
             return {"ok": False, "action": "chat", "domain": domain, "reply": "对话引擎暂不可用。"}
+        # Pause discovery LLM calls and wait for RPM window to clear
+        concurrency = getattr(ctx.discovery_engine, "_concurrency", None)
+        if concurrency is not None:
+            concurrency.chat_active = True
+            await asyncio.sleep(3)
         try:
-            reply = await ctx.dialogue.respond(message)
+            reply = await asyncio.wait_for(
+                ctx.dialogue.respond(contextual_message),
+                timeout=30,
+            )
+            # Judge sentiment while discovery is still paused
+            sentiment = await _judge_probe_sentiment(raw_message, reply, domain)
+        except TimeoutError:
+            return {
+                "ok": False,
+                "action": "chat",
+                "domain": domain,
+                "reply": "后台正忙，等一下再聊。",
+            }
         except Exception:
             logger.exception("Dialogue failed for probe chat: %s", domain)
-            return {"ok": False, "action": "chat", "domain": domain, "reply": "聊天出了点问题，稍后再试。"}
-        return {"ok": True, "action": "chat", "domain": domain, "reply": reply}
+            return {
+                "ok": False,
+                "action": "chat",
+                "domain": domain,
+                "reply": "聊天出了点问题，稍后再试。",
+            }
+        finally:
+            if concurrency is not None:
+                concurrency.chat_active = False
+
+        if sentiment == "negative":
+            speculator.user_reject_speculation(domain, cooldown_days=14)
+            summary = f"你对「{domain}」的反馈偏负面（{raw_message}），已暂时搁置 14 天。"
+        elif sentiment == "positive":
+            speculator.observe(
+                [
+                    {
+                        "event_type": "dialogue",
+                        "title": domain,
+                        "metadata": {"user_message": raw_message, "source": "probe_chat"},
+                    }
+                ]
+            )
+            summary = f"你对「{domain}」表示了兴趣，确认度 +1。"
+        else:
+            summary = f"关于「{domain}」你说：{raw_message}"
+
+        detail = f"你的反馈：{raw_message}\n阿b的回复：{reply}"
+        _record_probe_cognition(summary, domain, "chat", detail=detail)
+        await _publish_probe_event(
+            "interest.chat",
+            summary,
+            domain,
+        )
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            content={"ok": True, "action": "chat", "domain": domain, "reply": reply}
+        )
 
     @app.post("/api/feedback", response_model=FeedbackResponse)
     async def feedback(payload: FeedbackIn) -> FeedbackResponse:
@@ -894,9 +1249,7 @@ def create_app(
         if recommendation is not None:
             bvid = bvid or str(recommendation.get("bvid", "")).strip()
             title = title or str(recommendation.get("title", "")).strip()
-            topic_label = topic_label or str(
-                recommendation.get("topic_label", "")
-            ).strip()
+            topic_label = topic_label or str(recommendation.get("topic_label", "")).strip()
             up_name = up_name or str(recommendation.get("up_name", "")).strip()
 
         if not bvid:
@@ -998,9 +1351,7 @@ def create_app(
         if target and target.get("created_by") == "system":
             from fastapi import HTTPException
 
-            raise HTTPException(
-                status_code=403, detail="System recipes cannot be deleted"
-            )
+            raise HTTPException(status_code=403, detail="System recipes cannot be deleted")
         deleted = ctx.database.delete_recipe(recipe_id)
         if not deleted:
             from fastapi import HTTPException
@@ -1010,8 +1361,8 @@ def create_app(
 
     # ── XHS observed URL ingestion endpoint ─────────────────────────
 
-    _XHS_MAX_URLS_PER_BATCH = 50
-    _XHS_URL_PREFIX = "https://www.xiaohongshu.com/"
+    xhs_max_urls_per_batch = 50
+    xhs_url_prefix = "https://www.xiaohongshu.com/"
 
     def _pick_best_xhs_url(database: Any, note_id: str, incoming: str) -> str:
         """Return the most share-worthy URL for a xhs note.
@@ -1087,22 +1438,18 @@ def create_app(
             except Exception:
                 continue
         if updated:
-            try:
+            with suppress(Exception):
                 database.conn.commit()
-            except Exception:
-                pass
         return updated
 
-    def _cache_xhs_notes(
-        database: Any, notes: list[dict[str, Any]], page_type: str
-    ) -> int:
+    def _cache_xhs_notes(database: Any, notes: list[dict[str, Any]], page_type: str) -> int:
         """Store xhs note metadata from the extension directly into content_cache."""
         from urllib.parse import urlparse
 
         cached = 0
         for note in notes:
             url = note.get("url", "")
-            if not isinstance(url, str) or not url.startswith(_XHS_URL_PREFIX):
+            if not isinstance(url, str) or not url.startswith(xhs_url_prefix):
                 continue
             # Extract note ID from URL path
             try:
@@ -1158,16 +1505,17 @@ def create_app(
 
         if not urls_raw and not notes_raw:
             raise HTTPException(status_code=422, detail="urls or notes must be non-empty")
-        if len(urls_raw) > _XHS_MAX_URLS_PER_BATCH:
+        if len(urls_raw) > xhs_max_urls_per_batch:
             raise HTTPException(
                 status_code=422,
-                detail=f"Too many URLs (max {_XHS_MAX_URLS_PER_BATCH})",
+                detail=f"Too many URLs (max {xhs_max_urls_per_batch})",
             )
 
         # Filter to valid xhs note URLs
         valid_urls = [
-            u for u in urls_raw
-            if isinstance(u, str) and u.startswith(_XHS_URL_PREFIX) and "/explore/" in u
+            u
+            for u in urls_raw
+            if isinstance(u, str) and u.startswith(xhs_url_prefix) and "/explore/" in u
         ]
 
         # Store bare URLs for tracking
@@ -1215,13 +1563,13 @@ def create_app(
             # no-op, but the token must at least be non-empty.
             if not note_id or not token:
                 continue
-            urls.append(f"{_XHS_URL_PREFIX}explore/{note_id}?xsec_token={token}")
+            urls.append(f"{xhs_url_prefix}explore/{note_id}?xsec_token={token}")
         upgraded = _backfill_xhs_tokens(ctx.database, urls)
         return {"ok": True, "upgraded": upgraded}
 
     # ── XHS task queue endpoints (extension dispatcher) ──────────────
 
-    from openbiliclaw.sources.xhs_tasks import XhsTaskQueue, XhsCreatorStore
+    from openbiliclaw.sources.xhs_tasks import XhsCreatorStore, XhsTaskQueue
 
     # Guard: only initialise when ctx.database is a real Database (has .conn).
     # Tests that pass database=object() as a stub won't trigger table creation.
@@ -1269,10 +1617,7 @@ def create_app(
         if status == "ok":
             _xhs_task_queue.complete(task_id, urls=urls)
             # Store discovered URLs + metadata
-            valid_urls = [
-                u for u in urls
-                if isinstance(u, str) and u.startswith(_XHS_URL_PREFIX)
-            ]
+            valid_urls = [u for u in urls if isinstance(u, str) and u.startswith(xhs_url_prefix)]
             if valid_urls:
                 ctx.database.save_xhs_observed_urls(valid_urls, "task")
                 _backfill_xhs_tokens(ctx.database, valid_urls)
@@ -1349,10 +1694,7 @@ def create_app(
                 x_title=getattr(p, "x_title", ""),
             )
 
-        issue_list = [
-            ConfigIssueOut(field=i.field, message=i.message)
-            for i in (issues or [])
-        ]
+        issue_list = [ConfigIssueOut(field=i.field, message=i.message) for i in (issues or [])]
 
         return ConfigResponse(
             language=cfg.language,
@@ -1452,7 +1794,12 @@ def create_app(
             if "default_provider" in llm_data:
                 cfg.llm.default_provider = str(llm_data["default_provider"])
             for provider_name in (
-                "openai", "claude", "gemini", "deepseek", "ollama", "openrouter",
+                "openai",
+                "claude",
+                "gemini",
+                "deepseek",
+                "ollama",
+                "openrouter",
             ):
                 if provider_name in llm_data and isinstance(llm_data[provider_name], dict):
                     provider_cfg = getattr(cfg.llm, provider_name)
@@ -1493,8 +1840,11 @@ def create_app(
         if "scheduler" in update:
             sdata = update["scheduler"]
             for key in (
-                "enabled", "discovery_cron", "pool_target_count",
-                "account_sync_interval_hours", "auto_update_enabled",
+                "enabled",
+                "discovery_cron",
+                "pool_target_count",
+                "account_sync_interval_hours",
+                "auto_update_enabled",
                 "auto_update_check_interval_hours",
             ):
                 if key in sdata:
@@ -1535,10 +1885,12 @@ def create_app(
             logger.info("Config hot-reload succeeded")
             # Notify WebSocket subscribers so the extension re-fetches data
             with suppress(Exception):
-                await ctx.event_hub.publish({
-                    "type": "config_reloaded",
-                    "message": "配置已热重载，运行时组件已重建。",
-                })
+                await ctx.event_hub.publish(
+                    {
+                        "type": "config_reloaded",
+                        "message": "配置已热重载，运行时组件已重建。",
+                    }
+                )
         except Exception as exc:
             logger.exception("Config hot-reload failed — old components remain active")
             reload_message += f" 热重载失败（{exc}），旧组件仍在运行，重启后端可完全生效。"

@@ -79,11 +79,20 @@ class _FakeDatabase:
     def trim_explore_cluster_overflow(self, *, max_per_cluster: int = 3) -> int:
         return 0
 
+    def trim_pool_to_target_count(self, *, target: int) -> int:
+        if self.pool_count <= target:
+            return 0
+        trimmed = self.pool_count - target
+        self.pool_count = target
+        return trimmed
+
     def evict_stale_pool_items(self, *, max_age_days: int = 14) -> int:
         return 0
 
     def get_delight_candidate(
-        self, *, min_delight_score: float = 0.85,
+        self,
+        *,
+        min_delight_score: float = 0.85,
     ) -> dict[str, object] | None:
         return None
 
@@ -91,9 +100,12 @@ class _FakeDatabase:
         pass
 
     def count_delight_candidates(
-        self, *, min_delight_score: float = 0.85,
+        self,
+        *,
+        min_delight_score: float = 0.85,
     ) -> int:
         return 0
+
 
 class _FakeSoulEngine:
     async def get_profile(self) -> dict[str, object]:
@@ -146,7 +158,7 @@ class _FakeEventHub:
         self.events.append(event)
 
 
-async def test_refresh_controller_triggers_event_refresh_when_signal_threshold_reached() -> None:
+async def test_refresh_controller_falls_back_to_full_plan_when_below_target() -> None:
     now = datetime.now().isoformat()
     controller = ContinuousRefreshController(
         memory_manager=_FakeMemoryManager(
@@ -167,7 +179,7 @@ async def test_refresh_controller_triggers_event_refresh_when_signal_threshold_r
                 {"id": 5, "event_type": "comment"},
                 {"id": 6, "event_type": "feedback"},
             ],
-            pool_count=30,
+            pool_count=20,
         ),
         soul_engine=_FakeSoulEngine(),
         discovery_engine=_FakeDiscoveryEngine(),
@@ -180,7 +192,7 @@ async def test_refresh_controller_triggers_event_refresh_when_signal_threshold_r
     result = await controller.refresh_if_needed()
 
     assert result["refreshed"] is True
-    assert result["strategies"] == ["search", "related_chain"]
+    assert set(result["strategies"]) == {"search", "trending", "related_chain", "explore"}
 
 
 async def test_refresh_controller_publishes_refresh_lifecycle_events() -> None:
@@ -257,7 +269,7 @@ async def test_refresh_controller_reports_zero_replenishment_without_false_posit
                 {"id": 5, "event_type": "feedback"},
                 {"id": 6, "event_type": "view"},
             ],
-            pool_count=30,
+            pool_count=20,
         ),
         soul_engine=_FakeSoulEngine(),
         discovery_engine=_FakeDiscoveryEngine(),
@@ -276,7 +288,10 @@ async def test_refresh_controller_reports_zero_replenishment_without_false_posit
     # force_refresh runs two phases: each returns 1 item from fake engine
     assert pool_updated["last_discovered_count"] == 2
     assert pool_updated["last_replenished_count"] == 0
-    assert pool_updated["message"] == "\u8fd9\u8f6e\u627e\u5230\u4e86\u5185\u5bb9\uff0c\u4f46\u53ef\u7acb\u5373\u6362\u7684\u5e93\u5b58\u6ca1\u53d8"
+    assert pool_updated["message"] == (
+        "\u8fd9\u8f6e\u627e\u5230\u4e86\u5185\u5bb9\uff0c"
+        "\u4f46\u53ef\u7acb\u5373\u6362\u7684\u5e93\u5b58\u6ca1\u53d8"
+    )
 
 
 async def test_refresh_controller_tracks_discovered_count_when_net_pool_does_not_grow() -> None:
@@ -292,7 +307,7 @@ async def test_refresh_controller_tracks_discovered_count_when_net_pool_does_not
                 {"id": 5, "event_type": "feedback"},
                 {"id": 6, "event_type": "view"},
             ],
-            pool_count=30,
+            pool_count=20,
         ),
         soul_engine=_FakeSoulEngine(),
         discovery_engine=_FakeDiscoveryEngine(),
@@ -308,7 +323,7 @@ async def test_refresh_controller_tracks_discovered_count_when_net_pool_does_not
     assert memory.state["last_replenished_count"] == 0
 
 
-async def test_refresh_controller_skips_when_threshold_not_met() -> None:
+async def test_refresh_controller_skips_when_pool_at_cap() -> None:
     discovery = _FakeDiscoveryEngine()
     recommendations = _FakeRecommendationEngine()
     now = datetime.now().isoformat()
@@ -340,6 +355,7 @@ async def test_refresh_controller_skips_when_threshold_not_met() -> None:
     result = await controller.refresh_if_needed()
 
     assert result["refreshed"] is False
+    assert result["reason"] == "pool_at_cap"
     assert discovery.calls == []
     assert recommendations.calls == []
 
@@ -363,7 +379,7 @@ async def test_force_refresh_runs_even_when_threshold_not_met() -> None:
                 {"id": 1, "event_type": "view"},
                 {"id": 2, "event_type": "search"},
             ],
-            pool_count=30,
+            pool_count=20,
         ),
         soul_engine=_FakeSoulEngine(),
         discovery_engine=discovery,
@@ -404,7 +420,7 @@ async def test_refresh_controller_requests_discovery_with_backfill_limit() -> No
                 {"id": 5, "event_type": "comment"},
                 {"id": 6, "event_type": "feedback"},
             ],
-            pool_count=30,
+            pool_count=20,
         ),
         soul_engine=_FakeSoulEngine(),
         discovery_engine=discovery,
@@ -564,7 +580,7 @@ async def test_trigger_manual_refresh_sets_running_state() -> None:
 
     controller = ContinuousRefreshController(
         memory_manager=_FakeMemoryManager(),
-        database=_FakeDatabase([{"id": 1, "event_type": "view"}], pool_count=30),
+        database=_FakeDatabase([{"id": 1, "event_type": "view"}], pool_count=20),
         soul_engine=_FakeSoulEngine(),
         discovery_engine=SlowDiscovery(),
         recommendation_engine=_FakeRecommendationEngine(),
@@ -583,6 +599,96 @@ async def test_trigger_manual_refresh_sets_running_state() -> None:
     await asyncio.sleep(0.05)
     status = controller.get_runtime_status()
     assert status["manual_refresh_state"] == "success"
+
+
+# ===========================================================================
+# Pool cap — hard upper bound on replenishment
+# ===========================================================================
+
+
+async def test_refresh_if_needed_skips_when_pool_at_cap() -> None:
+    discovery = _FakeDiscoveryEngine()
+    controller = ContinuousRefreshController(
+        memory_manager=_FakeMemoryManager(),
+        database=_FakeDatabase([], pool_count=30),
+        soul_engine=_FakeSoulEngine(),
+        discovery_engine=discovery,
+        recommendation_engine=_FakeRecommendationEngine(),
+        pool_target_count=30,
+    )
+
+    result = await controller.refresh_if_needed()
+
+    assert result == {"refreshed": False, "strategies": [], "reason": "pool_at_cap"}
+    assert discovery.calls == []
+
+
+async def test_force_refresh_skips_when_pool_at_cap() -> None:
+    discovery = _FakeDiscoveryEngine()
+    controller = ContinuousRefreshController(
+        memory_manager=_FakeMemoryManager(),
+        database=_FakeDatabase([], pool_count=30),
+        soul_engine=_FakeSoulEngine(),
+        discovery_engine=discovery,
+        recommendation_engine=_FakeRecommendationEngine(),
+        pool_target_count=30,
+    )
+
+    result = await controller.force_refresh()
+
+    assert result == {"refreshed": False, "strategies": [], "reason": "pool_at_cap"}
+    assert discovery.calls == []
+
+
+async def test_refresh_trims_pool_overflow_before_skipping() -> None:
+    database = _FakeDatabase([], pool_count=50)
+    controller = ContinuousRefreshController(
+        memory_manager=_FakeMemoryManager(),
+        database=database,
+        soul_engine=_FakeSoulEngine(),
+        discovery_engine=_FakeDiscoveryEngine(),
+        recommendation_engine=_FakeRecommendationEngine(),
+        pool_target_count=30,
+    )
+
+    result = await controller.refresh_if_needed()
+
+    assert result["reason"] == "pool_at_cap"
+    assert database.pool_count == 30  # trimmed back down to target
+
+
+async def test_run_refresh_plan_stops_midway_when_cap_hit() -> None:
+    class GrowingDiscovery(_FakeDiscoveryEngine):
+        def __init__(self, database: _FakeDatabase) -> None:
+            super().__init__()
+            self.database = database
+
+        async def discover(
+            self,
+            profile: dict[str, object],
+            strategies: list[str] | None = None,
+            limit: int = 30,
+        ) -> list[dict[str, object]]:
+            self.calls.append((profile, strategies, limit))
+            self.database.pool_count += 15
+            return [{"bvid": "BV-x", "relevance_score": 0.5}]
+
+    database = _FakeDatabase([], pool_count=20)
+    discovery = GrowingDiscovery(database)
+    controller = ContinuousRefreshController(
+        memory_manager=_FakeMemoryManager(),
+        database=database,
+        soul_engine=_FakeSoulEngine(),
+        discovery_engine=discovery,
+        recommendation_engine=_FakeRecommendationEngine(),
+        pool_target_count=30,
+    )
+
+    await controller.force_refresh()
+
+    # First phase pushes pool to 35 (>= 30), second phase skipped.
+    assert len(discovery.calls) == 1
+    assert database.pool_count >= 30
 
 
 # ===========================================================================
@@ -705,9 +811,7 @@ async def test_run_forever_continues_when_pipeline_tick_raises() -> None:
     for _ in range(20):
         await asyncio.sleep(0)
     # Loop should still be alive — neither cancelled nor exception-killed
-    assert not task.done(), (
-        "run_forever must absorb pipeline.tick() exceptions and keep looping"
-    )
+    assert not task.done(), "run_forever must absorb pipeline.tick() exceptions and keep looping"
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
@@ -739,3 +843,57 @@ async def test_run_forever_continues_when_refresh_raises() -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+
+
+async def test_run_forever_cancels_child_loops_on_shutdown() -> None:
+    """Cancelling the parent refresh task must cancel spawned child loops too."""
+    controller = ContinuousRefreshController(
+        memory_manager=_FakeMemoryManager(),
+        database=_FakeDatabase(events=[]),
+        soul_engine=_FakeSoulEngine(),
+        discovery_engine=_FakeDiscoveryEngine(),
+        recommendation_engine=_FakeRecommendationEngine(),
+        check_interval_seconds=3600,
+    )
+
+    started = {name: asyncio.Event() for name in ("refresh", "soul", "xhs", "push")}
+    cancelled = {name: asyncio.Event() for name in started}
+    spawned_tasks: list[asyncio.Task[None]] = []
+
+    def make_loop(name: str):
+        async def loop() -> None:
+            task = asyncio.current_task()
+            if task is not None:
+                spawned_tasks.append(task)
+            started[name].set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled[name].set()
+
+        return loop
+
+    controller._loop_refresh = make_loop("refresh")  # type: ignore[method-assign]
+    controller._loop_soul_pipeline = make_loop("soul")  # type: ignore[method-assign]
+    controller._loop_xhs_producer = make_loop("xhs")  # type: ignore[method-assign]
+    controller._loop_proactive_push = make_loop("push")  # type: ignore[method-assign]
+
+    task = asyncio.create_task(controller.run_forever())
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*(event.wait() for event in started.values())),
+            timeout=0.5,
+        )
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        await asyncio.wait_for(
+            asyncio.gather(*(event.wait() for event in cancelled.values())),
+            timeout=0.5,
+        )
+    finally:
+        for child in spawned_tasks:
+            child.cancel()
+        for child in spawned_tasks:
+            with suppress(asyncio.CancelledError):
+                await child

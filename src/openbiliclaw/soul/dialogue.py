@@ -122,11 +122,19 @@ class SocraticDialogue:
         """
         from openbiliclaw.llm.prompts import build_socratic_dialogue_prompt
 
+        core_memory = ""
+        build_block = getattr(service, "_build_core_memory_block", None)
+        if callable(build_block):
+            core_memory = build_block()
+        tone_profile = None
+        build_tone = getattr(service, "_build_dialogue_tone_profile", None)
+        if callable(build_tone):
+            tone_profile = build_tone()
         prompt_messages = build_socratic_dialogue_prompt(
             user_message=user_message,
             history=self._history_to_messages(),
-            core_memory_block=service._build_core_memory_block()
-            if hasattr(service, "_build_core_memory_block") else "",
+            core_memory_text=core_memory,
+            tone_profile=tone_profile,
         )
         system = prompt_messages[0]["content"] if prompt_messages else ""
 
@@ -141,19 +149,22 @@ class SocraticDialogue:
         if response.tool_calls:
             tool_call = response.tool_calls[0]
             logger.info("Dialogue tool call: %s", tool_call.get("name"))
+            if self._tool_dispatcher is None:
+                return str(response.content)
             tool_result = self._tool_dispatcher.dispatch(tool_call)
 
             # Feed tool result back to get a natural reply
             followup = await service.complete_socratic_dialogue(
                 user_message=f"[工具执行结果] {tool_result}",
-                history=self._history_to_messages() + [
+                history=self._history_to_messages()
+                + [
                     {"role": "user", "content": user_message},
                     {"role": "assistant", "content": f"（调用了工具 {tool_call.get('name')}）"},
                 ],
             )
-            return followup.content
+            return str(followup.content)
 
-        return response.content
+        return str(response.content)
 
     async def extract_insights(self, turns: list[DialogueTurn]) -> list[dict[str, Any]]:
         """Extract insights about the user from dialogue turns.
