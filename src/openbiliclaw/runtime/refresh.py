@@ -809,30 +809,24 @@ class ContinuousRefreshController:
             return []
 
         target_counts = self._source_target_counts()
-        search_related_deficit = max(
-            0,
-            target_counts["search"] - int(source_counts.get("search", 0)),
-        ) + max(
-            0,
-            target_counts["related_chain"] - int(source_counts.get("related_chain", 0)),
-        )
-        trending_deficit = max(
-            0,
-            target_counts["trending"] - int(source_counts.get("trending", 0)),
-        )
-        explore_deficit = max(
-            0,
-            target_counts["explore"] - int(source_counts.get("explore", 0)),
-        )
+        deficits: list[tuple[str, int]] = []
+        for source in ("search", "related_chain", "trending", "explore"):
+            deficit = max(0, target_counts[source] - int(source_counts.get(source, 0)))
+            if deficit > 0:
+                deficits.append((source, deficit))
 
-        plan: list[tuple[list[str], int]] = []
-        if search_related_deficit > 0:
-            plan.append((["search", "related_chain"], search_related_deficit))
-        if trending_deficit > 0:
-            plan.append((["trending"], trending_deficit))
-        if explore_deficit > 0:
-            plan.append((["explore"], explore_deficit))
-        return plan
+        if not deficits:
+            return []
+
+        # Merge all deficient sources into a single discover() call so they
+        # fan out in one asyncio.gather and get mixed by _compress_topic_repeats
+        # with the per-source floor. Without this, each tick runs only one
+        # source's plan entry, the pool overflows the cap, gets trimmed, and
+        # the next tick runs the next source — turning each refresh round
+        # into a single-source delivery for the user.
+        merged_strategies = [source for source, _ in deficits]
+        merged_limit = max(deficit for _, deficit in deficits)
+        return [(merged_strategies, merged_limit)]
 
     def _source_target_counts(self) -> dict[str, int]:
         total_share = sum(share for _, share in _SOURCE_TARGET_SHARES)

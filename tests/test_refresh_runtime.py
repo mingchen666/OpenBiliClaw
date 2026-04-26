@@ -662,10 +662,15 @@ async def test_refresh_controller_prioritizes_underfilled_sources() -> None:
     result = await controller.refresh_if_needed()
 
     assert result["refreshed"] is True
-    assert discovery.calls == [
-        ({"profile": "ok"}, ["search", "related_chain"], 10),
-        ({"profile": "ok"}, ["trending"], 6),
-    ]
+    # All deficient sources merged into a single discover() call so they
+    # run in parallel and get mixed via _compress_topic_repeats in one round.
+    # Pool deficit is 30-24=6, but the per-source max-deficit is 6 (trending=0,
+    # search=2 of 8, related_chain=4 of 8). _requested_refresh_limit may
+    # expand the merged limit to fill the pool gap.
+    assert len(discovery.calls) == 1
+    call_profile, call_strategies, _call_limit = discovery.calls[0]
+    assert call_profile == {"profile": "ok"}
+    assert call_strategies == ["search", "related_chain", "trending"]
 
 
 async def test_trigger_manual_refresh_sets_running_state() -> None:
