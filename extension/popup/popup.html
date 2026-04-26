@@ -559,19 +559,64 @@
       background: rgba(251, 114, 153, 0.04);
     }
 
-    .delight-banner-kicker {
+    .delight-banner-thumb {
       flex-shrink: 0;
-      font-size: 11px;
+      width: 56px;
+      height: 56px;
+      border-radius: 10px;
+      overflow: hidden;
+      background:
+        linear-gradient(135deg, rgba(251, 114, 153, 0.18), rgba(90, 169, 255, 0.18));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid rgba(255, 255, 255, 0.6);
+    }
+    .delight-banner-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .delight-banner-thumb.is-fallback {
+      font-size: 20px;
+      color: var(--brand-strong);
+    }
+
+    .delight-banner-text {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .delight-banner-kicker-line {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .delight-banner-kicker {
+      font-size: 10px;
       font-weight: 700;
       color: var(--brand-strong);
-      padding: 3px 7px;
+      padding: 2px 6px;
       border-radius: 999px;
       background: rgba(251, 114, 153, 0.1);
       letter-spacing: 0.02em;
     }
 
+    .delight-banner-counter {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-muted);
+      padding: 1px 5px;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.04);
+    }
+
     .delight-banner-title {
-      flex: 1;
       min-width: 0;
       font-size: 12px;
       font-weight: 600;
@@ -579,6 +624,22 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      line-height: 1.4;
+    }
+
+    .delight-banner-dismiss-all {
+      align-self: flex-start;
+      margin-top: 4px;
+      border: 0;
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 11px;
+      cursor: pointer;
+      text-decoration: underline;
+      padding: 2px 4px;
+    }
+    .delight-banner-dismiss-all:hover {
+      color: var(--text-main);
     }
 
     .delight-banner-chevron {

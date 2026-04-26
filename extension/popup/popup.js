@@ -65,6 +65,13 @@ const state = {
   runtimeEvent: null,
   activityFeed: null,
   activityExpanded: false,
+  // Queue of pending delight recommendations. The banner shows queue[0]
+  // and a "1/N" counter when more than one is queued; user actions
+  // (看看 / 不感兴趣 / × / 聊一聊 完成) shift the head off so the next
+  // one slides in. ``activeDelight`` (singular) is kept as a synced
+  // alias of queue[0] for backwards compatibility with helpers that
+  // reference the single-item shape (mergeDelightCandidate, etc.).
+  activeDelights: [],
   activeDelight: null,
   delightHighlightBvid: "",
   dismissedDelightBvids: [],
@@ -253,12 +260,59 @@ function rememberDismissedDelight(bvid) {
   state.dismissedDelightBvids = [...state.dismissedDelightBvids, bvid];
 }
 
-function mergeIncomingDelight(candidate) {
-  state.activeDelight = mergeDelightCandidate(
-    state.activeDelight,
-    candidate,
-    state.dismissedDelightBvids,
+// ── Delight queue helpers ──────────────────────────────────────────
+// state.activeDelights is the queue. state.activeDelight is the head
+// (queue[0]) — we keep both in sync so existing helpers like
+// mergeDelightCandidate keep working on the head item.
+
+function syncDelightHead() {
+  state.activeDelight = state.activeDelights[0] ?? null;
+}
+
+function pushDelightCandidate(candidate) {
+  if (!candidate || !candidate.bvid) return;
+  if (state.dismissedDelightBvids.includes(candidate.bvid)) return;
+  // Merge if already queued (same bvid arriving twice — refresh fields).
+  const existingIdx = state.activeDelights.findIndex(
+    (d) => d?.bvid === candidate.bvid,
   );
+  if (existingIdx >= 0) {
+    state.activeDelights[existingIdx] = mergeDelightCandidate(
+      state.activeDelights[existingIdx],
+      candidate,
+      state.dismissedDelightBvids,
+    );
+  } else {
+    const merged = mergeDelightCandidate(
+      null,
+      candidate,
+      state.dismissedDelightBvids,
+    );
+    if (merged) {
+      state.activeDelights.push(merged);
+    }
+  }
+  syncDelightHead();
+}
+
+function shiftDelightQueue() {
+  state.activeDelights.shift();
+  syncDelightHead();
+}
+
+function updateDelightHead(updates) {
+  if (state.activeDelights.length === 0) return;
+  state.activeDelights[0] = { ...state.activeDelights[0], ...updates };
+  syncDelightHead();
+}
+
+function clearDelightQueue() {
+  state.activeDelights = [];
+  syncDelightHead();
+}
+
+function mergeIncomingDelight(candidate) {
+  pushDelightCandidate(candidate);
   renderDelightSlot();
 }
 
@@ -1891,24 +1945,26 @@ function renderDelightSlot() {
     return;
   }
 
-  const uiState = getDelightUiState(state.activeDelight, {
+  const head = state.activeDelights[0];
+  const queueLength = state.activeDelights.length;
+  const uiState = getDelightUiState(head, {
     highlightBvid: state.delightHighlightBvid,
   });
 
-  if (!uiState.visible || !state.activeDelight?.bvid) {
+  if (!uiState.visible || !head?.bvid) {
     elements.delightSlot.hidden = true;
     elements.delightSlot.replaceChildren();
     return;
   }
 
-  const delight = state.activeDelight;
+  const delight = head;
   const isHandled = uiState.handled;
   const isExpanded = Boolean(delight.expanded);
 
-  // Compact banner — collapsed state shows hook + truncated title in a
-  // single row so the recommendation feed below isn't pushed down. Click
-  // the banner row to expand; click × to dismiss without affecting the
-  // pool ("稍后看" semantics).
+  // Banner with thumbnail. Collapsed = ~64px row showing thumbnail +
+  // hook + truncated title + position counter (when more than one
+  // delight is queued). Click the row to expand; × dismisses just
+  // the head and the next delight slides in.
   const banner = document.createElement("article");
   banner.className =
     `delight-banner${isExpanded ? " is-expanded" : ""}` +
@@ -1921,26 +1977,57 @@ function renderDelightSlot() {
   row.className = "delight-banner-row";
   row.setAttribute("aria-expanded", isExpanded ? "true" : "false");
   row.addEventListener("click", () => {
-    state.activeDelight = {
-      ...(state.activeDelight ?? delight),
-      expanded: !isExpanded,
-    };
+    updateDelightHead({ expanded: !isExpanded });
     renderDelightSlot();
   });
 
+  // Thumbnail (left)
+  const thumb = document.createElement("span");
+  thumb.className = "delight-banner-thumb";
+  if (delight.cover_url) {
+    const image = document.createElement("img");
+    image.src = delight.cover_url;
+    image.alt = "";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("error", () => {
+      image.remove();
+      thumb.classList.add("is-fallback");
+      thumb.textContent = "✨";
+    });
+    thumb.append(image);
+  } else {
+    thumb.classList.add("is-fallback");
+    thumb.textContent = "✨";
+  }
+
+  // Text column
+  const textCol = document.createElement("span");
+  textCol.className = "delight-banner-text";
+
+  const kickerLine = document.createElement("span");
+  kickerLine.className = "delight-banner-kicker-line";
   const kicker = document.createElement("span");
   kicker.className = "delight-banner-kicker";
   kicker.textContent = `✨ ${delight.delight_hook || "惊喜推荐"}`;
+  kickerLine.append(kicker);
+  if (queueLength > 1) {
+    const counter = document.createElement("span");
+    counter.className = "delight-banner-counter";
+    counter.textContent = `1/${queueLength}`;
+    kickerLine.append(counter);
+  }
 
   const titleText = document.createElement("span");
   titleText.className = "delight-banner-title";
   titleText.textContent = delight.title || "";
 
+  textCol.append(kickerLine, titleText);
+
   const chevron = document.createElement("span");
   chevron.className = "delight-banner-chevron";
-  chevron.textContent = isExpanded ? "▾" : "▸";  // ▾ vs ▸
+  chevron.textContent = isExpanded ? "▾" : "▸";
 
-  row.append(kicker, titleText, chevron);
+  row.append(thumb, textCol, chevron);
 
   const dismiss = document.createElement("button");
   dismiss.type = "button";
@@ -1951,8 +2038,13 @@ function renderDelightSlot() {
   dismiss.addEventListener("click", (event) => {
     event.stopPropagation();
     rememberDismissedDelight(delight.bvid);
-    state.activeDelight = null;
-    setHint("先给你收起来，回头想看再翻。", "info");
+    shiftDelightQueue();
+    setHint(
+      state.activeDelights.length > 0
+        ? "这条收起了，下一条上。"
+        : "先给你收起来，回头想看再翻。",
+      "info",
+    );
     renderDelightSlot();
   });
 
@@ -1993,14 +2085,21 @@ function renderDelightSlot() {
       "action-button action-primary delight-banner-action",
       async () => {
         await openRecommendation(delight.bvid, delight);
-        state.activeDelight = {
-          ...(state.activeDelight ?? delight),
+        // Mark viewed but keep in queue so user can see the response
+        // before the next one slides in. Auto-advance after 800ms.
+        updateDelightHead({
           state: "viewed",
           response_message: "已打开，阿B 会把这次点击当成强信号。",
           composer_open: false,
           expanded: true,
-        };
+        });
         renderDelightSlot();
+        setTimeout(() => {
+          if (state.activeDelights[0]?.bvid === delight.bvid) {
+            shiftDelightQueue();
+            renderDelightSlot();
+          }
+        }, 800);
       },
     );
 
@@ -2008,13 +2107,8 @@ function renderDelightSlot() {
       "不感兴趣",
       "action-button action-secondary delight-banner-action",
       () => {
-        state.activeDelight = {
-          ...(state.activeDelight ?? delight),
-          state: "rejected",
-          response_message: "记下了，这类惊喜先少来点。",
-          composer_open: false,
-          expanded: true,
-        };
+        rememberDismissedDelight(delight.bvid);
+        shiftDelightQueue();
         setHint("记下了，这类惊喜先少来点。", "success");
         renderDelightSlot();
       },
@@ -2024,11 +2118,10 @@ function renderDelightSlot() {
       "聊一聊",
       "action-button action-secondary delight-banner-action",
       () => {
-        state.activeDelight = {
-          ...(state.activeDelight ?? delight),
-          composer_open: !(state.activeDelight ?? delight)?.composer_open,
+        updateDelightHead({
+          composer_open: !delight.composer_open,
           expanded: true,
-        };
+        });
         renderDelightSlot();
       },
     );
@@ -2050,11 +2143,8 @@ function renderDelightSlot() {
       input.placeholder = "说说你为什么想点开，或者哪里还拿不准";
       input.value = delight.chat_draft || "";
       input.addEventListener("input", () => {
-        if (state.activeDelight?.bvid === delight.bvid) {
-          state.activeDelight = {
-            ...state.activeDelight,
-            chat_draft: input.value,
-          };
+        if (state.activeDelights[0]?.bvid === delight.bvid) {
+          updateDelightHead({ chat_draft: input.value });
         }
       });
 
@@ -2077,15 +2167,14 @@ function renderDelightSlot() {
             const payload = await sendChatMessage(
               `我想聊聊一条惊喜推荐。\n标题：${delight.title}\n理由：${delight.delight_reason}\n我的想法：${draft}`,
             );
-            state.activeDelight = {
-              ...(state.activeDelight ?? delight),
+            updateDelightHead({
               state: "chatted",
               response_message: "这句已经记下，后面会更会试探。",
               chat_reply: payload.reply,
               chat_draft: "",
               composer_open: false,
               expanded: true,
-            };
+            });
             setHint("这句记下了，后面的惊喜推荐会继续学。", "success");
             renderDelightSlot();
             await refreshProfileSummaryAfterInteraction({
@@ -2105,6 +2194,21 @@ function renderDelightSlot() {
 
       composer.append(input, submit, status);
       body.append(composer);
+    }
+
+    if (queueLength >= 5) {
+      const dismissAll = document.createElement("button");
+      dismissAll.type = "button";
+      dismissAll.className = "delight-banner-dismiss-all";
+      dismissAll.textContent = `全部稍后看 (${queueLength})`;
+      dismissAll.addEventListener("click", (event) => {
+        event.stopPropagation();
+        for (const d of state.activeDelights) rememberDismissedDelight(d.bvid);
+        clearDelightQueue();
+        setHint("都收起来了，需要时去邮箱里翻。", "info");
+        renderDelightSlot();
+      });
+      body.append(dismissAll);
     }
 
     banner.append(body);
@@ -2722,7 +2826,7 @@ async function initializeRecommendations() {
   if (!online) {
     state.runtimeStatus = null;
     state.recommendations = [];
-    state.activeDelight = null;
+    clearDelightQueue();
     state.hasMoreRecommendations = false;
     state.loadingMore = false;
     renderDelightSlot();
@@ -2739,16 +2843,8 @@ async function initializeRecommendations() {
 
   state.runtimeStatus = runtimeResult.status === "fulfilled" ? runtimeResult.value : null;
   if (delightResult.status === "fulfilled") {
-    if (delightResult.value == null) {
-      if ((state.activeDelight?.state || "pending") === "pending") {
-        state.activeDelight = null;
-      }
-    } else {
-      state.activeDelight = mergeDelightCandidate(
-        state.activeDelight,
-        delightResult.value,
-        state.dismissedDelightBvids,
-      );
+    if (delightResult.value != null) {
+      pushDelightCandidate(delightResult.value);
     }
   }
   renderPoolStatus(state.runtimeStatus);
