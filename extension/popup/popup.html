@@ -756,10 +756,17 @@
       color: var(--text-main);
       line-height: 1.45;
       display: -webkit-box;
-      -webkit-line-clamp: 2;
+      -webkit-line-clamp: 3;
       -webkit-box-orient: vertical;
       overflow: hidden;
       overflow-wrap: anywhere;
+    }
+    /* Reveal full title once the user has chosen to expand the banner —
+       collapsed state still respects the row-height budget with a
+       3-line clamp, but the expanded state shouldn't hide content. */
+    .delight-banner.is-expanded .delight-banner-title {
+      -webkit-line-clamp: unset;
+      display: block;
     }
 
     .delight-banner-dismiss-all {
