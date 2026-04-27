@@ -107,9 +107,21 @@ def build_embedding_service(
         except Exception:
             logger.debug("Failed to init embedding L2 cache", exc_info=True)
 
+        # Pick a sensible default model per provider when config didn't pin one
+        default_model_by_provider = {
+            "gemini": "gemini-embedding-001",
+            "openai": "text-embedding-3-small",
+            "ollama": "bge-m3",
+        }
+        effective_model = (
+            emb_cfg.model
+            or default_model_by_provider.get(provider_name)
+            or "gemini-embedding-001"
+        )
+
         return EmbeddingService(
             provider,
-            model=emb_cfg.model or "gemini-embedding-001",
+            model=effective_model,
             similarity_threshold=emb_cfg.similarity_threshold,
             persistent_cache=l2_cache,
         )

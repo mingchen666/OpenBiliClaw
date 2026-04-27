@@ -220,6 +220,86 @@ def test_ollama_provider_defaults() -> None:
     assert provider.name == "ollama"
 
 
+def test_ollama_provider_native_root_strips_v1_suffix() -> None:
+    provider = OllamaProvider(base_url="http://localhost:11434/v1")
+    assert provider._native_root() == "http://localhost:11434"
+    # Trailing slash also handled
+    provider2 = OllamaProvider(base_url="http://localhost:11434/v1/")
+    assert provider2._native_root() == "http://localhost:11434"
+
+
+@pytest.mark.asyncio
+async def test_ollama_provider_embed_calls_native_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify embed() POSTs to /api/embeddings (Ollama's native route),
+    sends {model, prompt}, and returns the embedding vector."""
+    import httpx
+
+    captured_url: list[str] = []
+    captured_payload: list[dict[str, object]] = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return
+
+        def json(self) -> dict[str, object]:
+            return {"embedding": [0.1, 0.2, 0.3, 0.4]}
+
+    class _FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, *, json: dict[str, object]) -> _FakeResponse:
+            captured_url.append(url)
+            captured_payload.append(json)
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    provider = OllamaProvider(base_url="http://localhost:11434/v1")
+    result = await provider.embed("hello world", model="bge-m3")
+
+    assert captured_url == ["http://localhost:11434/api/embeddings"]
+    assert captured_payload == [{"model": "bge-m3", "prompt": "hello world"}]
+    assert result == [0.1, 0.2, 0.3, 0.4]
+
+
+@pytest.mark.asyncio
+async def test_ollama_provider_embed_returns_empty_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When Ollama isn't reachable, embed() should return [] not raise."""
+    import httpx
+
+    class _FailingClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _FailingClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, *args: object, **kwargs: object) -> object:
+            raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FailingClient)
+
+    provider = OllamaProvider(base_url="http://localhost:11434/v1")
+    result = await provider.embed("hello", model="bge-m3")
+    assert result == []
+
+
 def test_openrouter_provider_defaults_and_headers() -> None:
     provider = OpenRouterProvider(
         api_key="test-key",

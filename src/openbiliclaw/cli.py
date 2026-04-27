@@ -577,6 +577,119 @@ def _save_runtime_provider_config(provider: str, api_key: str) -> None:
     save_config(config, diagnostics.config_path)
 
 
+def _ollama_is_running(host: str = "http://localhost:11434") -> bool:
+    """Probe Ollama's HTTP API; return True only on a healthy 200 response."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=2.0) as client:
+            response = client.get(f"{host}/api/version")
+            return response.status_code == 200
+    except Exception:
+        return False
+
+
+def _ollama_has_model(model: str, host: str = "http://localhost:11434") -> bool:
+    """Return True if Ollama already has the named model pulled."""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            response = client.get(f"{host}/api/tags")
+            response.raise_for_status()
+            tags = response.json().get("models", [])
+            for tag in tags:
+                name = str(tag.get("name", "")).strip()
+                # Match "bge-m3", "bge-m3:latest", etc.
+                if name == model or name.startswith(f"{model}:"):
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def _ollama_pull_model(model: str, host: str = "http://localhost:11434") -> bool:
+    """Stream a model pull from Ollama; print progress to console."""
+    import httpx
+
+    try:
+        with (
+            httpx.Client(timeout=600.0) as client,
+            client.stream(
+                "POST",
+                f"{host}/api/pull",
+                json={"model": model, "stream": True},
+            ) as stream,
+        ):
+            stream.raise_for_status()
+            for line in stream.iter_lines():
+                if not line:
+                    continue
+                import json as _json
+
+                try:
+                    evt = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                status = evt.get("status", "")
+                if status:
+                    console.print(f"  [dim]{status}[/dim]")
+                if evt.get("error"):
+                    console.print(f"  [red]{evt['error']}[/red]")
+                    return False
+        return True
+    except Exception as exc:
+        console.print(f"  [red]拉取失败: {exc}[/red]")
+        return False
+
+
+def _save_embedding_provider_config(provider: str, model: str) -> None:
+    """Persist the embedding provider/model selection to config.toml."""
+    from openbiliclaw.config import load_config_with_diagnostics, save_config
+
+    config, diagnostics = load_config_with_diagnostics()
+    config.llm.embedding.provider = provider
+    config.llm.embedding.model = model
+    save_config(config, diagnostics.config_path)
+
+
+def _interactive_embedding_setup(default_provider: str) -> None:
+    """Optional: configure local Ollama as the embedding provider.
+
+    Skipped silently when the chosen LLM provider is already ``ollama``
+    (in that case the embedding service falls through to the same provider
+    via the LLM-default-provider rule).
+    """
+    if default_provider == "ollama":
+        return
+    if not typer.confirm(
+        "是否启用本地 Ollama 作为 embedding 兜底服务？(可选, 需先安装 Ollama 并启动服务)",
+        default=False,
+    ):
+        return
+
+    if not _ollama_is_running():
+        console.print(
+            "[yellow]检测不到 Ollama 服务（localhost:11434）。[/yellow]\n"
+            "  Mac:     brew install ollama && ollama serve\n"
+            "  Windows: 从 https://ollama.com/download 下载安装包\n"
+            "  装好后重新运行本命令即可启用。"
+        )
+        return
+
+    model = "bge-m3"
+    if _ollama_has_model(model):
+        console.print(f"[green]已检测到本地模型 {model}[/green]")
+    else:
+        console.print(f"开始拉取 {model}（约 568MB，首次下载需几分钟）…")
+        if not _ollama_pull_model(model):
+            console.print(f"[red]{model} 拉取失败，未启用本地 embedding[/red]")
+            return
+
+    _save_embedding_provider_config(provider="ollama", model=model)
+    console.print(f"[bold green]已启用本地 Ollama embedding（{model}）[/bold green]")
+
+
 def _interactive_runtime_config_setup() -> None:
     """Guide the user through missing LLM config before init."""
     supported_providers = ["openai", "claude", "gemini", "deepseek", "ollama", "openrouter"]
@@ -599,6 +712,7 @@ def _interactive_runtime_config_setup() -> None:
         _save_runtime_provider_config(provider, api_key)
         error = _load_runtime_config_error()
         if error is None:
+            _interactive_embedding_setup(provider)
             return
         console.print("[bold yellow]刚写入的配置仍不完整，请重新输入。[/bold yellow]")
 
@@ -709,6 +823,19 @@ def _build_draft_profile_for_discover(memory: Any) -> Any:
     draft = OnionProfile()
     draft.populate_from_flat_preference(preference_layer)
     return draft
+
+
+@app.command("setup-embedding")
+def setup_embedding() -> None:
+    """配置本地 Ollama 作为 embedding 兜底服务（可选）.
+
+    init 时已经问过；如果当时没启用、之后想加上，跑这条命令再走一次引导。
+    """
+    _print_page_title("配置本地 embedding", "Ollama + bge-m3")
+    from openbiliclaw.config import load_config_with_diagnostics
+
+    config, _ = load_config_with_diagnostics()
+    _interactive_embedding_setup(config.llm.default_provider)
 
 
 @app.command()
