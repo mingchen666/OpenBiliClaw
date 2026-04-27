@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-
-import pytest
 
 from openbiliclaw.discovery.engine import DiscoveredContent
 from openbiliclaw.recommendation.curator import (
     FeedbackSignals,
     PoolCurator,
     ScoringContext,
-    ScoringWeights,
 )
 from openbiliclaw.storage.database import Database
 
@@ -26,7 +23,7 @@ def _make_db() -> tuple[Database, str]:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +272,9 @@ def test_evict_stale_pool_items_ignores_recommended() -> None:
     db, _ = _make_db()
     db.cache_content("BV_OLD_REC", title="Old Recommended", up_name="UP", source="search")
     db.conn.execute(
-        "UPDATE content_cache SET discovered_at = datetime('now', '-20 days') WHERE bvid = 'BV_OLD_REC'"
+        "UPDATE content_cache "
+        "SET discovered_at = datetime('now', '-20 days') "
+        "WHERE bvid = 'BV_OLD_REC'"
     )
     db.conn.commit()
     db.insert_recommendation("BV_OLD_REC", confidence=0.9)

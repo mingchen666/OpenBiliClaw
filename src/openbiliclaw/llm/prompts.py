@@ -9,7 +9,67 @@ if TYPE_CHECKING:
     from openbiliclaw.soul.tone import ToneProfile
 
 
-def _render_tone_profile(tone_profile: ToneProfile | None) -> str:
+_PLATFORM_DISPLAY_NAMES: dict[str, str] = {
+    "bilibili": "B 站",
+    "xiaohongshu": "小红书",
+}
+
+
+def _platform_content_label(source_platform: str) -> str:
+    """Return platform-specific content label for prompts."""
+    return "B 站内容" if source_platform == "bilibili" else "内容"
+
+
+def _platform_friend_label(source_platform: str) -> str:
+    """Return platform-specific friend label for prompts."""
+    return "老B友" if source_platform == "bilibili" else "朋友"
+
+
+def _platform_display_name(source_platform: str) -> str:
+    """Return a human-readable platform name ("B 站" / "小红书")."""
+    return _PLATFORM_DISPLAY_NAMES.get(source_platform, "内容")
+
+
+def _friend_label_from_mix(source_platform_mix: dict[str, float] | None) -> str:
+    """Pick a friend label that fits the user's observed source mix.
+
+    None / empty → bilibili default (back-compat). Single-source uses that
+    platform's label. Multi-source collapses to a platform-neutral "熟人"
+    so the prompt doesn't lean on one platform's in-group slang.
+    """
+    if not source_platform_mix:
+        return "老B友"
+    if len(source_platform_mix) == 1:
+        return _platform_friend_label(next(iter(source_platform_mix)))
+    return "熟人"
+
+
+def _tone_context_line(source_platform_mix: dict[str, float] | None) -> str:
+    """First line of the tone block — describes which platforms to sound native on."""
+    if not source_platform_mix:
+        return "请保持“老B友”基调：懂 B 站语境，像熟人聊天，不像客服。"
+    if len(source_platform_mix) == 1:
+        platform = next(iter(source_platform_mix))
+        friend = _platform_friend_label(platform)
+        display = _platform_display_name(platform)
+        return f"请保持“{friend}”基调：懂 {display} 语境，像熟人聊天，不像客服。"
+    top = [
+        platform
+        for platform, _ in sorted(source_platform_mix.items(), key=lambda kv: kv[1], reverse=True)[
+            :3
+        ]
+    ]
+    display_list = " / ".join(_platform_display_name(p) for p in top)
+    return (
+        f"请保持朋友感基调：这个用户横跨 {display_list}，不同平台的梗都接得住，"
+        "但不要把一个站的黑话硬塞进另一个站的语境。像熟人聊天，不像客服。"
+    )
+
+
+def _render_tone_profile(
+    tone_profile: ToneProfile | None,
+    source_platform_mix: dict[str, float] | None = None,
+) -> str:
     """Render tone profile guidance for prompt builders."""
     tone = tone_profile or {
         "density": "balanced",
@@ -18,7 +78,7 @@ def _render_tone_profile(tone_profile: ToneProfile | None) -> str:
         "directness": "balanced",
     }
     return (
-        "请保持“老B友”基调：懂 B 站语境，像熟人聊天，不像客服。\n"
+        _tone_context_line(source_platform_mix) + "\n"
         f"- 信息密度: {tone['density']}\n"
         f"- 情绪温度: {tone['warmth']}\n"
         f"- 梗感强度: {tone['playfulness']}\n"
@@ -32,13 +92,18 @@ def build_socratic_dialogue_prompt(
     core_memory_text: str,
     tone_profile: ToneProfile | None,
     history: list[dict[str, str]],
+    source_platform_mix: dict[str, float] | None = None,
 ) -> list[dict[str, str]]:
     """Build chat messages for Socratic dialogue generation."""
+    friend_label = _friend_label_from_mix(source_platform_mix)
     system_prompt = "\n\n".join(
         [
             "你是 OpenBiliClaw，一个像朋友一样理解用户的 AI 伙伴。",
-            "请使用苏格拉底式对话风格：温和、追问动机、确认理解，但整体更像会接话的老B友，不像客服，也不要像咨询师。",
-            _render_tone_profile(tone_profile),
+            (
+                "请使用苏格拉底式对话风格：温和、追问动机、确认理解，"
+                f"但整体更像会接话的{friend_label}，不像客服，也不要像咨询师。"
+            ),
+            _render_tone_profile(tone_profile, source_platform_mix),
             "以下是当前用户的 core memory，请把它作为理解用户的背景，而不是机械复述：",
             core_memory_text,
         ]
@@ -128,109 +193,150 @@ def build_soul_profile_prompt(
     recent_awareness: list[dict[str, object]] | None = None,
     active_insights: list[dict[str, object]] | None = None,
     tone_profile: ToneProfile | None,
+    source_platform_mix: dict[str, float] | None = None,
 ) -> list[dict[str, str]]:
     """Build a structured prompt for initial soul-profile generation."""
     system_prompt = """
 <task>
-你要基于用户历史摘要和偏好摘要，生成一份谨慎、温和、像长期观察后的老朋友所写的人格画像。
+你是用户的老朋友,正坐在 ta 对面,直接跟 ta 说"你是这样一个人"。
+画像会被原样展示给用户本人 —— 写法必须是**第二人称**直接对话
+("你这人……"、"你身上……"、"你最近……"),
+绝对不能写成"ta……"、"他……"、"这人……"或类似的第三人称叙述。
+
+你不是在列对方平时看什么、玩什么 ——
+那些事看 ta 自己的关注列表和兴趣标签就能知道,不用你写。
+你要说的是 ta 这个人**内在是什么样、需要什么、怎么活着**,
+让 ta 看完觉得"这个朋友是真懂我"。
 </task>
 
+<inner_step>
+写之前在心里走完三步(不要输出这一段):
+
+【第一步】看 ta 的兴趣分布,估出"生活模式占比":
+   玩耍模式 / 钻研模式 / 审美模式 / 行动模式 / 倾听模式 / 闲逛模式
+   合计 ~100%。
+
+【第二步 — 关键】把每种模式翻译成它对应的**内在需求**。
+   portrait 写的是这些"内在需求",不是模式本身,更不是具体兴趣。
+
+   翻译表(参考):
+   - 玩耍 → 对趣味/情绪能量/松弛的底层需求 / 对"生活得有意思"的执着
+   - 钻研 → 对结构/原理/掌控感的需求 / 对"想明白"的执拗
+   - 审美 → 对感官质量/调性的敏感 / 对"对不对劲"的不妥协
+   - 行动 → 把抽象转成具体的实现欲 / 对"光想不做"的不安
+   - 倾听 → 对人物状态和情感纹理的兴趣
+   - 闲逛 → 对自由度的需要 / 不愿被目标锁死的反弹
+
+【第三步】心理张力(防御 / 焦虑 / 内在矛盾)只在行为里**真有证据**时才写。
+   没有就不写,不要硬编 — 没有冲突的人也是合法的。
+</inner_step>
+
 <rules>
-1. 只能根据给定材料推断，不要做医学化、病理化、断言式结论。
-2. 输出必须是严格 JSON，不要附带解释。
-3. 人格描述至少 200 个中文字符。
-4. core_traits 控制在 3 到 6 条，deep_needs 和 values 保持简洁。
-   deep_needs 必须用具体、可感知的语言描述用户的底层渴望（如"对事物运作原理的深层理解""不受干扰的个人空间与自由"），
-   不要写成抽象心理学术语（"掌控感""自我实现"太笼统），也不要写成认知偏好（"逻辑闭环"属于 cognitive_style）。
-   core_traits 和 values 数量应与证据匹配（如证据支持 4 条 values 就写 4 条，不要人为缩减）。
-5. 先总结这个人怎么处理信息，再总结他在内容里长期在找什么，最后总结他最近更像处于什么阶段。
-6. personality_portrait 硬约束（违反即视为失败，必须严格遵守）：
-
-   【禁止清单】— portrait 正文中绝对不得出现以下任一要素：
-     - 具体视频题材名、节目类型描述（如"4K修复老番""硬核时政""纪录片""番剧""追番"）
-     - UP 主 ID、频道名、主播名
-     - 具体作品名、IP 名、游戏名
-     - 画质/格式描述（4K / 8K / HDR / 修复版 / 蓝光 等）
-     - 具体菜名、食物名、地名、品牌名、产品名（哪怕作为"举例"也禁止）
-     - "看了 X""追了 X""浏览 X""沉浸在 X""驻足于 X" 这类直白的观看行为复述
-     - 以 recent_titles 中任何视频题目为灵感复述出的场景描写
-   兴趣 topic、题材、作品名只能留在你内部推理的思考链里，不得出现在 portrait 最终字面。
-
-   【必含心理维度】— portrait 必须按以下 4 个心理学视角组织，每个视角至少 1 句洞察：
-     (a) 信息处理与认知防御机制：用户如何过滤信息、对哪类刺激启动防御、防御的根源是什么
-     (b) 核心张力与内在矛盾：写出 2-3 组对立驱动
-         （例如：理性控制 vs 情感软落；秩序渴望 vs 好奇扩散；掌控欲 vs 漂流感）
-     (c) 情感调节与自我建构策略：用户靠什么获得确定感、如何处理不确定性、
-         在焦虑时会退行到什么心理模式
-     (d) 当前人格漂移方向：最近人格在往哪个方向迁移、背后的心理动因是什么
-
-   【语气】— 仍然保持老朋友口吻，口语化有温度，但每一句都必须指向心理机制本身，
-   而不是"用户看了什么" 的具体事实。
-
-   【反面示例 — 绝对不要写成这样】：
-   "你喜欢在4K修复的老番里回味纯粹的审美，会在研究大模型之余为一个正宗鸡煲配方驻足……"
-   ← 这段违反禁止清单（出现"4K修复老番""大模型""鸡煲"），必须重写。
-
-   【正面示例 — 应该写成这种风格】：
-   "你对'被糊弄'有近乎生理性的排斥——任何带着引流痕迹的信息都会触发你的防御屏障，
-    你宁可花三倍的时间自己拆解底层逻辑，也不愿接受被喂进来的结论。这种控制欲的深处，
-    其实藏着一种对不确定性的隐性焦虑：当外部叙事越来越模糊，你就越依赖可验证的
-    逻辑闭环来给自己一个站得住脚的位置。但你并不只是躲在理性堡垒里——你最近在
-    偷偷给自己松绑，开始允许一些'无法完全拆解'的具体生活经验进入视野，
-    这是一种从封闭的秩序感向更有弹性的生活实感迁移的尝试，背后是你对'智识洁癖'
-    可能把自己活成孤岛的一点点警觉。"
-7. 可以参考非临床的认知风格、内在驱动力、阶段状态来组织描述，但不要写理论术语，
-   不要写成心理报告、咨询记录或说明书，要像熟人总结这个人的气质和状态。
-8. mbti 字段必须填写：根据行为数据推断最可能的 MBTI 四字母类型（如 INTJ、ENFP），
-   confidence 取 0.5-0.9，四个维度 EI/SN/TF/JP 都要填。如果证据不足可以降低 confidence，
-   但不要留空。
-9. cognitive_style：如果 preference_summary 中已有 cognitive_style，直接沿用并微调措辞，
-   不要推翻或重新推断。如果没有，再从行为模式推断。
-10. life_stage 应从行为证据抽象出用户所处的人生阶段全貌：推断人口学特征（学历、职业阶段、年龄段），
-    并刻画该阶段的核心心理状态和发展方向（如"工作2-3年的互联网从业者，正处于技能深化与职业方向确认的关键期"）。
-    不要堆砌具体事件（如"喜欢粤语文化、学做鸡煲"），而要提炼这些行为背后反映的阶段性特征。
-    current_phase 应聚焦用户当前面临的核心张力或心理主题（如"职业焦虑与创作冲动并存"），
-    概括当前的心理动力方向，而不是罗列最近看了什么具体内容。
-    具体事件只能作为推理依据，不能成为描述本身。
-11. 警惕内向/分析型偏见：不要默认将用户描绘为"内省、理性、追求掌控感"的人格。
-    如果用户频繁观看搞笑、娱乐、社交互动、派对游戏、生活分享、追番类内容，
-    core_traits 应体现外向、社交驱动、刺激寻求、兴趣易转移等特征；
-    motivational_drivers 应反映分享表达、对抗无聊、群体归属等驱动力；
-    deep_needs 应包含新鲜刺激渴求、被群体接纳等需求。
-    根据实际行为证据判断，而不是套用"深度思考者"模板。
-12. 警惕纯理性偏见：即使用户确实偏好知识类/深度内容，也不要只输出智识维度的特质。
-    观察用户是否表现出以下感性信号：关注人文/情感/艺术/理想主义类内容、
-    对创作者的情感表达有持续互动、追番或追剧中表现出高共情投入、
-    关注社会议题或弱势群体话题、对"完美"或"极致"有反复追求。
-    如果存在这些信号，core_traits 必须包含感性维度（如深度共情、理想主义、
-    完美主义倾向、审美敏感等），不要全部用"好奇""批判""分析"等冷色调词汇覆盖。
-    values 也要相应体现人文关怀、质量信仰等非功利价值观。
+1. 输出严格 JSON,不要附带解释。
+2. portrait 是一段连续的话(不分段、不分点),150-260 字。
+3. **绝对不出现具体兴趣词** —— portrait 必须停留在"ta 这个人是什么样"这一层,
+   兴趣具象层是 likes 字段的责任,不在 portrait 里复读。禁止出现:
+   - 游戏类型(自走棋、MOBA、塔防、自走棋玩法、等)
+   - 内容载体(番剧、综艺、虚拟主播、直播、纪录片、4K 修复等)
+   - 领域名(AI、人工智能、编程、新能源、机器学习、哲学、历史等)
+   - 作品名 / IP 名 / UP 主名 / 频道名 / 主播名 / 品牌名 / 食物名 / 地名
+   - "看了 X""追了 X""沉浸在 X""驻足于 X" 这类直白行为复述
+   兴趣 topic、题材、作品名只能留在内部推理里,不得出现在 portrait 最终字面。
+4. **必须用第二人称"你"**直接对用户讲话,不要用 "ta / 他 / 她 / 这人" 等
+   第三人称叙述。写法用**内在需求**和**为人方式**说话,不是行为列表:
+   - ✅ "你既要乐子也要门道,两边都不肯偏废"
+   - ✅ "对世界怎么运转的好奇,在你身上是一种长期不退烧的状态"
+   - ❌ "ta 沉迷自走棋"(第三人称 + 具体兴趣词,双重违规)
+   - ❌ "这人对 AI 编程感兴趣"(第三人称 + 领域名,双重违规)
+   - ❌ "玩耍模式占比 50%"(规则术语不应出现在最终输出)
+5. 调性:**老朋友坐在你对面跟你说"你是这样一个人"**,
+   口语、有温度,可以带轻微调侃。
+   绝不写成心理报告 / 咨询记录 / 说明书 / 理论术语堆砌。
+6. 模式占比决定语气配比 — 占比高的内在需求多写,占比 < 5% 的不写。
+7. **不预设性格类型**。
+   - 如果用户玩耍权重高,开头就写"乐子"和"情绪能量"那一类内在需求,
+     不要默认从"理性 / 防御"开始。
+   - 如果用户钻研权重真的高,portrait 也要老实写得克制严肃 ——
+     不要为了"显得轻松"硬塞玩心。
+   - 如果用户审美权重高,portrait 该敏感诗意就敏感诗意。
+   - 没有冲突的人就不写冲突,没有焦虑就不写焦虑。
+8. core_traits 用**为人特征词**(3-6 条),不写兴趣类别:
+   - ✅ 爱玩 / 较真 / 杂食 / 信息敏感 / 自我节奏感强 / 不上纲上线 / 沉得住气 / 慢热
+   - ❌ 游戏玩家 / 技术钻研者 / AI 爱好者
+9. deep_needs 用具体可感知的语言描述底层渴望
+   (如"在玩乐与正经之间自由切换的空间""被美与真实触动""不被打扰的深度专注时间"),
+   不要写抽象心理学术语("掌控感""自我实现"太笼统),
+   也不要写认知偏好("逻辑闭环"属于 cognitive_style)。
+10. cognitive_style:如果 preference_summary 中已有 cognitive_style,
+    直接沿用并微调措辞,不要推翻或重新推断。如果没有,再从行为模式推断。
+11. life_stage 推断人口学和阶段特征(学历 / 职业阶段 / 年龄段 + 该阶段的核心心理状态),
+    不要堆砌具体事件。
+    current_phase 聚焦当前心理动力方向,不罗列最近内容。
+12. mbti 字段必须填写,confidence 0.5-0.9,
+    四个维度 EI/SN/TF/JP 都要给 pole + strength。
+    **不要默认 INTP/INTJ** — 根据行为证据如实判断:
+    爱玩、外向、社交驱动可能是 ESFP/ENFP;
+    审美驱动可能是 INFP/ISFP;
+    行动驱动可能是 ESTP/ESTJ 等。
 </rules>
+
+<positive_examples>
+全部使用第二人称"你",像老朋友坐在你对面跟你说话:
+
+示例 A(玩耍 50% + 钻研 30% + 行动 10%):
+"你这人身上同时挂着两根弦:一根是'生活得有意思',另一根是'想明白'。
+乐子那根是底色 — 你对趣味、情绪能量、松弛感有底层需求,没意思的东西
+你一秒都坐不住。但你也不是只追着乐跑,遇到不懂的就会想从底层拆开看,
+而且拆得有耐心。两边切换得挺自然,玩了不觉得没干正事,认真起来也
+放得下玩。最近你那股'想明白'的劲有点不满足于纸上谈兵,开始想真
+往现实里落一落了。"
+
+示例 B(钻研 70% + 审美 20%):
+"你骨子里偏认真型 — 不是紧绷的那种,而是好奇心很长。'想明白'
+这件事的需要在你身上是常驻的,不是一阵一阵的。你对'对不对劲'
+也敏感,质感不到位的东西会下意识让你皱眉头,但你不至于挑剔到
+不近人情。整体节奏是慢工出细活,不容易被推着走,你有你自己的
+节拍。跟你认真聊一件事你会很投入,但闲扯并不是你的舒适区。"
+
+示例 C(玩耍 80% 单一主轴):
+"你的主调其实挺简单 — 生活就是要有意思。你对乐子的吸收力很强,
+新东西一来你会想去尝尝,不喜欢的也不会硬撑。不是不会认真,但
+认真不是你的主调。你信息杂食,什么都看一点,不强求深度。跟你
+待着舒服,因为你不会把简单的事搞复杂。"
+
+示例 D(审美 70% + 倾听 20%):
+"你是个高敏感审美者 — 对质感、调性、氛围有刻在骨子里的敏感。
+你判断'对不对劲'比多数人快得多,不是刻意,是本能。你也愿意
+感知作品和人背后的情感纹理,但更看重当下的直觉感受对不对。
+你整体节奏慢,挑剔但不刻薄,这种对感官质量的坚持让你活得挺纯粹。"
+</positive_examples>
 
 <output_schema>
 {
-  "personality_portrait": "至少 200 字的自然语言人格描述",
-  "core_traits": ["理性", "好奇", "谨慎"],
-  "cognitive_style": ["具象思维优先", "边做边想的迭代模式", "问题导向型学习"],
-  "motivational_drivers": ["掌握可迁移的实用技能", "持续扩展能力边界"],
-  "current_phase": "最近更像在一边动手实践，一边积累经验和判断力。",
-  "values": ["实用主义", "工匠精神", "个人自由"],
-  "life_stage": "处于探索与积累阶段",
-  "deep_needs": ["被理解", "持续成长"],
+  "personality_portrait": "150-260 字的一段连续介绍(描述内在需求和为人方式,不出现具体兴趣)",
+  "core_traits": ["..."],
+  "cognitive_style": ["..."],
+  "motivational_drivers": ["..."],
+  "current_phase": "...",
+  "values": ["..."],
+  "life_stage": "...",
+  "deep_needs": ["..."],
   "mbti": {
-    "type": "INTP",
+    "type": "....",
     "confidence": 0.7,
     "dimensions": {
-      "EI": {"pole": "I", "strength": 0.8},
-      "SN": {"pole": "N", "strength": 0.75},
-      "TF": {"pole": "T", "strength": 0.7},
+      "EI": {"pole": "I", "strength": 0.7},
+      "SN": {"pole": "N", "strength": 0.7},
+      "TF": {"pole": "T", "strength": 0.6},
       "JP": {"pole": "P", "strength": 0.6}
     }
   }
 }
 </output_schema>
 """.strip()
-    system_prompt = "\n\n".join([system_prompt, _render_tone_profile(tone_profile)])
+    system_prompt = "\n\n".join(
+        [system_prompt, _render_tone_profile(tone_profile, source_platform_mix)]
+    )
     normalized_awareness = recent_awareness or []
     normalized_insights = active_insights or []
     user_prompt = "\n\n".join(
@@ -285,17 +391,23 @@ def build_role_delta_prompt(
 }
 </output_schema>
 """.strip()
-    user_prompt = "\n\n".join([
-        "<current_state>",
-        json.dumps({
-            "life_stage": current_life_stage,
-            "current_phase": current_phase,
-        }, ensure_ascii=False, indent=2),
-        "</current_state>",
-        "<recent_evidence>",
-        json.dumps(evidence[:20], ensure_ascii=False, indent=2),
-        "</recent_evidence>",
-    ])
+    user_prompt = "\n\n".join(
+        [
+            "<current_state>",
+            json.dumps(
+                {
+                    "life_stage": current_life_stage,
+                    "current_phase": current_phase,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "</current_state>",
+            "<recent_evidence>",
+            json.dumps(evidence[:20], ensure_ascii=False, indent=2),
+            "</recent_evidence>",
+        ]
+    )
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -332,17 +444,23 @@ def build_values_delta_prompt(
 }
 </output_schema>
 """.strip()
-    user_prompt = "\n\n".join([
-        "<current_state>",
-        json.dumps({
-            "values": current_values,
-            "motivational_drivers": current_drivers,
-        }, ensure_ascii=False, indent=2),
-        "</current_state>",
-        "<recent_evidence>",
-        json.dumps(evidence[:20], ensure_ascii=False, indent=2),
-        "</recent_evidence>",
-    ])
+    user_prompt = "\n\n".join(
+        [
+            "<current_state>",
+            json.dumps(
+                {
+                    "values": current_values,
+                    "motivational_drivers": current_drivers,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "</current_state>",
+            "<recent_evidence>",
+            json.dumps(evidence[:20], ensure_ascii=False, indent=2),
+            "</recent_evidence>",
+        ]
+    )
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -385,18 +503,24 @@ def build_core_delta_prompt(
 }
 </output_schema>
 """.strip()
-    user_prompt = "\n\n".join([
-        "<current_state>",
-        json.dumps({
-            "core_traits": current_traits,
-            "deep_needs": current_needs,
-            "mbti": current_mbti,
-        }, ensure_ascii=False, indent=2),
-        "</current_state>",
-        "<recent_evidence>",
-        json.dumps(evidence[:20], ensure_ascii=False, indent=2),
-        "</recent_evidence>",
-    ])
+    user_prompt = "\n\n".join(
+        [
+            "<current_state>",
+            json.dumps(
+                {
+                    "core_traits": current_traits,
+                    "deep_needs": current_needs,
+                    "mbti": current_mbti,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "</current_state>",
+            "<recent_evidence>",
+            json.dumps(evidence[:20], ensure_ascii=False, indent=2),
+            "</recent_evidence>",
+        ]
+    )
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -530,6 +654,15 @@ def build_search_queries_prompt(
 7. query 的内容风格必须多样化，不要全部偏向"深度/学术/原理"。
    应该混合使用不同风格词，如 盘点/推荐/日常/吐槽/测评/入门/体验/挑战/合集 等，
    整组 query 中带"深度/原理/解析/机制"等学术向关键词的不得超过 2 个。
+8. 多样性双向保护：
+   - 如果 depth_preference 偏低、preferred_duration 偏短，或 humor_preference 偏高，
+     就进一步减少"原理/解析/机制"这类硬入口，优先使用更轻、更好点开的形式词；
+     不要把"理解力强"误翻译成"必须更学术"。
+   - 反过来，如果 depth_preference 偏高、preferred_duration 偏长，
+     但 humor_preference >= 0.4、exploration_openness >= 0.6，
+     或 cognitive_style 里有"兼顾/调节/穿插轻松"这类描述，
+     仍要至少保证 30% query 用 "盘点/合集/吐槽/日常/挑战/体验/vlog" 这类放松形式词，
+     不能因为画像深就只发硬 query；用户硬不代表 24 小时都想看硬内容。
 6. 所有 query 的核心主题词（第一个实词）必须两两不同，
    禁止同一概念换皮出现多次。
 </rules>
@@ -683,6 +816,7 @@ def build_content_evaluation_prompt(
     profile_summary: dict[str, object],
     content_summary: dict[str, object],
     source_context: str = "",
+    source_platform: str = "bilibili",
 ) -> list[dict[str, str]]:
     """Build a structured prompt for content relevance evaluation.
 
@@ -690,36 +824,35 @@ def build_content_evaluation_prompt(
         profile_summary: User profile summary.
         content_summary: Content metadata.
         source_context: Discovery context hint (e.g. search / trending / explore).
+        source_platform: Platform identifier for dynamic prompt wording.
     """
     source_hint = ""
     if source_context:
-        source_hint = (
-            "\n<discovery_context>\n"
-            f"{source_context}\n"
-            "</discovery_context>\n\n"
-        )
+        source_hint = f"\n<discovery_context>\n{source_context}\n</discovery_context>\n\n"
 
     system_prompt = (
         "<task>\n"
         + source_hint
-        + "你要评估一个 B 站内容与这个用户画像的匹配度。\n"
+        + "你要评估一个 "
+        + _platform_content_label(source_platform)
+        + "与这个用户画像的匹配度。\n"
         "</task>\n\n"
         "<rules>\n"
         "1. 输出必须是严格 JSON，不要附带解释。\n"
         "2. score 范围必须在 0 到 1 之间。\n"
         "3. reason 只写一句中文，解释为什么这个人会喜欢或不喜欢这个内容。\n"
-        "4. 不要只说\"因为热门\"或\"因为看过类似的\"，要结合用户画像。\n"
+        '4. 不要只说"因为热门"或"因为看过类似的"，要结合用户画像。\n'
         "5. 根据发现路径调整评判宽容度：search 要求高度匹配；"
         "trending 来源的内容已经过大众验证，只要不在用户讨厌列表中且内容质量过关，基础分应 ≥ 0.6，若还能和画像产生关联则给更高分；"
         "related_chain 允许适度偏移；explore 允许主题陌生，但内容仍需具备可看性和吸引力，"
         "不能仅因为心理需求抽象匹配就给高分，过于学术、艰深、小众的内容应适当降分。\n"
         "6. topic_group 是该内容所属的粗粒度主题分类，用于推荐去重。"
         "要求：2-4 个中文词，抽象到能覆盖同类内容，"
-        "例如\"强化学习\"而非\"强化学习ppo算法源码级讲解\"，"
-        "\"城市建筑\"而非\"上海外滩建筑群纪录片\"。"
+        '例如"强化学习"而非"强化学习ppo算法源码级讲解"，'
+        '"城市建筑"而非"上海外滩建筑群纪录片"。'
         "同一主题的不同切面必须归为同一个 topic_group。"
-        "语义相同的主题必须用同一个词——\"AI\" \"人工智能\" \"机器学习\" 统一写成 \"人工智能\"，"
-        "\"RL\" \"强化学习\" 统一写成 \"强化学习\"。\n"
+        '语义相同的主题必须用同一个词——"AI" "人工智能" "机器学习" 统一写成 "人工智能"，'
+        '"RL" "强化学习" 统一写成 "强化学习"。\n'
         "7. style_key 从以下 11 个选项中选一个，描述该内容的呈现风格：\n"
         "   game_strategy（游戏攻略/机制解析）/ news_brief（新闻资讯/时事快评）/ "
         "practical_guide（教程/入门/实操指南）/ story_doc（纪录片/故事/人物传记）/ "
@@ -759,6 +892,7 @@ def build_batch_content_evaluation_prompt(
     profile_summary: dict[str, object],
     content_items: list[dict[str, object]],
     source_context: str = "",
+    source_platform: str = "bilibili",
 ) -> list[dict[str, str]]:
     """Build a prompt that evaluates multiple content items in one LLM call.
 
@@ -767,16 +901,14 @@ def build_batch_content_evaluation_prompt(
     """
     source_hint = ""
     if source_context:
-        source_hint = (
-            "\n<discovery_context>\n"
-            f"{source_context}\n"
-            "</discovery_context>\n\n"
-        )
+        source_hint = f"\n<discovery_context>\n{source_context}\n</discovery_context>\n\n"
 
     system_prompt = (
         "<task>\n"
         + source_hint
-        + "你要批量评估多个 B 站内容与这个用户画像的匹配度。\n"
+        + "你要批量评估多个 "
+        + _platform_content_label(source_platform)
+        + "与这个用户画像的匹配度。\n"
         "</task>\n\n"
         "<rules>\n"
         "1. 输出必须是严格 JSON 数组，不要附带解释。\n"
@@ -791,6 +923,17 @@ def build_batch_content_evaluation_prompt(
         "6. style_key 从 11 个选项中选：game_strategy / news_brief / "
         "practical_guide / story_doc / visual_showcase / tech_analysis / "
         "deep_dive / fun_variety / lifestyle / review_roundup / light_chat\n"
+        "7. 评分要尊重画像里的多样性诉求，双向保护：\n"
+        "   - 如果 depth_preference 不高、preferred_duration 偏短，"
+        "或 humor_preference 偏高，不要把学术艰深、入口很高的内容误判成高匹配；"
+        "讲法轻松但不空的内容同样可以高分。\n"
+        "   - 反过来，如果 depth_preference 偏高、preferred_duration 偏长，"
+        "但 humor_preference >= 0.4、exploration_openness >= 0.6，"
+        '或 cognitive_style 里写明 "兼顾/调节/穿插轻松" 这类双轨倾向，'
+        "说明用户也需要轻内容做心理调节、喘气。这时 fun_variety / light_chat / "
+        "lifestyle / story_doc / visual_showcase 风格的内容只要本身可看（话题清晰、"
+        'UP 主观察角度有意思），不要因为"不够深"就一律压到 0.5 以下，'
+        "应当给到 0.6-0.75，与画像中的娱乐/二次元/生活类兴趣标签保持权重一致。\n"
         "</rules>\n\n"
         "<output_schema>\n"
         "[\n"
@@ -822,12 +965,17 @@ def build_recommendation_expression_prompt(
     profile_summary: dict[str, object],
     content_summary: dict[str, object],
     tone_profile: ToneProfile | None,
+    source_platform: str = "bilibili",
 ) -> list[dict[str, str]]:
     """Build a structured prompt for friend-style recommendation expression."""
-    system_prompt = """
+    _friend = _platform_friend_label(source_platform)
+    _content = _platform_content_label(source_platform)
+    system_prompt = (
+        """
 <task>
-你要像一个真正懂这个人的老B友一样，给出一段推荐这条 B 站内容的话。
-</task>
+你要像一个真正懂这个人的{friend}一样，给出一段推荐这条 {content}的话。
+</task>""".replace("{friend}", _friend).replace("{content}", _content)
+        + """
 
 <rules>
 1. 输出必须是严格 JSON，不要附带解释。
@@ -840,6 +988,12 @@ def build_recommendation_expression_prompt(
    用具体描述代替泛泛评价。
 7. 如果内容来自 explore（跨域发现），expression 要解释这个陌生领域和用户的哪种
    认知偏好/深层需求产生了关联，让用户觉得”虽然没想过但确实想看”。
+8. 如果 profile_summary.style 里 depth_preference 不高、preferred_duration 偏短，
+   或 humor_preference 偏高，expression 要更轻、更顺口，少用“认知偏好 / 底层结构 /
+   深层需求”这类抽象词，不要把推荐说得比内容本身还硬。
+9. 如果 content_summary.style_key 是 lifestyle / light_chat / fun_variety /
+   review_roundup / story_doc / visual_showcase，优先从人物、场景、信息点或情绪切口来推荐，
+   不要硬写成“系统闭环 / 底层逻辑 / 认知防御”。
 </rules>
 
 <output_schema>
@@ -851,7 +1005,10 @@ def build_recommendation_expression_prompt(
 }
 </output_schema>
 """.strip()
-    system_prompt = "\n\n".join([system_prompt, _render_tone_profile(tone_profile)])
+    )
+    system_prompt = "\n\n".join(
+        [system_prompt, _render_tone_profile(tone_profile, {source_platform: 1.0})]
+    )
     user_prompt = "\n\n".join(
         [
             "<profile_summary>",
@@ -873,11 +1030,14 @@ def build_batch_expression_prompt(
     profile_summary: dict[str, object],
     content_items: list[dict[str, object]],
     tone_profile: ToneProfile | None,
+    source_platform: str = "bilibili",
 ) -> list[dict[str, str]]:
     """Build a prompt that generates expressions for multiple items in one call."""
+    _friend = _platform_friend_label(source_platform)
+    _content = _platform_content_label(source_platform)
     system_prompt = (
         "<task>\n"
-        "你要像一个真正懂这个人的老B友一样，为多条 B 站内容各写一段推荐话。\n"
+        "你要像一个真正懂这个人的" + _friend + "一样，为多条 " + _content + "各写一段推荐话。\n"
         "</task>\n\n"
         "<rules>\n"
         "1. 输出必须是严格 JSON 数组，数组长度与输入内容数量一致，顺序一一对应。\n"
@@ -887,6 +1047,11 @@ def build_batch_expression_prompt(
         "4. 避免：算法套话、信息密度、高质量、深度好文、值得一看、强烈推荐。\n"
         "5. explore 来源的内容要解释陌生领域和用户认知偏好的关联。\n"
         "6. 每条 expression 的开头措辞必须不同，禁止重复同一句式。\n"
+        "7. 如果 profile_summary.style 显示 depth_preference 不高、preferred_duration 偏短，"
+        "或 humor_preference 偏高，整体措辞要更轻、更顺口，不要把轻内容硬写成分析报告。\n"
+        "8. 如果某条 content.style_key 是 lifestyle / light_chat / fun_variety / "
+        "review_roundup / story_doc / visual_showcase，就优先从人物、场景、信息点或情绪切口下笔，"
+        "不要把它写成心理机制拆解。\n"
         "</rules>\n\n"
         "<output_schema>\n"
         "[\n"
@@ -895,7 +1060,9 @@ def build_batch_expression_prompt(
         "]\n"
         "</output_schema>"
     )
-    system_prompt = "\n\n".join([system_prompt, _render_tone_profile(tone_profile)])
+    system_prompt = "\n\n".join(
+        [system_prompt, _render_tone_profile(tone_profile, {source_platform: 1.0})]
+    )
     user_prompt = "\n\n".join(
         [
             "<profile_summary>",
@@ -918,6 +1085,7 @@ def build_delight_reason_prompt(
     content_summary: dict[str, object],
     reason_stub: str,
     tone_profile: ToneProfile | None,
+    source_platform: str = "bilibili",
 ) -> list[dict[str, str]]:
     """Build a prompt for generating a delight reason explanation.
 
@@ -948,7 +1116,9 @@ def build_delight_reason_prompt(
         "}\n"
         "</output_schema>"
     )
-    system_prompt = "\n\n".join([system_prompt, _render_tone_profile(tone_profile)])
+    system_prompt = "\n\n".join(
+        [system_prompt, _render_tone_profile(tone_profile, {source_platform: 1.0})]
+    )
     user_prompt = "\n\n".join(
         [
             "<profile_summary>",
@@ -1002,6 +1172,24 @@ def build_explore_domains_prompt(
    禁止仅替换修饰词而保留相同核心名词；至少 4 个 domain 必须来自用户
    已有兴趣领域之外的全新方向（即用户画像中未出现的领域）。
    不同 domain 之间不得共享同一个上位概念（如"城市空间"与"城市规划"共享"城市"）。
+11. 心理诉求轴多样性（核心规则，违反即视为失败）：
+   每个 domain 必须对应**不同**的心理诉求轴，每个轴最多只能出现一次。
+   定义清单（每个 domain 在 why_it_might_resonate 里**显式写出对应哪个轴**）：
+     - 拆解·系统·结构  ：精密机械、数学、算法、博弈、底层原理、工艺拆解
+     - 感官·沉浸·审美    ：视觉/听觉/材质/光影/空间体验、ASMR、风景、艺术
+     - 情绪·叙事·人物    ：纪录片人物、剧情、日常 vlog、生活故事、情感讨论
+     - 文化·社会·议题    ：社会观察、亚文化、地域文化、历史人文
+     - 实操·生活·烟火    ：美食、生活技能、家居、旅行、宠物、亲子
+     - 运动·身体·动手    ：体育、健身、户外、动手实验
+     - 幽默·吐槽·消遣    ：搞笑、鬼畜、整活、轻松吐槽
+   例：5 个 domain 不许全在"拆解·系统·结构"轴里换皮（钟表/榫卯/开发板/电路/模型
+   都属于同一个轴——拆解结构——这种安排是错的）；必须把 5 个槽位分散到至少 4 个不同的轴。
+12. 重要：personality_portrait 里出现的具体名词（如"机械结构""手工技艺""琢磨某物"
+   "钻研某活"等）只是写作时的文风装饰，**不是真实的兴趣信号**。
+   你判断用户兴趣方向时**只能依赖 `interests` 字段中的明确标签**，
+   绝对不要把 portrait 里的比喻或例子当成探索目标。
+   如果 portrait 提到"机械结构"，你不应该把"机械"或"精密拆解"当成 domain；
+   而应该看 interests 实际有什么、并在心理诉求轴清单里挑一个**还没被占用**的轴去拓展。
 </rules>
 
 <output_schema>
@@ -1044,47 +1232,103 @@ def build_speculation_generation_prompt(
     """Build a prompt for generating speculative interest directions."""
     system_prompt = (
         "<task>\n"
-        "你是一个用户兴趣探索引擎。根据用户的已确认画像，推测用户可能感兴趣但尚未接触的领域。\n"
-        "你需要找到心理学上的桥接关系——从已有兴趣模式中推断出合理的新方向。\n"
+        "你像一个懂 ta 的朋友。看 ta 平时在看什么、玩什么，\n"
+        "猜 ta 还可能喜欢的相似 / 相邻方向。\n"
+        "目标是给出 ta 真的会点开看的内容方向，\n"
+        "不是把 ta 的爱好『分析化 / 学术化』成另一个领域。\n"
         "</task>\n\n"
+        "<signal_weights>\n"
+        "综合用户信号时按以下权重决策：\n"
+        "  ≈50%  用户的 likes 分布（直接反映 ta 实际在看什么、占比多少）\n"
+        "  ≈30%  portrait + deep_needs + motivational_drivers（内在动力）\n"
+        "  ≈15%  core_traits + cognitive_style（处理信息的风格）\n"
+        "   ≤5%  MBTI（**仅作弱参考**）\n"
+        "\n"
+        "MBTI 标签本身带显著语料偏置（网上写 INTP/INTJ 的人远多于 ESFP/ESTP），\n"
+        "看到\"拆解 / 原理 / 审慎\"这类词不要反射性套\"INTP 该看什么\"模板。\n"
+        "当 likes 分布与 MBTI 暗示方向冲突时，**永远优先 likes**。\n"
+        "</signal_weights>\n\n"
         "<rules>\n"
-        "1. 每个猜测必须有 reason 说明心理学桥接逻辑（为什么从已有兴趣能推出这个新方向）\n"
-        "2. 不能重复已有兴趣、已在探索中的方向、或冷却期的方向\n"
-        "3. 方向应具体到可以搜索到内容（不要太抽象）\n"
-        "4. confidence 范围 0.3-0.6，越有把握越高\n"
-        "5. 平衡近距离延伸与跨领域探索——近距离方向更容易被用户实际点击，\n"
-        "   不要一味追求跨领域而忽略用户真正会看的内容\n"
-        "6. 人格共振检验：对每个猜测自问『这个人下次打开B站，\n"
-        "   真的会点击这类内容吗？』如果答案不确定，降低 confidence 或换方向\n"
-        "7. 输出严格 JSON，不要附带解释\n"
-        "8. 分散性强制要求：\n"
-        "   - 所有猜测的 category 必须两两不同，不允许任何两个猜测属于同一大类\n"
-        "   - 不同猜测的 domain 核心主题词必须无重叠（禁止同概念换皮）\n"
-        "   - 猜测必须横跨至少 3 种不同的认知维度，例如：\n"
-        "     知识理解型（科普/历史/哲学）、技能实践型（手工/编程/烹饪）、\n"
-        "     审美体验型（音乐/摄影/建筑）、社会观察型（纪录片/人物/社会议题）、\n"
-        "     身体感知型（运动/旅行/自然）\n"
-        "   - 如果用户兴趣集中在某一维度（如全是知识型），\n"
-        "     至少 1 个猜测必须来自其他维度\n"
-        "9. 桥接距离要求：\n"
-        "   - 至少 2 个猜测是近距离桥接（与已有兴趣共享明确属性，\n"
-        "     在B站上容易搜到且用户大概率会点击）\n"
-        "   - 至少 1 个猜测是远距离桥接（与已有兴趣仅共享深层心理需求，\n"
-        "     表面看不出明显关联）\n"
-        "   - 至少 1 个猜测是纯新奇方向（从用户人格特质出发，\n"
-        "     而非从现有兴趣出发推理）\n"
+        "1. 每个猜测必须有 reason，说清楚『为什么 ta 也会喜欢这个』——\n"
+        "   写得像朋友给朋友推荐时的『你也试试，跟你之前看的那些是一路的』那种语感。\n"
+        "   不要写成『ta 喜欢 X，因为 X 反映了对 Y 的深层心理需求』这种学术分析。\n"
+        "2. 不能重复已有兴趣、已在探索中的方向、或冷却期的方向。\n"
+        "3. 方向应具体到可以搜索到内容（不要太抽象）。\n"
+        "4. confidence 范围 0.3-0.6，越有把握越高。\n"
+        "5. 多数猜测应该是『跟 ta 现在看的同一类、再往下走一点』的近距离方向，\n"
+        "   少数可以远一点。近距离方向更容易被实际点击。\n"
+        "6. 人格共振检验：对每个猜测自问『ta 下次打开 B 站，\n"
+        "   真的会点这类内容吗？』如果不确定，降低 confidence 或换方向。\n"
+        "7. 输出严格 JSON，不要附带解释。\n"
+        "8. 分散性：\n"
+        "   - domain 核心主题词必须无重叠（禁止同概念换皮）。\n"
+        "   - 鼓励 category 多样，但**不强制两两不同** ——\n"
+        "     如果用户在某 category（例如『娱乐』）是绝对主轴（权重远高于其他），\n"
+        "     允许该 category 占多条不同 domain 的探针；\n"
+        "     这反而比强行换 category 更贴合 ta 真实行为。\n"
+        "   - experience_mode 必须从\n"
+        "     knowledge / aesthetic / hands_on / people_story / wander_observe 中选择。\n"
+        "   - entry_load 必须从 light / heavy 中选择。\n"
+        "   - 不要让所有猜测都落在同一种观看体感上。\n"
+        "9. **不要把娱乐爱好都翻译成它的『学术 / 解析 / 设计学 / 科学』版本**——\n"
+        "   ta 在看番不一定是为了『考据动画产业』，可能就是想看好看的番。\n"
+        "   ta 喝咖啡不一定是为了『研究萃取曲线』，可能就是喜欢咖啡馆氛围。\n"
+        "   reason 和 specifics 都要尊重 ta 的实际消费姿态，\n"
+        "   而不是你（LLM）作为分析师默认的『更有内容』的版本。\n"
+        "10. **每条探针选一种最自然的生成模式**（不要为了『显得有深度』强行套同一种）。\n"
+        "    每条探针在 schema 里输出 probe_mode 字段，三选一：\n"
+        "    \n"
+        "    - lateral（横向延伸）：直接从用户某个 like 出发，推同轴相邻内容。\n"
+        "      reason **不需要**也**不应该**引用 deep_needs / MBTI / 人格特质——\n"
+        "      就像朋友式直接推荐，简单直白。\n"
+        "      lateral 有多种合法路径，自由选最贴合 ta 真实行为的那条：\n"
+        "        ① 大类向小类钻：用户某 category 整体权重高 →\n"
+        "           钻到该 category 下更具体的子方向\n"
+        "        ② 小类向兄弟小类（同大类内）：用户某具体 like 横向跳到\n"
+        "           同大类下另一个小类\n"
+        "        ③ 小类向兄弟小类（跨大类）：不同大类但消费形态接近的\n"
+        "           子类互相延伸\n"
+        "        ④ 大类 + 小类组合：综合大类整体特征和具体小类，\n"
+        "           找一个新方向\n"
+        "      不预设哪条路径『更高级』，哪条最贴合 ta 真实行为就用哪条。\n"
+        "      reason 形如：『你 likes 里有 X，这个跟 X 是一路的』。\n"
+        "    \n"
+        "    - blend（浅+深结合）：某个 like 与某个 deep_need 共振，跨到另一个领域。\n"
+        "      reason 可以引用 deep_needs，但不要强行套；只在桥接确实自然时用。\n"
+        "      reason 形如：『你 likes 里有 X，加上 ta 需要 Y，所以可能也会爱 Z』。\n"
+        "    \n"
+        "    - depth（深层驱动）：从 deep_needs / 人格特质出发，推一个 likes 里没有\n"
+        "      但能满足该需求的方向。reason 主要谈内在需要，不必锚定具体 like。\n"
+        "      reason 形如：『ta 需要 Y 这种感受，这个方向能稳定提供 Y』。\n"
+        "    \n"
+        "    自由判断哪种最贴合 —— 哪种自然就用哪种。如果某条用 lateral 最贴合，\n"
+        "    就别为了『显得有深度』强行 blend / depth。\n"
         "</rules>\n\n"
         "<bridge_examples>\n"
-        "近距离桥接：\n"
-        "- 策略游戏 + 数据分析 -> 博弈论科普（共通：系统性思维+决策优化）\n"
-        "远距离桥接：\n"
-        "- 深度时事解读 + 对因果链的执念 -> 法医学纪录片（共通：追溯真相的思维模式）\n"
-        "纯新奇方向：\n"
-        "- 用户特质「对精密结构的审美偏好」 -> 机械表拆解/钟表工艺\n"
-        "  （不从兴趣出发，而从人格出发：精密结构审美→微观工艺世界）\n\n"
-        "坏的示例（太集中）：\n"
-        "- 博弈论科普 + 纳什均衡 + 策略模型（本质同一主题）\n"
-        "- 认知科学 + 神经科学 + 心理学实验（同一维度的三个变体）\n"
+        "（只描述结构性的延伸路径，不写具体 topic 关键词——\n"
+        "具体内容由你根据用户实际 likes 自行判断填入。）\n"
+        "\n"
+        "合法的延伸路径模式：\n"
+        "- 大类 → 小类（drill-down）：\n"
+        "  用户某 category 权重很高 → 钻到该 category 下更具体的子方向。\n"
+        "- 小类 → 兄弟小类（同大类内 lateral）：\n"
+        "  用户某具体 like 旁边 → 同大类下另一个小类。\n"
+        "- 小类 → 兄弟小类（跨大类 lateral）：\n"
+        "  不同大类但消费体感接近的小类互相延伸。\n"
+        "- 大类 + 小类 → 复合方向：\n"
+        "  综合用户大类整体特征和某个具体小类，找一个新方向。\n"
+        "\n"
+        "各路径都是合法延伸。**不要默认某种路径『更深刻 / 更值得推荐』** ——\n"
+        "选哪条由用户实际行为决定，不由 LLM 的『含金量』直觉决定。\n"
+        "\n"
+        "❌ 反面模式（每条都违反 signal_weights 或忽略 ta 实际消费姿态）：\n"
+        "- 把娱乐爱好翻译成它的『学术 / 解析 / 设计学 / 科学』版本\n"
+        "  （ta 看番不是为了考据动画产业，喝咖啡不是为了研究萃取曲线）\n"
+        "- 用户在某 category 上权重 0.95+，结果生成 5/5 都是其他 category\n"
+        "  （漏掉用户主轴，违反 signal_weights）\n"
+        "- 强行 blend：每条都套『因为 ta 有 deep_need X』的同一个心理学模板\n"
+        "- domain 抽象到\"经济学 / 心理学 / 社会学 / 科学\"层级\n"
+        "  （ta 实际不会在 B 站搜这种学术词）\n"
         "</bridge_examples>\n\n"
         "<output_schema>\n"
         "{\n"
@@ -1092,8 +1336,10 @@ def build_speculation_generation_prompt(
         "    {\n"
         '      "domain": "一级方向名称（宽泛领域）",\n'
         '      "category": "所属大类（必须两两不同）",\n'
-        '      "reason": "心理学桥接推理：从X兴趣+Y特质->可能喜欢此方向",\n'
-        '      "bridge_type": "near|far|novel",\n'
+        '      "probe_mode": "lateral|blend|depth",\n'
+        '      "reason": "对应 probe_mode 的推荐语（参考 rule 10 的形式）",\n'
+        '      "experience_mode": "knowledge|aesthetic|hands_on|people_story|wander_observe",\n'
+        '      "entry_load": "light|heavy",\n'
         '      "confidence": 0.45,\n'
         '      "specifics": [\n'
         '        "可搜索的具体话题1",\n'
@@ -1106,21 +1352,56 @@ def build_speculation_generation_prompt(
         "<specifics_rules>\n"
         "每个 domain 必须附带 2-4 个 specifics，代表该方向下可搜索到内容的具体话题。\n"
         "specifics 不是 domain 的同义词，而是更窄的切入点。\n"
-        "例如 domain=\"建筑美学\" → specifics=[\"现代主义建筑纪录片\", \"中式园林设计\", \"包豪斯风格解读\"]\n"
+        "specifics 应该贴近 ta 实际会搜索的关键词，\n"
+        "而不是该领域的『学术化命题』。\n"
+        "例如：\n"
+        '  ✅ domain="独立咖啡馆" → specifics=["上海独立咖啡馆探店", "手冲咖啡师 vlog", "咖啡赛事剪辑"]\n'
+        '  ❌ domain="独立咖啡馆" → specifics=["萃取曲线分析", "烘焙度风味化学"]（过于学术）\n'
         "</specifics_rules>"
     )
 
-    exclude_list = sorted(set(existing_speculations + cooldown_domains + confirmed_domains))
-    exclude_text = "以下方向不要重复：" + "、".join(exclude_list) if exclude_list else "无排除项"
-    user_prompt = "\n\n".join([
-        "<user_profile>",
-        profile_summary,
-        "</user_profile>",
-        "<exclude_domains>",
-        exclude_text,
-        "</exclude_domains>",
-        f"请生成 {count} 个猜测兴趣方向。",
-    ])
+    # Two semantically different exclude lists:
+    # - existing_speculations + cooldown_domains: hard exclude (don't dive in)
+    # - confirmed_domains (user's actual likes): the user's MAIN AXES.
+    #   These should NOT block the LLM from drilling into them; instead
+    #   they're the most relevant exploration territory.  We tell the LLM
+    #   these are core axes to drill INTO, not to avoid.
+    hard_exclude_list = sorted(set(existing_speculations + cooldown_domains))
+    main_axes_list = sorted(set(confirmed_domains))
+    hard_exclude_text = (
+        "以下 domain 字符串完全相同的方向不要重复（这些是冷却期/已在探索中的方向）：\n"
+        + "、".join(hard_exclude_list)
+        if hard_exclude_list
+        else "无"
+    )
+    main_axes_text = (
+        "以下是用户的主轴 likes（用户已经在这些大类上花最多时间）：\n"
+        + "、".join(main_axes_list)
+        + "\n\n"
+        "**重要**：这些不是排除项 —— 它们是用户最喜欢的轴。\n"
+        "你应该**钻进这些大类**，按 rule 10 lateral 模式的几条路径\n"
+        "（大类→小类 / 小类↔小类 / 大类+小类）生成具体的子方向探针，\n"
+        "而不是绕开它们去找 ta 不太看的小众类。\n"
+        "只是不要把 domain 字段直接写成这些大类名本身（例如不要让 domain 字段\n"
+        "等于 likes 里出现的某个大类字符串）—— domain 应该是该大类下\n"
+        "你自己根据用户实际行为判断出的具体子方向。"
+        if main_axes_list
+        else "（用户尚无明确主轴）"
+    )
+    user_prompt = "\n\n".join(
+        [
+            "<user_profile>",
+            profile_summary,
+            "</user_profile>",
+            "<main_axes>",
+            main_axes_text,
+            "</main_axes>",
+            "<hard_exclude>",
+            hard_exclude_text,
+            "</hard_exclude>",
+            f"请生成 {count} 个猜测兴趣方向。",
+        ]
+    )
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},

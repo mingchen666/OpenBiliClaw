@@ -1,6 +1,8 @@
 const DEFAULT_TITLE = "这条标题还没对上号";
 const DEFAULT_UP_NAME = "这位 UP 还没认出来";
 const DEFAULT_PORTRAIT = "画像还在慢慢攒，先多看一阵。";
+const DEFAULT_DELIGHT_TITLE = "这条惊喜推荐还没起好标题";
+const DEFAULT_DELIGHT_REASON = "这条可能会给你一点意外之喜。";
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -72,6 +74,108 @@ export function normalizeRecommendation(item) {
     content_id: normalizeText(item?.content_id) || normalizeText(item?.bvid),
     content_url: normalizeText(item?.content_url) || "",
     source_platform: normalizeText(item?.source_platform) || "bilibili",
+  };
+}
+
+export function normalizeDelightCandidate(item) {
+  const normalizedState = normalizeText(item?.state) || "pending";
+  return {
+    bvid: normalizeText(item?.bvid),
+    title: normalizeText(item?.title) || DEFAULT_DELIGHT_TITLE,
+    delight_reason: normalizeText(item?.delight_reason) || DEFAULT_DELIGHT_REASON,
+    delight_score: Number(item?.delight_score ?? 0),
+    delight_hook: normalizeText(item?.delight_hook),
+    cover_url: normalizeCoverUrl(item?.cover_url),
+    state: normalizedState,
+    response_message: normalizeText(item?.response_message),
+    chat_reply: normalizeText(item?.chat_reply),
+  };
+}
+
+export function mergeDelightCandidate(current, incoming, dismissedBvids = []) {
+  const normalizedIncoming = normalizeDelightCandidate(incoming);
+  if (!normalizedIncoming.bvid) {
+    return current ?? null;
+  }
+  if (dismissedBvids.includes(normalizedIncoming.bvid)) {
+    return current ?? null;
+  }
+  if (!current || normalizeText(current?.bvid) !== normalizedIncoming.bvid) {
+    return normalizedIncoming;
+  }
+  return {
+    ...normalizedIncoming,
+    state: normalizeText(current?.state) || normalizedIncoming.state,
+    response_message:
+      normalizeText(current?.response_message) || normalizedIncoming.response_message,
+    chat_reply: normalizeText(current?.chat_reply) || normalizedIncoming.chat_reply,
+    composer_open: Boolean(current?.composer_open),
+    chat_draft: normalizeText(current?.chat_draft),
+  };
+}
+
+export function getDelightUiState(delight, { highlightBvid = "" } = {}) {
+  const normalized = normalizeDelightCandidate(delight);
+  if (!normalized.bvid) {
+    return {
+      visible: false,
+      highlighted: false,
+      handled: false,
+      score_label: "",
+      response_tone: "info",
+      response_message: "",
+    };
+  }
+  const score = normalized.delight_score;
+  const scoreLabel =
+    score >= 0.85 ? "大概率会戳中你" :
+    score >= 0.65 ? "这条可能会拐到你" :
+    "有点出其不意";
+  const highlight = normalizeText(highlightBvid) === normalized.bvid;
+
+  if (normalized.state === "viewed") {
+    return {
+      visible: true,
+      highlighted: highlight,
+      handled: true,
+      score_label: scoreLabel,
+      response_tone: "success",
+      response_message:
+        normalized.response_message || "已打开，阿B 会把这次点击当成强信号。",
+    };
+  }
+
+  if (normalized.state === "rejected") {
+    return {
+      visible: true,
+      highlighted: highlight,
+      handled: true,
+      score_label: scoreLabel,
+      response_tone: "info",
+      response_message:
+        normalized.response_message || "记下了，这类惊喜先少来点。",
+    };
+  }
+
+  if (normalized.state === "chatted") {
+    return {
+      visible: true,
+      highlighted: highlight,
+      handled: true,
+      score_label: scoreLabel,
+      response_tone: "info",
+      response_message:
+        normalized.response_message || "这句已经记下，后面会更会试探。",
+    };
+  }
+
+  return {
+    visible: true,
+    highlighted: highlight,
+    handled: false,
+    score_label: scoreLabel,
+    response_tone: "info",
+    response_message: normalized.response_message,
   };
 }
 
@@ -668,6 +772,8 @@ export function normalizeActivityFeed(payload) {
     live_summary: normalizeText(payload?.live_summary),
     headline: normalizeText(payload?.headline),
     items,
+    has_more: Boolean(payload?.has_more),
+    next_cursor: normalizeText(payload?.next_cursor),
   };
 }
 
@@ -680,6 +786,8 @@ export function getActivityCardState({ feed = null, runtimeEvent = null, expande
     line2: headline,
     items: normalizedFeed.items,
     expanded: Boolean(expanded),
+    has_more: Boolean(normalizedFeed.has_more),
+    next_cursor: normalizedFeed.next_cursor || "",
   };
 }
 

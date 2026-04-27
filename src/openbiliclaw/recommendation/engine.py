@@ -15,16 +15,80 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from openbiliclaw.recommendation.curator import PoolCurator
-from openbiliclaw.soul.tone import build_tone_profile
+from openbiliclaw.soul.tone import ToneProfile, build_tone_profile
 
 if TYPE_CHECKING:
     from openbiliclaw.discovery.engine import DiscoveredContent
     from openbiliclaw.llm.base import LLMResponse
+    from openbiliclaw.recommendation.curator import PoolCurator
     from openbiliclaw.soul.profile import SoulProfile
     from openbiliclaw.storage.database import Database
 
 logger = logging.getLogger(__name__)
+
+
+def _profile_style_summary(profile: SoulProfile) -> dict[str, object]:
+    style = profile.preferences.style
+    return {
+        "preferred_duration": style.preferred_duration,
+        "preferred_pace": style.preferred_pace,
+        "humor_preference": style.humor_preference,
+        "depth_preference": style.depth_preference,
+    }
+
+
+def _profile_context_summary(profile: SoulProfile) -> dict[str, object]:
+    context = profile.preferences.context
+    return {
+        "weekday_patterns": context.weekday_patterns,
+        "weekend_patterns": context.weekend_patterns,
+        "time_of_day_patterns": context.time_of_day_patterns,
+        "session_type": context.session_type,
+    }
+
+
+def _clone_tone_profile(tone: ToneProfile) -> ToneProfile:
+    return {
+        "density": tone["density"],
+        "warmth": tone["warmth"],
+        "playfulness": tone["playfulness"],
+        "directness": tone["directness"],
+    }
+
+
+def _recommendation_profile_summary(
+    profile: SoulProfile,
+    *,
+    interests: list[dict[str, object]] | None = None,
+    include_active_insights: bool = False,
+) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "personality_portrait": profile.personality_portrait,
+        "core_traits": profile.core_traits[:5],
+        "deep_needs": profile.deep_needs[:5],
+        "interests": interests
+        if interests is not None
+        else [
+            {
+                "name": item.name,
+                "category": item.category,
+                "weight": item.weight,
+            }
+            for item in profile.preferences.interests[:10]
+        ],
+        "style": _profile_style_summary(profile),
+        "context": _profile_context_summary(profile),
+        "exploration_openness": profile.preferences.exploration_openness,
+    }
+    if include_active_insights:
+        summary["active_insights"] = [
+            {
+                "hypothesis": str(getattr(ins, "hypothesis", "")),
+                "confidence": float(getattr(ins, "confidence", 0.5)),
+            }
+            for ins in getattr(profile, "active_insights", [])[:5]
+        ]
+    return summary
 
 
 class SupportsCoreMemoryTask(Protocol):
@@ -39,6 +103,14 @@ class SupportsCoreMemoryTask(Protocol):
         temperature: float = 0.7,
         max_tokens: int = 4096,
     ) -> LLMResponse: ...
+
+
+class SupportsEmbeddingService(Protocol):
+    """Embedding service protocol used by recommendation helpers."""
+
+    similarity_threshold: float
+
+    async def embed(self, text: str) -> list[float]: ...
 
 
 @dataclass
@@ -83,12 +155,13 @@ class RecommendationEngine:
         database: Database,
         *,
         curator: PoolCurator | None = None,
-        embedding_service: object | None = None,
+        embedding_service: SupportsEmbeddingService | None = None,
     ) -> None:
         self._llm = llm
         self._database = database
         self._curator = curator
         self._embedding_service = embedding_service
+        self._classify_lock = asyncio.Lock()
 
     async def serve(
         self,
@@ -120,6 +193,14 @@ class RecommendationEngine:
         if excluded_bvids:
             candidates = [c for c in candidates if c.bvid not in excluded_bvids]
         candidates = self._exclude_recently_viewed(candidates)
+
+        # Online supergroup merging — collapses semantically-equivalent
+        # topic_groups within this batch (e.g. 动漫/动漫产业/动漫文化) so
+        # the diversifier sees them as a single bucket. Adds 50–200ms of
+        # embedding I/O to the hot path, traded for batch-level richness
+        # that no offline precompute can guarantee at serve time.
+        await self._merge_topic_supergroups(candidates)
+
         label = "realtime" if expression_mode == "realtime" else "pool"
         logger.info(
             "Recommendation candidate summary (serve/%s): %s",
@@ -127,16 +208,15 @@ class RecommendationEngine:
             json.dumps(self._build_debug_summary(candidates), ensure_ascii=False),
         )
 
-        # No embedding API calls on the serve() hot path.
-        # topic_group normalization and semantic scoring happen during
-        # background discovery/precompute. serve() is pure DB + CPU.
         score_override: dict[str, float] | None = None
         if self._curator is not None:
             context = self._curator.build_context()
             score_override = self._curator.score_candidates(candidates, context)
 
         ranked = self._select_diversified_batch(
-            candidates, limit=limit, score_override=score_override,
+            candidates,
+            limit=limit,
+            score_override=score_override,
         )
         logger.info(
             "Recommendation picked summary (serve/%s): %s",
@@ -145,7 +225,6 @@ class RecommendationEngine:
         )
 
         recommendations: list[Recommendation] = []
-        shown_bvids: list[str] = []
         for item in ranked:
             rec = Recommendation(
                 content=item,
@@ -160,86 +239,150 @@ class RecommendationEngine:
                     rec.expression = self._fallback_expression(item)
                 if not rec.topic_label:
                     rec.topic_label = self._fallback_topic_label(profile)
-            rec.recommendation_id = self._database.insert_recommendation(
-                item.bvid,
-                confidence=rec.confidence,
-                expression=rec.expression,
-                topic=rec.topic_label,
-                presented=0,
-            )
-            if expression_mode == "realtime":
+            recommendations.append(rec)
+
+        # Batch all recommendation inserts into a single transaction.
+        # Per-item insert_recommendation each commit a fsync, which under
+        # the discovery loop's concurrent content_cache writes serialized
+        # to ~200-300ms each — the popup paid 2-3s here on every reshuffle.
+        ids = self._database.batch_insert_recommendations(
+            [
+                {
+                    "bvid": rec.content.bvid,
+                    "expression": rec.expression,
+                    "topic": rec.topic_label,
+                    "confidence": rec.confidence,
+                    "presented": 0,
+                }
+                for rec in recommendations
+            ]
+        )
+        for rec, rec_id in zip(recommendations, ids, strict=True):
+            rec.recommendation_id = rec_id
+
+        if expression_mode == "realtime":
+            for rec, item in zip(recommendations, ranked, strict=True):
                 rec.expression, rec.topic_label = await self.generate_expression(
-                    item, profile,
+                    item,
+                    profile,
                 )
                 self._database.update_recommendation_content(
                     rec.recommendation_id,
                     expression=rec.expression,
                     topic=rec.topic_label,
                 )
-            recommendations.append(rec)
-            shown_bvids.append(item.bvid)
 
-        self._database.mark_pool_items_shown(shown_bvids)
+        self._database.mark_pool_items_shown([item.bvid for item in ranked])
         return recommendations
 
-    async def _normalize_topic_groups(
+    # Hybrid rule for online supergroup merging:
+    #   - Strict embedding alone: sim >= 0.90 (catches 自走棋↔金铲铲之战
+    #     0.902 across name boundaries).
+    #   - Shared 2-char prefix + loose embedding: sim >= 0.80 (catches
+    #     动漫族 0.80–0.88, 游戏族 0.84–0.87 — locality signal protects
+    #     against transitive bridging that collapses a 40-group batch
+    #     into one bucket).
+    # Probe against live pool: should-merge band 0.80–0.92, should-
+    # separate band caps near 0.82. Embedding alone at 0.83 cascades
+    # via union-find; prefix gates loose-band merges.
+    _SUPERGROUP_STRICT_THRESHOLD = 0.90
+    _SUPERGROUP_LOOSE_THRESHOLD = 0.80
+    _SUPERGROUP_PREFIX_LEN = 2
+
+    async def _merge_topic_supergroups(
         self,
         candidates: list[DiscoveredContent],
     ) -> None:
-        """Use embedding similarity to unify semantically identical topic_keys
-        that lack a topic_group, assigning them to an existing group.
+        """Online union-find merge of equivalent topic_groups within this batch.
 
-        topic_group is already a coarse human-readable category set by Discovery.
-        Re-merging these via embedding produces false positives (e.g. "人工智能"
-        and "国际史实" landing in the same bucket at threshold 0.82) because short
-        Chinese labels are deceptively close in embedding space.
+        For each unique ``topic_group`` in ``candidates``, embed
+        ``"label | sample_titles"`` (titles disambiguate short Chinese labels
+        like "动漫" vs "人工智能"). Pairs above the threshold get merged
+        into a single supergroup; the canonical label is the
+        alphabetically-first member. Mutates each candidate's
+        ``topic_group`` in place to the supergroup label so the downstream
+        diversifier treats the family as one bucket.
 
-        This method therefore only operates on items WITHOUT a topic_group,
-        attempting to assign them to a group from items that already have one.
+        No-op when embedding service is unavailable or fewer than 2 distinct
+        groups are present — preserves correctness in tests / cold start.
         """
-        if self._embedding_service is None or not candidates:
+        if self._embedding_service is None or len(candidates) < 2:
             return
 
         from openbiliclaw.llm.embedding import cosine_similarity
 
-        # Build cluster centroids from items that already have a topic_group
-        clusters: dict[str, list[float]] = {}
+        groups: dict[str, list[DiscoveredContent]] = {}
         for item in candidates:
-            group = (item.topic_group or "").strip().lower()
-            if not group or group in clusters:
-                continue
-            vec = await self._embedding_service.embed(group)
-            if vec:
-                clusters[group] = vec
+            key = (item.topic_group or "").strip().lower()
+            if key:
+                groups.setdefault(key, []).append(item)
 
-        if not clusters:
+        if len(groups) < 2:
             return
 
-        # Only try to assign topic_group to items that don't have one
-        # Use stricter threshold for short Chinese labels (default 0.82 is too low)
-        threshold = min(0.92, self._embedding_service.similarity_threshold + 0.10)
-        for item in candidates:
-            if (item.topic_group or "").strip():
-                continue
-            topic = (item.topic_key or "").strip().lower()
-            if not topic:
-                continue
-            vec = await self._embedding_service.embed(topic)
-            if not vec:
-                continue
-            best_label: str | None = None
-            best_sim = 0.0
-            for label, centroid in clusters.items():
-                sim = cosine_similarity(vec, centroid)
-                if sim > best_sim:
-                    best_sim = sim
-                    best_label = label
-            if best_label is not None and best_sim >= threshold:
-                item.topic_group = best_label
-                logger.debug(
-                    "Rec topic assigned: %r → group %r (sim=%.3f)",
-                    topic, best_label, best_sim,
-                )
+        # Embed labels alone (no sample_titles): the cache key now matches
+        # across rounds (titles rotate, labels don't), so the L1/L2 cache
+        # hit rate goes from ~0% to ~100% after the first encounter. The
+        # original "label | titles" form was meant to disambiguate very
+        # short Chinese labels, but coarse topic_group values like 动漫 /
+        # 游戏 / 人工智能 are already separable in embedding space — the
+        # titles bought a marginal disambiguation benefit at the cost of
+        # ~1.5s per reshuffle.
+        import asyncio as _asyncio
+
+        embedding_service = self._embedding_service  # narrow Optional for closure
+
+        async def _embed_label(label: str) -> tuple[str, list[float]]:
+            vec = await embedding_service.embed(label)
+            return label, vec
+
+        results = await _asyncio.gather(*(_embed_label(label) for label in groups))
+        embeddings: dict[str, list[float]] = {label: vec for label, vec in results if vec}
+
+        if len(embeddings) < 2:
+            return
+
+        labels = list(embeddings.keys())
+        parent: dict[str, str] = {label: label for label in labels}
+
+        def find(x: str) -> str:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: str, b: str) -> None:
+            ra, rb = find(a), find(b)
+            if ra == rb:
+                return
+            # Canonical = alphabetically first (stable across rounds)
+            if rb < ra:
+                ra, rb = rb, ra
+            parent[rb] = ra
+
+        strict = self._SUPERGROUP_STRICT_THRESHOLD
+        loose = self._SUPERGROUP_LOOSE_THRESHOLD
+        prefix_len = self._SUPERGROUP_PREFIX_LEN
+        for i, ga in enumerate(labels):
+            for gb in labels[i + 1 :]:
+                sim = cosine_similarity(embeddings[ga], embeddings[gb])
+                shared_prefix = ga[:prefix_len] == gb[:prefix_len] and len(ga) >= prefix_len
+                if sim >= strict or (shared_prefix and sim >= loose):
+                    union(ga, gb)
+
+        merges: list[tuple[str, str]] = []
+        for label, items in groups.items():
+            canonical = find(label)
+            if canonical != label:
+                merges.append((label, canonical))
+                for item in items:
+                    item.topic_group = canonical
+
+        if merges:
+            logger.info(
+                "Topic supergroup merges (serve): %s",
+                ", ".join(f"{src}→{dst}" for src, dst in merges),
+            )
 
     async def _select_relevant_interests(
         self,
@@ -270,17 +413,44 @@ class RecommendationEngine:
 
         scored: list[tuple[dict[str, object], float]] = []
         for interest in all_interests:
+            raw_weight = interest.get("weight", 0.0)
+            weight = float(raw_weight) if isinstance(raw_weight, int | float | str) else 0.0
             interest_vec = await self._embedding_service.embed(str(interest["name"]))
             if not interest_vec:
-                scored.append((interest, float(interest.get("weight", 0))))
+                scored.append((interest, weight))
                 continue
             sim = cosine_similarity(content_vec, interest_vec)
             # Blend embedding similarity with weight for ranking
-            blended = sim * 0.7 + float(interest.get("weight", 0)) * 0.3
+            blended = sim * 0.7 + weight * 0.3
             scored.append((interest, blended))
 
         scored.sort(key=lambda x: -x[1])
         return [item for item, _ in scored[:top_k]]
+
+    async def prewarm_supergroup_embeddings(self) -> int:
+        """Pre-fetch embeddings for every distinct topic_group in the pool.
+
+        ``serve()``'s _merge_topic_supergroups embeds each unique
+        ``topic_group`` label and runs pairwise cosine similarity. The
+        embedding service has an L1/L2 cache, so calling embed() for
+        labels already cached returns immediately. Pre-warming on each
+        refresh tick means reshuffle never pays an API round-trip — new
+        labels introduced by the most recent discovery round get warmed
+        before the user clicks.
+
+        Returns the number of labels considered.
+        """
+        if self._embedding_service is None:
+            return 0
+        labels = self._database.get_distinct_topic_groups()
+        if not labels:
+            return 0
+        # Parallel fan-out — cached labels short-circuit, only new labels
+        # actually hit the gemini API.
+        await asyncio.gather(
+            *(self._embedding_service.embed(label) for label in labels)
+        )
+        return len(labels)
 
     async def precompute_pool_copy(
         self,
@@ -308,25 +478,214 @@ class RecommendationEngine:
                 scoring whenever the copy queue is short.
             batch_size: Batch size for expression generation LLM calls.
         """
+        # Safety net: classify any leftover un-evaluated items that were
+        # not caught by the ingest-time classification (e.g. race condition,
+        # or the background task was suppressed).  This is a no-op when all
+        # pool items already have style_key and topic_group.
+        try:
+            await self.classify_pool_backlog(profile=profile, limit=limit)
+        except Exception:
+            logger.exception("classify_pool_backlog failed, continuing with precompute")
+
         candidates = self._load_pool_candidates_needing_copy(limit=max(0, limit))
         if not candidates:
             # Even when no expression work is needed, still run delight scoring
             await self.precompute_delight_scores(
-                profile=profile, limit=delight_limit,
+                profile=profile,
+                limit=delight_limit,
             )
             return 0
 
         completed = 0
         for batch_start in range(0, len(candidates), batch_size):
-            batch = candidates[batch_start:batch_start + batch_size]
+            batch = candidates[batch_start : batch_start + batch_size]
             count = await self._precompute_batch(batch, profile)
             completed += count
 
         # Run delight scoring after expression precompute
         await self.precompute_delight_scores(
-            profile=profile, limit=delight_limit,
+            profile=profile,
+            limit=delight_limit,
         )
         return completed
+
+    # ── Source-agnostic content classification ───────────────────────
+    #
+    # Content from any source (bilibili, xiaohongshu, web, …) must carry
+    # the same set of content features (style_key, topic_group,
+    # relevance_score) before it enters the diversity/ranking pipeline.
+    # Items that lack these features would collapse _select_diversified_batch
+    # — all sharing "unknown" style and a single fallback topic token.
+    #
+    # classify_pool_backlog() is the single gate: it picks up un-classified
+    # items in the pool, runs them through the same LLM evaluation used for
+    # bilibili discovery, and writes results back.  After this step content
+    # is truly source-agnostic — the recommendation layer only sees content
+    # features, never platform labels.
+
+    async def classify_pool_backlog(
+        self,
+        *,
+        profile: SoulProfile,
+        limit: int = 30,
+        batch_size: int = 10,
+    ) -> int:
+        """Classify pool items that lack content features (style / topic / score).
+
+        Content enters the pool from many sources.  Bilibili content is
+        classified during discovery, but other sources (xiaohongshu, web, …)
+        may bypass that pipeline and arrive with empty ``style_key``,
+        ``topic_group``, and ``relevance_score``.
+
+        This method is the recommendation module's guarantee of
+        source-agnostic treatment: every item that reaches the ranking
+        pipeline has proper content features, regardless of where it came
+        from.  It reuses the same LLM evaluation prompt that discovery uses,
+        so the feature space is identical across all sources.
+
+        Returns:
+            Number of items classified.
+        """
+        if self._classify_lock.locked():
+            return 0  # Another classify task is already running
+        async with self._classify_lock:
+            return await self._classify_pool_backlog_locked(
+                profile=profile,
+                limit=limit,
+                batch_size=batch_size,
+            )
+
+    async def _classify_pool_backlog_locked(
+        self,
+        *,
+        profile: SoulProfile,
+        limit: int,
+        batch_size: int,
+    ) -> int:
+        """Inner implementation of classify_pool_backlog, called under lock."""
+        rows = self._database.get_pool_candidates_needing_evaluation(limit=limit)
+        if not rows:
+            return 0
+
+        items = self._rows_to_discovered(rows)
+        logger.info(
+            "classify_pool_backlog: %d un-classified items (platforms: %s)",
+            len(items),
+            ", ".join(sorted({item.source_platform or "unknown" for item in items})),
+        )
+
+        classified = 0
+        for batch_start in range(0, len(items), batch_size):
+            batch = items[batch_start : batch_start + batch_size]
+            try:
+                await self._classify_batch(batch, profile)
+            except Exception:
+                logger.exception(
+                    "classify_pool_backlog: batch failed (%d items)",
+                    len(batch),
+                )
+                continue
+
+            # Persist results back to the pool.
+            for item in batch:
+                # Use topic_group as topic_key when the original is empty —
+                # diversity tokens fall back to topic_key, so this is critical.
+                if not item.topic_key and item.topic_group:
+                    item.topic_key = item.topic_group
+                try:
+                    self._database.cache_content(
+                        item.bvid,
+                        **item.to_cache_kwargs(),
+                    )
+                    classified += 1
+                except Exception:
+                    logger.exception(
+                        "classify_pool_backlog: failed to persist %s",
+                        item.bvid,
+                    )
+
+        logger.info(
+            "classify_pool_backlog: %d/%d items classified (styles: %s, topics: %s)",
+            classified,
+            len(items),
+            ", ".join(sorted({i.style_key or "unknown" for i in items})),
+            ", ".join(sorted({i.topic_group or "unknown" for i in items})),
+        )
+        return classified
+
+    async def _classify_batch(
+        self,
+        batch: list[DiscoveredContent],
+        profile: SoulProfile,
+    ) -> None:
+        """Run batched LLM evaluation on a group of un-classified items.
+
+        Mutates each item in-place: sets ``relevance_score``,
+        ``relevance_reason``, ``topic_group``, and ``style_key``.
+        """
+        from openbiliclaw.discovery.engine import VALID_STYLE_KEYS
+        from openbiliclaw.llm.prompts import build_batch_content_evaluation_prompt
+
+        profile_data = _recommendation_profile_summary(profile)
+        content_items = [
+            {
+                "title": c.title,
+                "up_name": c.up_name or c.author_name,
+                "description": (c.description or "")[:200],
+                "duration": c.duration,
+                "view_count": c.view_count,
+                "source_strategy": c.source_strategy,
+            }
+            for c in batch
+        ]
+        # Determine the dominant platform for prompt context
+        platform = (batch[0].source_platform or "bilibili") if batch else "bilibili"
+        messages = build_batch_content_evaluation_prompt(
+            profile_summary=profile_data,
+            content_items=content_items,
+            source_context=batch[0].source_strategy if batch else "",
+            source_platform=platform,
+        )
+
+        response = await self._llm.complete_structured_task(
+            system_instruction=messages[0]["content"],
+            user_input=messages[1]["content"],
+            max_tokens=8192,
+        )
+        raw = str(getattr(response, "content", "")).strip()
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            payload = [payload]
+        if not isinstance(payload, list):
+            raise ValueError(f"Expected JSON array, got {type(payload).__name__}")
+
+        if len(payload) != len(batch):
+            logger.warning(
+                "LLM returned %d results for %d items in classification batch",
+                len(payload),
+                len(batch),
+            )
+
+        for i, content in enumerate(batch):
+            if i >= len(payload) or not isinstance(payload[i], dict):
+                # Mark as attempted so get_pool_candidates_needing_evaluation
+                # won't retry this item forever.  A score of 0.01 signals
+                # "classification attempted but no usable result".
+                content.relevance_score = 0.01
+                content.relevance_reason = "classification_failed"
+                continue
+            result = payload[i]
+            score = max(0.0, min(1.0, float(result.get("score", 0.0))))
+            reason = str(result.get("reason", "")).strip()
+            topic_group = str(result.get("topic_group", "")).strip()
+            style_key = str(result.get("style_key", "")).strip().lower()
+
+            content.relevance_score = score or 0.01  # never leave at 0.0
+            content.relevance_reason = reason
+            if topic_group:
+                content.topic_group = topic_group
+            if style_key in VALID_STYLE_KEYS:
+                content.style_key = style_key
 
     async def precompute_delight_scores(
         self,
@@ -339,28 +698,61 @@ class RecommendationEngine:
         Items scoring above the delight threshold get LLM-generated
         delight_reason explanations persisted to the database.
         """
-        from openbiliclaw.recommendation.delight import DelightScorer
+        from openbiliclaw.recommendation.delight import DelightScorer, DelightSignals
 
         scorer = DelightScorer(
             embedding_service=self._embedding_service,
             database=self._database,
         )
 
-        rows = self._database.get_pool_candidates_needing_delight_score(limit=limit)
+        prefs = getattr(profile, "preferences", None)
+        exploration_openness = float(getattr(prefs, "exploration_openness", 0.5))
+        effective_threshold = scorer.effective_threshold(exploration_openness)
+        rows = self._database.get_pool_candidates_needing_delight_score(
+            limit=limit,
+            min_delight_score_for_reason=effective_threshold,
+        )
         if not rows:
             return 0
 
         candidates = self._rows_to_discovered(rows)
 
-        prefs = getattr(profile, "preferences", None)
-        exploration_openness = float(getattr(prefs, "exploration_openness", 0.5))
-        effective_threshold = scorer.effective_threshold(exploration_openness)
-
         scored_count = 0
-        for candidate in candidates:
+        for row, candidate in zip(rows, candidates, strict=True):
+            stored_delight_score = float(row.get("delight_score", 0.0) or 0.0)
+            needs_copy_backfill = stored_delight_score >= effective_threshold and (
+                not str(row.get("delight_reason", "")).strip()
+                or not str(row.get("delight_hook", "")).strip()
+            )
+            if needs_copy_backfill:
+                reason_stub = scorer._build_reason_stub(
+                    DelightSignals(),
+                    candidate,
+                    profile,
+                )
+                delight_reason, delight_hook = await self._generate_delight_reason(
+                    candidate,
+                    profile,
+                    reason_stub,
+                )
+                self._database.update_delight_score(
+                    candidate.bvid,
+                    delight_score=stored_delight_score,
+                    delight_reason=delight_reason,
+                    delight_hook=delight_hook,
+                )
+                scored_count += 1
+                logger.info(
+                    "Delight candidate backfilled: %s (score=%.3f, hook=%s)",
+                    candidate.bvid,
+                    stored_delight_score,
+                    delight_hook,
+                )
+                continue
             try:
                 delight_score, signals, reason_stub = await scorer.score(
-                    candidate, profile,
+                    candidate,
+                    profile,
                 )
             except Exception:
                 logger.exception(
@@ -389,7 +781,9 @@ class RecommendationEngine:
 
             # Above threshold — generate delight reason via LLM
             delight_reason, delight_hook = await self._generate_delight_reason(
-                candidate, profile, reason_stub,
+                candidate,
+                profile,
+                reason_stub,
             )
             self._database.update_delight_score(
                 candidate.bvid,
@@ -400,7 +794,9 @@ class RecommendationEngine:
             scored_count += 1
             logger.info(
                 "Delight candidate found: %s (score=%.3f, hook=%s)",
-                candidate.bvid, delight_score, delight_hook,
+                candidate.bvid,
+                delight_score,
+                delight_hook,
             )
 
         return scored_count
@@ -417,37 +813,25 @@ class RecommendationEngine:
             (delight_reason, delight_hook) tuple.
         """
         from openbiliclaw.llm.prompts import build_delight_reason_prompt
-        from openbiliclaw.soul.tone import build_tone_profile
 
-        tone_profile = build_tone_profile(
-            profile=profile,
-            preference_summary={
-                "exploration_openness": profile.preferences.exploration_openness,
-            },
-            recent_feedback=[],
-        )
+        tone_profile = self._expression_tone_profile(profile, content)
         messages = build_delight_reason_prompt(
-            profile_summary={
-                "personality_portrait": profile.personality_portrait,
-                "core_traits": profile.core_traits[:5],
-                "deep_needs": profile.deep_needs[:5],
-                "active_insights": [
-                    {
-                        "hypothesis": str(getattr(ins, "hypothesis", "")),
-                        "confidence": float(getattr(ins, "confidence", 0.5)),
-                    }
-                    for ins in getattr(profile, "active_insights", [])[:5]
-                ],
-            },
+            profile_summary=_recommendation_profile_summary(
+                profile,
+                include_active_insights=True,
+            ),
             content_summary={
                 "title": content.title,
                 "up_name": content.up_name,
                 "description": (content.description or "")[:300],
                 "source_strategy": content.source_strategy,
+                "style_key": content.style_key,
+                "topic_group": content.topic_group,
                 "relevance_score": content.relevance_score,
             },
             reason_stub=reason_stub,
             tone_profile=tone_profile,
+            source_platform=content.source_platform or "bilibili",
         )
         try:
             response = await self._llm.complete_structured_task(
@@ -463,7 +847,8 @@ class RecommendationEngine:
                 return (reason, hook)
         except Exception:
             logger.exception(
-                "Failed to generate delight reason for %s", content.bvid,
+                "Failed to generate delight reason for %s",
+                content.bvid,
             )
         # Fallback
         return ("这条可能会给你意外的惊喜", "意外惊喜")
@@ -489,26 +874,17 @@ class RecommendationEngine:
                 "up_name": item.up_name,
                 "description": (item.description or "")[:200],
                 "source_strategy": item.source_strategy,
+                "style_key": item.style_key,
+                "topic_group": item.topic_group,
                 "relevance_score": item.relevance_score,
             }
             for item in batch
         ]
         messages = build_batch_expression_prompt(
-            profile_summary={
-                "personality_portrait": profile.personality_portrait,
-                "core_traits": profile.core_traits[:5],
-                "deep_needs": profile.deep_needs[:5],
-                "interests": [
-                    {
-                        "name": item.name,
-                        "category": item.category,
-                        "weight": item.weight,
-                    }
-                    for item in profile.preferences.interests[:10]
-                ],
-            },
+            profile_summary=_recommendation_profile_summary(profile),
             content_items=content_items,
             tone_profile=tone_profile,
+            source_platform=batch[0].source_platform if batch else "bilibili",
         )
 
         try:
@@ -665,31 +1041,26 @@ class RecommendationEngine:
         """Try to generate personalized copy without applying a generic fallback."""
         from openbiliclaw.llm.prompts import build_recommendation_expression_prompt
 
-        tone_profile = build_tone_profile(
-            profile=profile,
-            preference_summary={
-                "exploration_openness": profile.preferences.exploration_openness,
-            },
-            recent_feedback=[],
-        )
+        tone_profile = self._expression_tone_profile(profile, content)
         # Select most relevant interests for this content via embedding similarity
         interests_for_prompt = await self._select_relevant_interests(content, profile)
 
         messages = build_recommendation_expression_prompt(
-            profile_summary={
-                "personality_portrait": profile.personality_portrait,
-                "core_traits": profile.core_traits[:5],
-                "deep_needs": profile.deep_needs[:5],
-                "interests": interests_for_prompt,
-            },
+            profile_summary=_recommendation_profile_summary(
+                profile,
+                interests=interests_for_prompt,
+            ),
             content_summary={
                 "title": content.title,
                 "up_name": content.up_name,
                 "description": content.description,
                 "source_strategy": content.source_strategy,
+                "style_key": content.style_key,
+                "topic_group": content.topic_group,
                 "relevance_score": content.relevance_score,
             },
             tone_profile=tone_profile,
+            source_platform=content.source_platform or "bilibili",
         )
         try:
             response = await self._llm.complete_structured_task(
@@ -706,6 +1077,33 @@ class RecommendationEngine:
         except Exception:
             logger.exception("Failed to generate recommendation expression: %s", content.bvid)
         return None
+
+    @staticmethod
+    def _expression_tone_profile(
+        profile: SoulProfile,
+        content: DiscoveredContent,
+    ) -> ToneProfile:
+        tone = build_tone_profile(
+            profile=profile,
+            preference_summary={
+                "style": _profile_style_summary(profile),
+                "exploration_openness": profile.preferences.exploration_openness,
+            },
+            recent_feedback=[],
+        )
+        style_key = RecommendationEngine._style_token(content)
+        if style_key in {"lifestyle", "fun_variety", "light_chat"}:
+            adjusted = _clone_tone_profile(tone)
+            adjusted["density"] = "light"
+            if adjusted["playfulness"] == "low":
+                adjusted["playfulness"] = "medium"
+            return adjusted
+        if style_key in {"story_doc", "review_roundup", "visual_showcase"}:
+            adjusted = _clone_tone_profile(tone)
+            if adjusted["density"] == "dense":
+                adjusted["density"] = "balanced"
+            return adjusted
+        return tone
 
     def mark_presented(self, recommendation_ids: list[int]) -> None:
         """Mark recommendation rows as presented."""
@@ -765,12 +1163,19 @@ class RecommendationEngine:
             return f"《{title}》这条没那么硬，但会把故事和信息一起带出来，适合你换口气的时候看。"
         if style_key == "visual_showcase":
             return f"《{title}》更偏轻一点，适合你换换脑子，但内容不空。"
+        if style_key == "tech_analysis":
+            return f"《{title}》这条偏技术拆解，但入口不算高，适合你先抓重点再决定要不要细看。"
         if style_key == "deep_dive":
             return f"《{title}》还是你常吃那一路，偏讲透来龙去脉，不会只给结论。"
-        return (
-            f"《{title}》这条大概率还是对你胃口，重点是它不空，"
-            "能接住你最近那股想继续往深处看的状态。"
-        )
+        if style_key == "fun_variety":
+            return f"《{title}》这条更偏轻松整活，拿来换个脑子刚好，也不是纯吵闹。"
+        if style_key == "lifestyle":
+            return f"《{title}》这条是轻一点的生活向，顺手点开不累，氛围和信息都还在线。"
+        if style_key == "review_roundup":
+            return f"《{title}》这种盘点/测评向比较省力，先快速过一遍重点会很顺。"
+        if style_key == "light_chat":
+            return f"《{title}》这条不是硬讲解那路，胜在讲得顺、看着不累，适合随手点开。"
+        return f"《{title}》这条切口挺顺的，先丢给你看看，说不定正好能对上你当下的兴趣。"
 
     @staticmethod
     def _fallback_topic_label(profile: SoulProfile) -> str:
@@ -796,6 +1201,15 @@ class RecommendationEngine:
         if limit <= 1 or len(ranked) <= 1:
             return ranked[:limit]
 
+        def _finalize(items: list[DiscoveredContent]) -> list[DiscoveredContent]:
+            items = cls._ensure_accessible_entry(
+                ranked=ranked,
+                selected=items[:limit],
+                limit=limit,
+                score_override=score_override,
+            )
+            return cls._interleave_by_topic(items[:limit])
+
         per_topic_cap = cls._topic_cap(limit)
         soft_topic_cap = cls._soft_topic_cap(limit)
         per_style_cap = cls._style_cap(limit)
@@ -805,20 +1219,6 @@ class RecommendationEngine:
         topic_counts: dict[str, int] = {}
         broad_topic_counts: dict[str, int] = {}
         style_counts: dict[str, int] = {}
-        source_counts: dict[str, int] = {}
-        seen_sources: set[str] = set()
-        per_source_cap = cls._source_cap(limit)
-        available_sources = {
-            cls._normalize_topic_token(item.source_strategy)
-            for item in ranked
-            if cls._normalize_topic_token(item.source_strategy)
-        }
-        unique_source_target = min(limit, len(available_sources))
-
-        # Source diversity floor: pre-reserve best item per source
-        # so that no source gets completely crowded out
-        reserved = cls._reserve_per_source(ranked, available_sources)
-        reserved_bvids = {item.bvid for item in reserved}
 
         def _exceeds_broad_cap(item: DiscoveredContent) -> bool:
             bt = cls._broad_topic_token(item)
@@ -832,104 +1232,48 @@ class RecommendationEngine:
         for item in ranked:
             tokens = cls._diversity_tokens(item)
             style_token = cls._style_token(item)
-            source_token = cls._normalize_topic_token(item.source_strategy)
-            # Reserved items bypass broad/style/source caps (not topic_cap)
-            # when their source is not yet represented — guarantees source floor
-            needs_source_floor = (
-                item.bvid in reserved_bvids
-                and bool(source_token)
-                and source_token not in seen_sources
-            )
-            prioritize_new_source = (
-                bool(source_token)
-                and source_token not in seen_sources
-                and len(seen_sources) < unique_source_target
-            )
-            # Topic dedup is always enforced — even reserved items
-            if tokens and any(
-                topic_counts.get(token, 0) >= per_topic_cap for token in tokens
-            ):
+            if tokens and any(topic_counts.get(token, 0) >= per_topic_cap for token in tokens):
                 deferred.append(item)
                 continue
-            if not needs_source_floor and _exceeds_broad_cap(item):
+            if _exceeds_broad_cap(item):
                 deferred.append(item)
                 continue
-            if (
-                not needs_source_floor
-                and not prioritize_new_source
-                and style_token
-                and style_counts.get(style_token, 0) >= per_style_cap
-            ):
-                deferred.append(item)
-                continue
-            if (
-                not needs_source_floor
-                and source_token
-                and source_counts.get(source_token, 0) >= per_source_cap
-            ):
-                deferred.append(item)
-                continue
-            if (
-                not needs_source_floor
-                and not prioritize_new_source
-                and source_token
-                and source_token in seen_sources
-            ):
+            if style_counts.get(style_token, 0) >= per_style_cap:
                 deferred.append(item)
                 continue
             selected.append(item)
             for token in tokens:
                 topic_counts[token] = topic_counts.get(token, 0) + 1
             _track_broad(item)
-            if style_token:
-                style_counts[style_token] = style_counts.get(style_token, 0) + 1
-            if source_token:
-                seen_sources.add(source_token)
-                source_counts[source_token] = source_counts.get(source_token, 0) + 1
+            style_counts[style_token] = style_counts.get(style_token, 0) + 1
             if len(selected) >= limit:
-                return cls._interleave_by_topic(selected)
+                return _finalize(selected)
 
         def try_fill(
             pool: list[DiscoveredContent],
             *,
             topic_cap: int,
             enforce_style_cap: bool,
-            enforce_source_cap: bool,
             enforce_broad_cap: bool,
         ) -> list[DiscoveredContent]:
             remaining: list[DiscoveredContent] = []
             for item in pool:
                 tokens = cls._diversity_tokens(item)
                 style_token = cls._style_token(item)
-                source_token = cls._normalize_topic_token(item.source_strategy)
                 if tokens and any(topic_counts.get(token, 0) >= topic_cap for token in tokens):
                     remaining.append(item)
                     continue
                 if enforce_broad_cap and _exceeds_broad_cap(item):
                     remaining.append(item)
                     continue
-                if (
-                    enforce_style_cap
-                    and style_token
-                    and style_counts.get(style_token, 0) >= per_style_cap
-                ):
-                    remaining.append(item)
-                    continue
-                if (
-                    enforce_source_cap
-                    and source_token
-                    and source_counts.get(source_token, 0) >= per_source_cap
-                ):
+                if enforce_style_cap and style_counts.get(style_token, 0) >= per_style_cap:
                     remaining.append(item)
                     continue
                 selected.append(item)
                 for token in tokens:
                     topic_counts[token] = topic_counts.get(token, 0) + 1
                 _track_broad(item)
-                if style_token:
-                    style_counts[style_token] = style_counts.get(style_token, 0) + 1
-                if source_token:
-                    source_counts[source_token] = source_counts.get(source_token, 0) + 1
+                style_counts[style_token] = style_counts.get(style_token, 0) + 1
                 if len(selected) >= limit:
                     return []
             return remaining
@@ -937,56 +1281,126 @@ class RecommendationEngine:
         remaining = try_fill(
             deferred,
             topic_cap=per_topic_cap,
-            enforce_style_cap=True,
-            enforce_source_cap=True,
+            enforce_style_cap=False,
             enforce_broad_cap=True,
         )
         if len(selected) < limit:
             remaining = try_fill(
                 remaining,
-                topic_cap=per_topic_cap,
-                enforce_style_cap=False,
-                enforce_source_cap=True,
-                enforce_broad_cap=True,
-            )
-        if len(selected) < limit:
-            remaining = try_fill(
-                remaining,
-                topic_cap=per_topic_cap,
-                enforce_style_cap=False,
-                enforce_source_cap=False,
-                enforce_broad_cap=True,
-            )
-        if len(selected) < limit:
-            remaining = try_fill(
-                remaining,
                 topic_cap=soft_topic_cap,
                 enforce_style_cap=False,
-                enforce_source_cap=False,
                 enforce_broad_cap=True,  # Never relax broad_cap
             )
         if len(selected) < limit:
-            # Final fallback: still enforce a relaxed broad-topic ceiling
-            # (2x broad_cap) to prevent a single mega-topic from flooding.
+            # Final fallback: topic diversity still holds at a relaxed
+            # ceiling (2× the tight broad_cap). Topic is the true signal of
+            # content richness — if 10 items share the same broad topic the
+            # batch feels repetitive regardless of style or source. Items
+            # with no topic (bt == "") are allowed through freely so we
+            # still reach `limit` when the pool is thin but legitimate.
             fallback_broad_cap = broad_cap * 2
             for item in remaining:
                 bt = cls._broad_topic_token(item)
+                style_token = cls._style_token(item)
                 if bt and broad_topic_counts.get(bt, 0) >= fallback_broad_cap:
                     continue
                 selected.append(item)
                 if bt:
                     broad_topic_counts[bt] = broad_topic_counts.get(bt, 0) + 1
+                style_counts[style_token] = style_counts.get(style_token, 0) + 1
                 if len(selected) >= limit:
                     break
-        # If STILL not enough (all topics exhausted caps), fill unconditionally
-        if len(selected) < limit:
-            filled = {item.bvid for item in selected}
-            for item in remaining:
-                if item.bvid not in filled:
-                    selected.append(item)
-                    if len(selected) >= limit:
-                        break
-        return cls._interleave_by_topic(selected[:limit])
+        return _finalize(selected)
+
+    @classmethod
+    def _ensure_accessible_entry(
+        cls,
+        *,
+        ranked: list[DiscoveredContent],
+        selected: list[DiscoveredContent],
+        limit: int,
+        score_override: dict[str, float] | None,
+    ) -> list[DiscoveredContent]:
+        """Inject one easier-entry item when a full batch is uniformly hard.
+
+        This only activates for full batches of 5+ items, and only when the
+        pool already contains a reasonably competitive lighter-style option.
+        """
+        if limit < 5 or len(selected) < limit:
+            return selected
+        if any(cls._accessible_style_priority(item) > 0 for item in selected):
+            return selected
+
+        selected_ids = {item.bvid for item in selected}
+        selected_topic_counts: Counter[str] = Counter()
+        for item in selected:
+            selected_topic_counts.update(cls._diversity_tokens(item))
+
+        weakest_score = min(cls._effective_score(item, score_override) for item in selected)
+        min_candidate_score = max(0.0, weakest_score - 0.10)
+
+        candidates = [
+            item
+            for item in ranked
+            if item.bvid not in selected_ids
+            and cls._accessible_style_priority(item) > 0
+            and cls._effective_score(item, score_override) >= min_candidate_score
+        ]
+        candidates.sort(
+            key=lambda item: (
+                -cls._accessible_style_priority(item),
+                -cls._effective_score(item, score_override),
+                cls._ranking_key(item),
+            ),
+        )
+
+        topic_cap = cls._topic_cap(limit)
+        for candidate in candidates:
+            candidate_tokens = cls._diversity_tokens(candidate)
+            replacement_idx: int | None = None
+            for idx in range(len(selected) - 1, -1, -1):
+                current = selected[idx]
+                if cls._accessible_style_priority(current) > 0:
+                    continue
+                remaining_topics = Counter(selected_topic_counts)
+                remaining_topics.subtract(cls._diversity_tokens(current))
+                if candidate_tokens and any(
+                    remaining_topics.get(token, 0) >= topic_cap for token in candidate_tokens
+                ):
+                    continue
+                replacement_idx = idx
+                break
+            if replacement_idx is not None:
+                swapped = list(selected)
+                swapped[replacement_idx] = candidate
+                return swapped
+        return selected
+
+    @staticmethod
+    def _effective_score(
+        item: DiscoveredContent,
+        score_override: dict[str, float] | None,
+    ) -> float:
+        if score_override is None:
+            return item.relevance_score
+        return score_override.get(item.bvid, item.relevance_score)
+
+    @staticmethod
+    def _accessible_style_priority(item: DiscoveredContent) -> int:
+        style_key = RecommendationEngine._style_token(item)
+        if style_key == "lifestyle":
+            return 6
+        if style_key == "fun_variety":
+            return 5
+        if style_key == "light_chat":
+            return 4
+        if style_key == "review_roundup":
+            return 3
+        if style_key == "story_doc":
+            return 2
+        if style_key == "visual_showcase":
+            return 1
+        return 0
 
     @staticmethod
     def _diversity_tokens(item: DiscoveredContent) -> set[str]:
@@ -1007,9 +1421,18 @@ class RecommendationEngine:
         if tokens:
             return tokens
 
-        fallback_fields = [item.source_strategy, item.up_name]
+        # Fallback: use author + title keywords as diversity signals.
+        # NOTE: source_strategy is intentionally excluded — when many items
+        # share the same source_strategy (e.g. "xhs-extension-task"), using
+        # it as a topic token makes the diversity mechanism treat them as
+        # "same topic" and collapse the entire batch into one bucket.
+        fallback_fields = [item.up_name]
         title = item.title
         fallback_fields.extend(re.findall(r"[A-Za-z0-9]{2,}", title))
+        # Also extract Chinese character runs from the title as fallback
+        # topic signals — these are far more discriminating than
+        # source_strategy for content that lacks proper classification.
+        fallback_fields.extend(m for m in re.findall(r"[\u4e00-\u9fff]{2,4}", title))
         return {
             RecommendationEngine._normalize_topic_token(value)
             for value in fallback_fields
@@ -1018,7 +1441,16 @@ class RecommendationEngine:
 
     @staticmethod
     def _style_token(item: DiscoveredContent) -> str:
-        return RecommendationEngine._normalize_topic_token(item.style_key)
+        """Normalize style_key into a cap-tracked bucket.
+
+        Empty/missing style_key maps to the sentinel ``"unknown"`` so that
+        unclassified content (common for xhs notes, which lack the bilibili
+        style classification) still participates in the per-style cap.
+        Without this, unclassified items would all bypass style_counts and
+        could flood a batch with visually monotonous rows.
+        """
+        token = RecommendationEngine._normalize_topic_token(item.style_key)
+        return token or "unknown"
 
     @staticmethod
     def _broad_topic_token(item: DiscoveredContent) -> str:
@@ -1048,7 +1480,8 @@ class RecommendationEngine:
 
     @classmethod
     def _interleave_by_topic(
-        cls, items: list[DiscoveredContent],
+        cls,
+        items: list[DiscoveredContent],
     ) -> list[DiscoveredContent]:
         """Reorder items so same-topic content is maximally spread apart.
 
@@ -1068,23 +1501,6 @@ class RecommendationEngine:
                     result.append(bucket.pop(0))
             buckets = [b for b in buckets if b]
         return result
-
-    @staticmethod
-    def _reserve_per_source(
-        ranked: list[DiscoveredContent],
-        available_sources: set[str],
-    ) -> list[DiscoveredContent]:
-        """Pick the best candidate per source to guarantee source diversity floor."""
-        reserved: list[DiscoveredContent] = []
-        seen_sources: set[str] = set()
-        for item in ranked:
-            source = RecommendationEngine._normalize_topic_token(item.source_strategy)
-            if source and source in available_sources and source not in seen_sources:
-                seen_sources.add(source)
-                reserved.append(item)
-                if len(seen_sources) >= len(available_sources):
-                    break
-        return reserved
 
     @staticmethod
     def _normalize_topic_token(value: str) -> str:
@@ -1107,8 +1523,15 @@ class RecommendationEngine:
         return max(1, min(3, (limit + 1) // 3))
 
     @staticmethod
-    def _source_cap(limit: int) -> int:
-        return 2 if limit <= 5 else 3
+    def _platform_token(item: DiscoveredContent) -> str:
+        """Platform label for observability only — not used to filter picks.
+
+        Diversity and caps are driven by content features (topic and style).
+        Exposed in ``_build_debug_summary`` so log readers can still see the
+        platform split per round.
+        """
+        platform = (item.source_platform or "").strip().lower()
+        return platform or "bilibili"
 
     def _rows_to_discovered(
         self,
@@ -1144,6 +1567,9 @@ class RecommendationEngine:
                 candidate_tier=str(row.get("candidate_tier", "primary") or "primary"),
                 discovered_at=str(row.get("discovered_at", "")),
                 last_scored_at=str(row.get("last_scored_at", "")),
+                content_id=str(row.get("content_id", "") or row.get("bvid", "")),
+                content_url=str(row.get("content_url", "")),
+                source_platform=str(row.get("source_platform", "") or "bilibili"),
             )
             for row in rows
         ]
@@ -1184,13 +1610,11 @@ class RecommendationEngine:
         cls,
         candidates: list[DiscoveredContent],
     ) -> dict[str, object]:
-        style_counts = Counter(
-            cls._style_token(item) or "unknown" for item in candidates
-        )
+        style_counts = Counter(cls._style_token(item) or "unknown" for item in candidates)
         source_counts = Counter(
-            cls._normalize_topic_token(item.source_strategy) or "unknown"
-            for item in candidates
+            cls._normalize_topic_token(item.source_strategy) or "unknown" for item in candidates
         )
+        platform_counts = Counter(cls._platform_token(item) for item in candidates)
         topic_counts: Counter[str] = Counter()
         for item in candidates:
             tokens = cls._diversity_tokens(item)
@@ -1200,6 +1624,7 @@ class RecommendationEngine:
             topic_counts[sorted(tokens)[0]] += 1
         return {
             "count": len(candidates),
+            "platforms": dict(platform_counts.most_common()),
             "styles": dict(style_counts.most_common(5)),
             "sources": dict(source_counts.most_common(5)),
             "topics": dict(topic_counts.most_common(5)),

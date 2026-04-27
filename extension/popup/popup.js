@@ -8,6 +8,7 @@ import {
   getCommentSubmitUiState,
   getCognitionHistoryUiState,
   getConnectionBadgeState,
+  getDelightUiState,
   getDisplayedPoolStatusSummary,
   getNextExpandedCognitionIndex,
   getReadyRecommendationHint,
@@ -17,6 +18,7 @@ import {
   getSubmissionProgressMessage,
   getTabButtonState,
   mergeRuntimeStatusEvent,
+  mergeDelightCandidate,
   normalizeActivityFeed,
   normalizeProfileSummary,
   shouldFetchProfileSummary,
@@ -29,12 +31,17 @@ import {
   checkBackendStatus,
   fetchActivityFeed,
   fetchConfig,
+  fetchPendingDelight,
+  fetchPendingDelightBatch,
   fetchProfileSummary,
   fetchRecommendations,
   fetchRuntimeStatus,
+  markDelightSent,
   reportRecommendationClick,
   reshuffleRecommendations,
   refreshRecommendations,
+  respondToDelight,
+  respondToInterestProbe,
   sendChatMessage,
   submitFeedback,
   updateConfig,
@@ -60,8 +67,22 @@ const state = {
   runtimeEvent: null,
   activityFeed: null,
   activityExpanded: false,
+  activityLoadingMore: false,
+  // Queue of pending delight recommendations. Banner shows
+  // queue[delightCurrentIndex] with ‹/› navigation between siblings.
+  // User actions (看看 / 不感兴趣 / × / 聊一聊 完成) remove the
+  // current item; the index then clamps to the new length.
+  // ``activeDelight`` is kept as a synced alias of the current item for
+  // helpers like mergeDelightCandidate.
+  activeDelights: [],
+  delightCurrentIndex: 0,
+  activeDelight: null,
+  delightHighlightBvid: "",
+  dismissedDelightBvids: [],
   activeFeedbackProgress: null,
   refreshStatusMessage: "",
+  pendingProbe: null,
+  messages: [],
 };
 
 const elements = {
@@ -83,6 +104,7 @@ const elements = {
   poolAvailable: document.getElementById("poolAvailable"),
   poolReplenished: document.getElementById("poolReplenished"),
   poolTopics: document.getElementById("poolTopics"),
+  delightSlot: document.getElementById("delightSlot"),
   tabRecommend: document.getElementById("tabRecommend"),
   tabProfile: document.getElementById("tabProfile"),
   tabChat: document.getElementById("tabChat"),
@@ -119,6 +141,11 @@ const elements = {
   chatInput: document.getElementById("chatInput"),
   chatSendButton: document.getElementById("chatSendButton"),
   chatStatus: document.getElementById("chatStatus"),
+  messagesButton: document.getElementById("messagesButton"),
+  messageBadge: document.getElementById("messageBadge"),
+  messagesOverlay: document.getElementById("messagesOverlay"),
+  messagesBack: document.getElementById("messagesBack"),
+  messagesList: document.getElementById("messagesList"),
 };
 
 function setRefreshButtonState(loading, message = "") {
@@ -230,6 +257,134 @@ function renderPoolStatus(runtimeStatus) {
   elements.poolTopics.textContent = summary.topics;
 }
 
+function rememberDismissedDelight(bvid) {
+  if (!bvid) {
+    return;
+  }
+  if (!state.dismissedDelightBvids.includes(bvid)) {
+    state.dismissedDelightBvids = [...state.dismissedDelightBvids, bvid];
+  }
+  // Persist on the backend so popup reloads + future
+  // /api/delight/pending-batch fetches honour the dismissal too.
+  // Otherwise an in-memory dismiss is lost the moment the popup
+  // closes, and the same bvid pops back up next time.
+  markDelightSent(bvid).catch(() => {
+    // Silent fail — the in-memory dismissal still works for this
+    // session even if the network ack doesn't go through.
+  });
+}
+
+// ── Delight queue helpers ──────────────────────────────────────────
+// state.activeDelights is the queue, state.delightCurrentIndex is the
+// pointer into it. state.activeDelight is a synced alias of the
+// currently-shown item for helpers that operate on a single item.
+
+function clampDelightIndex() {
+  const len = state.activeDelights.length;
+  if (len === 0) {
+    state.delightCurrentIndex = 0;
+    return;
+  }
+  if (state.delightCurrentIndex < 0) state.delightCurrentIndex = 0;
+  if (state.delightCurrentIndex >= len) state.delightCurrentIndex = len - 1;
+}
+
+function syncDelightHead() {
+  clampDelightIndex();
+  state.activeDelight = state.activeDelights[state.delightCurrentIndex] ?? null;
+}
+
+function pushDelightCandidate(candidate) {
+  if (!candidate || !candidate.bvid) return;
+  if (state.dismissedDelightBvids.includes(candidate.bvid)) return;
+  const existingIdx = state.activeDelights.findIndex(
+    (d) => d?.bvid === candidate.bvid,
+  );
+  if (existingIdx >= 0) {
+    state.activeDelights[existingIdx] = mergeDelightCandidate(
+      state.activeDelights[existingIdx],
+      candidate,
+      state.dismissedDelightBvids,
+    );
+  } else {
+    const merged = mergeDelightCandidate(
+      null,
+      candidate,
+      state.dismissedDelightBvids,
+    );
+    if (merged) {
+      state.activeDelights.push(merged);
+    }
+  }
+  syncDelightHead();
+}
+
+// Remove the currently-shown delight from the queue. If user wasn't on
+// the head, drop the item at the current index; the next item slides
+// into its place. After a removal the index points to whatever now
+// occupies that slot (or to length-1 if we just removed the last).
+//
+// Preserve the expanded state across removal so that × / 看看 / 喜欢
+// / 不感兴趣 don't collapse the next item's body — once the user
+// is in "browse with detail" mode, every queued item should keep
+// showing its full reason+actions until the user explicitly collapses.
+function removeCurrentDelight() {
+  if (state.activeDelights.length === 0) return;
+  const wasExpanded = Boolean(
+    state.activeDelights[state.delightCurrentIndex]?.expanded,
+  );
+  state.activeDelights.splice(state.delightCurrentIndex, 1);
+  // Keep the same index — it now points to the next item, or
+  // clampDelightIndex() will pin it to the last when we removed the tail.
+  if (wasExpanded && state.activeDelights[state.delightCurrentIndex]) {
+    state.activeDelights[state.delightCurrentIndex] = {
+      ...state.activeDelights[state.delightCurrentIndex],
+      expanded: true,
+    };
+  }
+  syncDelightHead();
+}
+
+// Backwards-compatible name used by some action handlers.
+const shiftDelightQueue = removeCurrentDelight;
+
+function navigateDelight(delta) {
+  if (state.activeDelights.length <= 1) return;
+  // Preserve the expand state across navigation: if the user had the
+  // current banner expanded, the next one slides in already expanded
+  // so they don't have to click open every card.
+  const wasExpanded = Boolean(
+    state.activeDelights[state.delightCurrentIndex]?.expanded,
+  );
+  state.delightCurrentIndex += delta;
+  clampDelightIndex();
+  if (wasExpanded && state.activeDelights[state.delightCurrentIndex]) {
+    state.activeDelights[state.delightCurrentIndex] = {
+      ...state.activeDelights[state.delightCurrentIndex],
+      expanded: true,
+    };
+  }
+  syncDelightHead();
+}
+
+function updateDelightHead(updates) {
+  const idx = state.delightCurrentIndex;
+  if (state.activeDelights.length === 0) return;
+  state.activeDelights[idx] = { ...state.activeDelights[idx], ...updates };
+  syncDelightHead();
+}
+
+function clearDelightQueue() {
+  state.activeDelights = [];
+  state.delightCurrentIndex = 0;
+  syncDelightHead();
+}
+
+function mergeIncomingDelight(candidate) {
+  pushDelightCandidate(candidate);
+  renderDelightSlot();
+}
+
 function getRuntimeEventTone(event) {
   const type = String(event?.type ?? "");
   if (type === "refresh.failed") {
@@ -247,6 +402,9 @@ function connectRuntimeStream() {
       state.runtimeEvent = event;
       state.runtimeStatus = mergeRuntimeStatusEvent(state.runtimeStatus, event);
       renderPoolStatus(state.runtimeStatus);
+      if (event.type === "delight.candidate" && event.bvid) {
+        mergeIncomingDelight(event);
+      }
       state.activeFeedbackProgress?.handle?.(event);
       if (elements.footer instanceof HTMLElement) {
         elements.footer.dataset.tone = getHintBannerState(getRuntimeEventTone(event)).tone;
@@ -257,11 +415,48 @@ function connectRuntimeStream() {
         setHint("后端配置已热重载，正在刷新数据…", "success");
         void initializeRecommendations();
       }
+      // Interest confirmed/rejected: refresh profile and show hint
+      if (event.type === "interest.confirmed" || event.type === "interest.rejected" || event.type === "interest.chat") {
+        setHint(String(event.message || ""), "success");
+        void loadProfileSummary({ force: true });
+      }
+      // Interest probe: add to messages inbox
+      if (event.type === "interest.probe" && event.domain) {
+        state.pendingProbe = event;
+        if (!state.messages.some((m) => m.type === "interest.probe" && m.domain === event.domain)) {
+          state.messages.push({ ...event, type: "interest.probe" });
+          updateMessageBadge();
+        }
+        renderProbeCard();
+      }
+      // Delight candidate: add to messages inbox
+      if (event.type === "delight.candidate" && event.bvid) {
+        if (!state.messages.some((m) => m.type === "delight" && m.bvid === event.bvid)) {
+          state.messages.push({ ...event, type: "delight" });
+          updateMessageBadge();
+        }
+      }
+      // Delight feedback: show hint
+      if (
+        event.type === "delight.disliked" ||
+        event.type === "delight.liked" ||
+        event.type === "delight.chat"
+      ) {
+        setHint(String(event.message || ""), "success");
+      }
       // Init completed: re-fetch everything including profile
       if (event.type === "init_completed") {
         state.profileLoaded = false;
         setHint("初始化完成！正在加载画像和推荐…", "success");
         void initializeRecommendations();
+        void loadProfileSummary({ force: true });
+      }
+      // Profile changed elsewhere (cognition cycle, manual rebuild,
+      // dialogue insight ingestion, …). Force a refetch so the panel
+      // reflects the new portrait/needs/insights without requiring
+      // a chat send or full init.
+      if (event.type === "profile_updated") {
+        state.profileLoaded = false;
         void loadProfileSummary({ force: true });
       }
     },
@@ -319,6 +514,24 @@ function renderActivityHistory(items) {
 
     elements.activityHistory.append(row);
   }
+
+  // Load-more affordance — only render when the backend says there
+  // are older items beyond what we already have. Click appends the
+  // next page in place; we re-render on completion so the button
+  // either disappears or stays for further pages.
+  if (state.activityFeed?.has_more && state.activityFeed?.next_cursor) {
+    const loadMore = document.createElement("button");
+    loadMore.type = "button";
+    loadMore.className = "activity-load-more";
+    loadMore.textContent = state.activityLoadingMore
+      ? "加载中…"
+      : "加载更早的动态";
+    loadMore.disabled = Boolean(state.activityLoadingMore);
+    loadMore.addEventListener("click", () => {
+      void loadMoreActivity();
+    });
+    elements.activityHistory.append(loadMore);
+  }
 }
 
 function renderActivityCard() {
@@ -348,7 +561,7 @@ async function loadActivityFeed() {
     return;
   }
   try {
-    state.activityFeed = normalizeActivityFeed(await fetchActivityFeed());
+    state.activityFeed = normalizeActivityFeed(await fetchActivityFeed({ limit: 10 }));
   } catch {
     state.activityFeed = normalizeActivityFeed({
       live_summary: "阿B 这会儿先替你盯着。",
@@ -357,6 +570,41 @@ async function loadActivityFeed() {
     });
   }
   renderActivityCard();
+}
+
+async function loadMoreActivity() {
+  if (
+    !state.online ||
+    !state.activityFeed ||
+    !state.activityFeed.has_more ||
+    !state.activityFeed.next_cursor ||
+    state.activityLoadingMore
+  ) {
+    return;
+  }
+  state.activityLoadingMore = true;
+  renderActivityCard();
+  try {
+    const nextPage = normalizeActivityFeed(
+      await fetchActivityFeed({
+        limit: 10,
+        before: state.activityFeed.next_cursor,
+      }),
+    );
+    // Append items, keep the existing live_summary / headline (they
+    // describe "current" state, not the appended history).
+    state.activityFeed = {
+      ...state.activityFeed,
+      items: [...state.activityFeed.items, ...nextPage.items],
+      has_more: nextPage.has_more,
+      next_cursor: nextPage.next_cursor,
+    };
+  } catch {
+    // Leave existing items in place; user can retry by clicking again.
+  } finally {
+    state.activityLoadingMore = false;
+    renderActivityCard();
+  }
 }
 
 function renderChipList(container, items, fallback) {
@@ -485,7 +733,655 @@ function renderSpeculativeInterests(container, items) {
       row.append(specs);
     }
 
+    // Inline action buttons on active speculations so the user can give
+    // feedback directly from the profile section without waiting for a
+    // WebSocket push or opening the messages inbox.
+    if ((item.status || "active") === "active" && item.domain) {
+      const actions = document.createElement("div");
+      actions.className = "spec-actions";
+
+      const confirmBtn = document.createElement("button");
+      confirmBtn.className = "probe-btn is-confirm";
+      confirmBtn.textContent = "喜欢";
+      confirmBtn.addEventListener("click", () =>
+        handleSpecResponse(item.domain, "confirm", row),
+      );
+
+      const rejectBtn = document.createElement("button");
+      rejectBtn.className = "probe-btn is-reject";
+      rejectBtn.textContent = "不喜欢";
+      rejectBtn.addEventListener("click", () =>
+        handleSpecResponse(item.domain, "reject", row),
+      );
+
+      actions.append(confirmBtn, rejectBtn);
+      row.append(actions);
+    }
+
     container.append(row);
+  }
+}
+
+async function handleSpecResponse(domain, responseType, rowEl) {
+  if (!domain) return;
+  // Disable buttons immediately so double-click can't fire twice.
+  if (rowEl instanceof HTMLElement) {
+    rowEl.querySelectorAll(".probe-btn").forEach((b) => {
+      if (b instanceof HTMLButtonElement) b.disabled = true;
+    });
+  }
+  try {
+    await respondToInterestProbe(domain, responseType);
+    if (rowEl instanceof HTMLElement) {
+      rowEl.replaceChildren();
+      const msg = document.createElement("p");
+      msg.className = "spec-result";
+      msg.textContent =
+        responseType === "confirm"
+          ? `好，「${domain}」记住了。`
+          : `好，「${domain}」先不看了。`;
+      rowEl.append(msg);
+      setTimeout(() => rowEl.remove(), 2500);
+    }
+    // Drop matching message-card from inbox state too, so the badge is in sync.
+    state.messages = state.messages.filter((m) => m.domain !== domain);
+    if (state.pendingProbe?.domain === domain) state.pendingProbe = null;
+    updateMessageBadge();
+    void loadProfileSummary({ force: true });
+  } catch (err) {
+    console.error("spec response failed:", err);
+    if (rowEl instanceof HTMLElement) {
+      rowEl.querySelectorAll(".probe-btn").forEach((b) => {
+        if (b instanceof HTMLButtonElement) b.disabled = false;
+      });
+    }
+  }
+}
+
+function renderProbeCard() {
+  const container = elements.profileSpeculativeInterests;
+  if (!(container instanceof HTMLElement) || !state.pendingProbe) return;
+
+  const probe = state.pendingProbe;
+
+  // Remove any existing probe card
+  const existing = container.querySelector(".probe-card");
+  if (existing) existing.remove();
+
+  const card = document.createElement("div");
+  card.className = "probe-card";
+
+  const question = document.createElement("p");
+  question.className = "probe-question";
+  question.textContent = probe.question || `\u6211\u4ece\u4f60\u6700\u8fd1\u7684\u8f68\u8ff9\u91cc\u55c5\u5230\u4f60\u53ef\u80fd\u5bf9\u300c${probe.domain}\u300d\u611f\u5174\u8da3\u2014\u2014\u4f60\u81ea\u5df1\u8ba4\u4e0d\u8ba4\uff1f`;
+  card.append(question);
+
+  if (probe.specifics && probe.specifics.length > 0) {
+    const chips = document.createElement("div");
+    chips.className = "probe-specifics";
+    for (const s of probe.specifics.slice(0, 5)) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = typeof s === "string" ? s : s.name || s;
+      chips.append(chip);
+    }
+    card.append(chips);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "probe-actions";
+
+  const confirmBtn = document.createElement("button");
+  confirmBtn.className = "probe-btn is-confirm";
+  confirmBtn.textContent = "\u559C\u6B22";
+  confirmBtn.addEventListener("click", () => handleProbeResponse("confirm"));
+
+  const rejectBtn = document.createElement("button");
+  rejectBtn.className = "probe-btn is-reject";
+  rejectBtn.textContent = "\u4E0D\u559C\u6B22";
+  rejectBtn.addEventListener("click", () => handleProbeResponse("reject"));
+
+  const chatBtn = document.createElement("button");
+  chatBtn.className = "probe-btn is-chat";
+  chatBtn.textContent = "\u591a\u804a\u804a";
+  chatBtn.addEventListener("click", () => handleProbeResponse("chat"));
+
+  actions.append(confirmBtn, rejectBtn, chatBtn);
+  card.append(actions);
+
+  // Insert at the top of the speculative interests container
+  container.prepend(card);
+}
+
+async function handleProbeResponse(responseType) {
+  const probe = state.pendingProbe;
+  if (!probe) return;
+
+  const domain = probe.domain;
+  const probeCard = document.querySelector(".probe-card");
+
+  if (responseType === "chat") {
+    // Expand inline chat directly on the probe card
+    if (probeCard) {
+      expandInlineChat(probeCard, domain);
+    }
+    return;
+  }
+
+  try {
+    await respondToInterestProbe(domain, responseType);
+
+    // Show feedback
+    if (probeCard) {
+      probeCard.replaceChildren();
+      const msg = document.createElement("p");
+      msg.className = "probe-result";
+      msg.textContent = responseType === "confirm"
+        ? `\u597D\uFF0C\u300C${domain}\u300D\u8BB0\u4F4F\u4E86\u3002`
+        : `\u597D\uFF0C\u300C${domain}\u300D\u5148\u4E0D\u770B\u4E86\u3002`;
+      probeCard.append(msg);
+      setTimeout(() => probeCard.remove(), 3000);
+    }
+
+    state.pendingProbe = null;
+    // Also remove from messages inbox
+    state.messages = state.messages.filter((m) => m.domain !== domain);
+    updateMessageBadge();
+
+    // Refresh profile to show updated speculations
+    void loadProfileSummary({ force: true });
+  } catch (err) {
+    console.error("Failed to respond to probe:", err);
+  }
+}
+
+// ── Messages inbox ─────────────────────────────────────────────
+
+function updateMessageBadge() {
+  const badge = elements.messageBadge;
+  if (!(badge instanceof HTMLElement)) return;
+  const count = state.messages.length;
+  badge.textContent = String(count);
+  badge.hidden = count === 0;
+}
+
+async function openMessagesPanel() {
+  const overlay = elements.messagesOverlay;
+  if (!(overlay instanceof HTMLElement)) return;
+  overlay.hidden = false;
+  // Render whatever we have synchronously so the panel doesn't open
+  // empty while we refetch.
+  renderMessagesList();
+  // Then force-refresh the profile so the inbox shows the *current*
+  // active speculations.  Without this, probes that the speculator
+  // rotated out (TTL, replacement, manual force_tick) can sit stale
+  // in the inbox and clicking them returns ``ok: false`` because the
+  // backend no longer recognises the domain.
+  try {
+    await loadProfileSummary({ force: true });
+  } catch {
+    // Already-rendered stale list is acceptable on refresh failure.
+    return;
+  }
+  renderMessagesList();
+}
+
+function closeMessagesPanel() {
+  const overlay = elements.messagesOverlay;
+  if (overlay instanceof HTMLElement) overlay.hidden = true;
+}
+
+function renderMessagesList() {
+  const container = elements.messagesList;
+  if (!(container instanceof HTMLElement)) return;
+  container.replaceChildren();
+
+  if (state.messages.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "messages-empty";
+    empty.innerHTML = '<div class="messages-empty-icon">\u{1F4EC}</div><p>\u6682\u65F6\u6CA1\u6709\u65B0\u6D88\u606F\u3002<br>\u5174\u8DA3\u786E\u8BA4\u3001\u60CA\u559C\u63A8\u8350\u548C\u901A\u77E5\u90FD\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC\u3002</p>';
+    container.append(empty);
+    return;
+  }
+
+  for (const msg of state.messages) {
+    const type = msg.type || "interest.probe";
+    if (type === "delight") {
+      container.append(buildDelightCard(msg));
+    } else {
+      container.append(buildMessageCard(msg));
+    }
+  }
+}
+
+function buildMessageCard(probe) {
+  const item = document.createElement("div");
+  item.className = "message-item";
+  item.dataset.domain = probe.domain;
+
+  // Dismiss button (×)
+  const dismiss = document.createElement("button");
+  dismiss.className = "message-dismiss";
+  dismiss.textContent = "\u00D7";
+  dismiss.title = "\u5173\u95ED";
+  dismiss.addEventListener("click", () => dismissMessage(probe.domain));
+  item.append(dismiss);
+
+  const domain = document.createElement("div");
+  domain.className = "message-domain";
+  domain.textContent = probe.domain;
+  item.append(domain);
+
+  if (probe.reason) {
+    const reason = document.createElement("p");
+    reason.className = "message-reason";
+    reason.textContent = probe.reason;
+    item.append(reason);
+  }
+
+  if (probe.specifics && probe.specifics.length > 0) {
+    const chips = document.createElement("div");
+    chips.className = "message-specifics";
+    for (const s of probe.specifics.slice(0, 5)) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = typeof s === "string" ? s : s.name || s;
+      chips.append(chip);
+    }
+    item.append(chips);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "message-actions";
+
+  const confirmBtn = document.createElement("button");
+  confirmBtn.className = "probe-btn is-confirm";
+  confirmBtn.textContent = "\u559C\u6B22";
+  confirmBtn.addEventListener("click", () => handleMessageResponse(probe.domain, "confirm"));
+
+  const rejectBtn = document.createElement("button");
+  rejectBtn.className = "probe-btn is-reject";
+  rejectBtn.textContent = "\u4E0D\u559C\u6B22";
+  rejectBtn.addEventListener("click", () => handleMessageResponse(probe.domain, "reject"));
+
+  const chatBtn = document.createElement("button");
+  chatBtn.className = "probe-btn is-chat";
+  chatBtn.textContent = "\u591A\u804A\u804A";
+  chatBtn.addEventListener("click", () => expandInlineChat(item, probe.domain));
+
+  actions.append(confirmBtn, rejectBtn, chatBtn);
+  item.append(actions);
+  return item;
+}
+
+// ── Delight (surprise recommendation) card ─────────────────────
+
+function buildDelightCard(delight) {
+  const item = document.createElement("div");
+  item.className = "message-item is-delight";
+  item.dataset.bvid = delight.bvid;
+
+  // Dismiss ×
+  const dismiss = document.createElement("button");
+  dismiss.className = "message-dismiss";
+  dismiss.textContent = "\u00D7";
+  dismiss.title = "\u5173\u95ED";
+  dismiss.addEventListener("click", () => dismissMessageByBvid(delight.bvid));
+  item.append(dismiss);
+
+  // Top row: thumbnail + (hook badge + title)
+  const top = document.createElement("div");
+  top.className = "message-delight-top";
+
+  const thumb = document.createElement("span");
+  thumb.className = "message-delight-thumb";
+  if (delight.cover_url) {
+    const image = document.createElement("img");
+    image.src = delight.cover_url;
+    image.alt = "";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("error", () => {
+      image.remove();
+      thumb.classList.add("is-fallback");
+      thumb.textContent = "\u2728";
+    });
+    thumb.append(image);
+  } else {
+    thumb.classList.add("is-fallback");
+    thumb.textContent = "\u2728";
+  }
+  top.append(thumb);
+
+  const textCol = document.createElement("div");
+  textCol.className = "message-delight-text";
+
+  if (delight.delight_hook) {
+    const hookBadge = document.createElement("span");
+    hookBadge.className = "message-delight-hook";
+    hookBadge.textContent = `\u2728 ${delight.delight_hook}`;
+    textCol.append(hookBadge);
+  }
+
+  const title = document.createElement("div");
+  title.className = "message-delight-title";
+  title.textContent = delight.title || "";
+  textCol.append(title);
+
+  top.append(textCol);
+  item.append(top);
+
+  // Reason
+  if (delight.delight_reason) {
+    const reason = document.createElement("p");
+    reason.className = "message-reason";
+    reason.textContent = delight.delight_reason;
+    item.append(reason);
+  }
+
+  // Action buttons
+  const actions = document.createElement("div");
+  actions.className = "message-actions";
+
+  const viewBtn = document.createElement("button");
+  viewBtn.className = "probe-btn is-view";
+  viewBtn.textContent = "\u770B\u770B";
+  viewBtn.addEventListener("click", () => {
+    const url = delight.content_url || `https://www.bilibili.com/video/${delight.bvid}`;
+    window.open(url, "_blank");
+    respondToDelight(delight.bvid, "view", delight.title).catch(() => {});
+    dismissMessageByBvid(delight.bvid);
+  });
+
+  const likeBtn = document.createElement("button");
+  likeBtn.className = "probe-btn is-confirm";
+  likeBtn.textContent = "\u559C\u6B22";
+  likeBtn.addEventListener("click", () => handleDelightResponse(delight, "like"));
+
+  const dislikeBtn = document.createElement("button");
+  dislikeBtn.className = "probe-btn is-reject";
+  dislikeBtn.textContent = "\u4E0D\u611F\u5174\u8DA3";
+  dislikeBtn.addEventListener("click", () => handleDelightResponse(delight, "dislike"));
+
+  const chatBtn = document.createElement("button");
+  chatBtn.className = "probe-btn is-chat";
+  chatBtn.textContent = "\u804A\u4E00\u804A";
+  chatBtn.addEventListener("click", () => expandDelightChat(item, delight));
+
+  actions.append(viewBtn, likeBtn, dislikeBtn, chatBtn);
+  item.append(actions);
+  return item;
+}
+
+async function handleDelightResponse(delight, responseType) {
+  try {
+    await respondToDelight(delight.bvid, responseType, delight.title);
+    const item = elements.messagesList?.querySelector(`[data-bvid="${CSS.escape(delight.bvid)}"]`);
+    if (item) {
+      item.replaceChildren();
+      const msg = document.createElement("p");
+      msg.className = "message-result";
+      msg.textContent =
+        responseType === "like"
+          ? "\u597D\uFF0C\u8FD9\u7C7B\u591A\u6765\u70B9\u3002"
+          : "\u597D\uFF0C\u8FD9\u7C7B\u5148\u4E0D\u63A8\u4E86\u3002";
+      item.append(msg);
+      setTimeout(() => { item.remove(); renderMessagesEmptyIfNeeded(); }, 2000);
+    }
+    dismissMessageByBvid(delight.bvid, false);
+  } catch (err) {
+    console.error("Delight response failed:", err);
+  }
+}
+
+function expandDelightChat(itemEl, delight) {
+  if (itemEl.querySelector(".message-chat-area")) return;
+  const actions = itemEl.querySelector(".message-actions");
+  if (actions) actions.hidden = true;
+
+  const chatArea = document.createElement("div");
+  chatArea.className = "message-chat-area";
+
+  const input = document.createElement("textarea");
+  input.className = "message-chat-input";
+  input.rows = 1;
+  input.placeholder = `\u804A\u804A\u4F60\u5BF9\u8FD9\u6761\u63A8\u8350\u7684\u60F3\u6CD5\u2026`;
+
+  const sendBtn = document.createElement("button");
+  sendBtn.className = "message-chat-send";
+  sendBtn.textContent = "\u53D1\u9001";
+  sendBtn.addEventListener("click", async () => {
+    const message = input.value.trim();
+    if (!message) return;
+    sendBtn.disabled = true;
+    const thinking = createChatThinkingPlaceholder("\u963fB \u6b63\u5728\u54c1\u4f60\u8fd9\u53e5\u8bdd");
+    itemEl.append(thinking);
+    try {
+      const result = await respondToDelight(delight.bvid, "chat", delight.title, message);
+      const reply = result?.reply || "\u6536\u5230\u4E86\uFF0C\u6211\u4F1A\u7EE7\u7EED\u89C2\u5BDF\u3002";
+      thinking.remove();
+      const replyEl = document.createElement("div");
+      replyEl.className = "message-chat-reply";
+      replyEl.textContent = reply;
+      itemEl.append(replyEl);
+      const ca = itemEl.querySelector(".message-chat-area");
+      if (ca) ca.remove();
+      setTimeout(() => { dismissMessageByBvid(delight.bvid); itemEl.remove(); renderMessagesEmptyIfNeeded(); }, 4000);
+    } catch (err) {
+      console.error("Delight chat failed:", err);
+      thinking.remove();
+      sendBtn.disabled = false;
+      const errEl = document.createElement("div");
+      errEl.className = "message-chat-reply";
+      errEl.textContent = "\u540E\u53F0\u6B63\u5FD9\uFF0C\u7B49\u4E00\u4E0B\u518D\u804A\u3002";
+      itemEl.append(errEl);
+      setTimeout(() => errEl.remove(), 3000);
+    }
+  });
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendBtn.click(); }
+  });
+
+  chatArea.append(input, sendBtn);
+  itemEl.append(chatArea);
+  input.focus();
+}
+
+function dismissMessageByBvid(bvid, removeFromDom = true) {
+  state.messages = state.messages.filter((m) => m.bvid !== bvid);
+  updateMessageBadge();
+  // Mirror the dismiss on the backend so the same bvid doesn't
+  // re-surface via /api/delight/pending-batch on next popup reload.
+  rememberDismissedDelight(bvid);
+  if (removeFromDom) {
+    const item = elements.messagesList?.querySelector(`[data-bvid="${CSS.escape(bvid)}"]`);
+    if (item) item.remove();
+    renderMessagesEmptyIfNeeded();
+  }
+}
+
+function expandInlineChat(itemEl, domain) {
+  // Don't add twice
+  if (itemEl.querySelector(".message-chat-area")) return;
+
+  // Hide the action buttons
+  const actions = itemEl.querySelector(".message-actions");
+  if (actions) actions.hidden = true;
+
+  const chatArea = document.createElement("div");
+  chatArea.className = "message-chat-area";
+
+  const input = document.createElement("textarea");
+  input.className = "message-chat-input";
+  input.rows = 1;
+  input.placeholder = `\u804A\u804A\u4F60\u5BF9\u300C${domain}\u300D\u7684\u60F3\u6CD5\u2026`;
+
+  const sendBtn = document.createElement("button");
+  sendBtn.className = "message-chat-send";
+  sendBtn.textContent = "\u53D1\u9001";
+  sendBtn.addEventListener("click", () => sendInlineChat(itemEl, domain, input, sendBtn));
+
+  // Allow Enter to send
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendBtn.click();
+    }
+  });
+
+  chatArea.append(input, sendBtn);
+  itemEl.append(chatArea);
+  input.focus();
+}
+
+
+function createChatThinkingPlaceholder(label) {
+  // Reusable "thinking" indicator for any in-card chat composer.
+  // Shows the bouncing-dots animation plus a friendly label so the
+  // user knows the request is in flight (default ~30s for delight
+  // chat, ~30s for probe chat).
+  const wrap = document.createElement("div");
+  wrap.className = "message-chat-thinking";
+  const text = document.createElement("span");
+  text.className = "message-chat-thinking-label";
+  text.textContent = label || "\u963fB \u6b63\u5728\u601d\u8003";
+  const dots = document.createElement("span");
+  dots.className = "chat-thinking-dots";
+  for (let i = 0; i < 3; i++) {
+    const dot = document.createElement("span");
+    dot.className = "chat-thinking-dot";
+    dots.append(dot);
+  }
+  wrap.append(text, dots);
+  return wrap;
+}
+
+async function sendInlineChat(itemEl, domain, input, sendBtn) {
+  const message = input.value.trim();
+  if (!message) return;
+
+  sendBtn.disabled = true;
+
+  // Show a thinking placeholder so the user knows we\u2019re waiting
+  // on the LLM. The composer\u2019s send button alone going gray
+  // wasn\u2019t enough of a signal — many users assumed the click
+  // didn\u2019t register.
+  const thinking = createChatThinkingPlaceholder("\u963fB \u6b63\u5728\u601d\u8003\u8fd9\u4e2a\u65b9\u5411");
+  itemEl.append(thinking);
+
+  try {
+    const result = await respondToInterestProbe(domain, "chat", message);
+    const reply = result?.reply || result?.message || "\u6536\u5230\u4E86\uFF0C\u6211\u4F1A\u7ED3\u5408\u8FD9\u4E2A\u65B9\u5411\u7EE7\u7EED\u89C2\u5BDF\u3002";
+
+    thinking.remove();
+
+    // Show reply
+    const replyEl = document.createElement("div");
+    replyEl.className = "message-chat-reply";
+    replyEl.textContent = reply;
+    itemEl.append(replyEl);
+
+    // Remove chat area, show result, then remove card after delay
+    const chatArea = itemEl.querySelector(".message-chat-area");
+    if (chatArea) chatArea.remove();
+
+    // Remove from messages after showing reply
+    setTimeout(() => {
+      removeMessageFromState(domain);
+      itemEl.remove();
+      renderMessagesEmptyIfNeeded();
+    }, 4000);
+  } catch (err) {
+    console.error("Inline chat failed:", err);
+    thinking.remove();
+    sendBtn.disabled = false;
+    // Show error hint inline
+    const errEl = document.createElement("div");
+    errEl.className = "message-chat-reply";
+    errEl.textContent = "\u540E\u53F0\u6B63\u5FD9\uFF0C\u7B49\u4E00\u4E0B\u518D\u804A\u3002";
+    itemEl.append(errEl);
+    setTimeout(() => errEl.remove(), 3000);
+  }
+}
+
+function dismissMessage(domain) {
+  removeMessageFromState(domain);
+  const item = elements.messagesList?.querySelector(`[data-domain="${CSS.escape(domain)}"]`);
+  if (item) item.remove();
+  renderMessagesEmptyIfNeeded();
+}
+
+async function handleMessageResponse(domain, responseType) {
+  try {
+    const apiResp = await respondToInterestProbe(domain, responseType);
+
+    const item = elements.messagesList?.querySelector(`[data-domain="${CSS.escape(domain)}"]`);
+    // ok=false means the backend no longer recognises this domain
+    // (typical: probe rotated out by TTL or a fresh force_tick while
+    // the popup sat open with a stale inbox). Tell the user, then
+    // force-refetch and re-render so the panel matches reality.
+    if (apiResp && apiResp.ok === false) {
+      if (item) {
+        item.replaceChildren();
+        const stale = document.createElement("p");
+        stale.className = "message-result";
+        stale.textContent = "\u8FD9\u6761\u5DF2\u7ECF\u8FC7\u671F\u4E86\uFF0C\u6B63\u5728\u5237\u65B0\u2026";
+        item.append(stale);
+      }
+      try {
+        await loadProfileSummary({ force: true });
+      } catch {
+        /* fall through */
+      }
+      removeMessageFromState(domain);
+      renderMessagesList();
+      return;
+    }
+
+    if (item) {
+      item.replaceChildren();
+      const msg = document.createElement("p");
+      msg.className = "message-result";
+      msg.textContent = responseType === "confirm"
+        ? `\u597D\uFF0C\u300C${domain}\u300D\u8BB0\u4F4F\u4E86\u3002`
+        : `\u597D\uFF0C\u300C${domain}\u300D\u5148\u4E0D\u770B\u4E86\u3002`;
+      item.append(msg);
+      setTimeout(() => {
+        item.remove();
+        renderMessagesEmptyIfNeeded();
+      }, 2000);
+    }
+
+    removeMessageFromState(domain);
+    void loadProfileSummary({ force: true });
+  } catch (err) {
+    console.error("Failed to respond to message:", err);
+  }
+}
+
+function removeMessageFromState(domain) {
+  state.messages = state.messages.filter((m) => m.domain !== domain);
+  if (state.pendingProbe?.domain === domain) state.pendingProbe = null;
+  updateMessageBadge();
+}
+
+function renderMessagesEmptyIfNeeded() {
+  const container = elements.messagesList;
+  if (!(container instanceof HTMLElement)) return;
+  if (state.messages.length === 0 && container.children.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "messages-empty";
+    empty.innerHTML = '<div class="messages-empty-icon">\u{1F4EC}</div><p>\u6682\u65F6\u6CA1\u6709\u5F85\u786E\u8BA4\u7684\u6D88\u606F\u3002<br>\u5F53\u7CFB\u7EDF\u731C\u6D4B\u5230\u4F60\u53EF\u80FD\u611F\u5174\u8DA3\u7684\u65B9\u5411\u65F6\uFF0C\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC\u3002</p>';
+    container.append(empty);
+  }
+}
+
+function bindMessages() {
+  if (elements.messagesButton instanceof HTMLElement) {
+    elements.messagesButton.addEventListener("click", openMessagesPanel);
+  }
+  if (elements.messagesBack instanceof HTMLElement) {
+    elements.messagesBack.addEventListener("click", closeMessagesPanel);
   }
 }
 
@@ -955,6 +1851,71 @@ function getProfileCognitionItems(summary) {
   return Array.isArray(summary?.recent_cognition_updates) ? summary.recent_cognition_updates : [];
 }
 
+// Split a long prose portrait into reader-friendly paragraphs.
+// Old prompt produced 600-1000 char walls that needed aggressive
+// splitting on every turn connector ("但"/"最近"/...). The new prompt
+// caps portraits around 200-260 chars, where the same aggressive
+// splitter chops the text into 5 isolated 1-2-sentence chunks that
+// visually read as a list, not a flowing reflection.
+//
+// Heuristic: short portraits render as a single paragraph; only longer
+// ones get sentence-grouped. Target paragraph length scales with total
+// length so we don't over-fragment medium portraits either.
+function splitPortraitToParagraphs(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return [];
+  const totalLen = trimmed.length;
+
+  if (totalLen < 280) return [trimmed];
+
+  const sentences = trimmed
+    .split(/(?<=[。！？.!?])\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (sentences.length <= 1) return sentences;
+
+  const TURN_PREFIXES = ["但", "不过", "然而", "最近", "所以", "因此", "另外", "其实", "于是"];
+  // Aim for ~3 paragraphs regardless of total length, with a minimum
+  // grouping of 180 chars so we never produce <2-sentence stubs.
+  const targetLen = Math.max(180, Math.ceil(totalLen / 3));
+
+  const paragraphs = [];
+  let buffer = [];
+  let bufferLen = 0;
+
+  const flush = () => {
+    if (buffer.length === 0) return;
+    paragraphs.push(buffer.join(""));
+    buffer = [];
+    bufferLen = 0;
+  };
+
+  for (const sentence of sentences) {
+    const isTurn = TURN_PREFIXES.some((p) => sentence.startsWith(p));
+    // Only split on turn-connector once the current paragraph already
+    // has some weight — otherwise short opening sentences get orphaned.
+    if (buffer.length > 0 && (bufferLen >= targetLen || (isTurn && bufferLen >= 100))) {
+      flush();
+    }
+    buffer.push(sentence);
+    bufferLen += sentence.length;
+  }
+  flush();
+  return paragraphs;
+}
+
+function renderPortraitParagraphs(container, text) {
+  if (!(container instanceof HTMLElement)) return;
+  container.replaceChildren();
+  const paragraphs = splitPortraitToParagraphs(text);
+  for (const p of paragraphs) {
+    const node = document.createElement("p");
+    node.className = "profile-portrait-paragraph";
+    node.textContent = p;
+    container.append(node);
+  }
+}
+
 function renderProfileSummary(summary) {
   if (
     !(elements.profileEmpty instanceof HTMLElement) ||
@@ -983,7 +1944,7 @@ function renderProfileSummary(summary) {
 
   elements.profileEmpty.hidden = true;
   elements.profileCard.hidden = false;
-  elements.profilePortrait.textContent = summary.personality_portrait;
+  renderPortraitParagraphs(elements.profilePortrait, summary.personality_portrait);
   // Core
   renderChipList(elements.profileTraits, summary.core_traits, "这部分还在慢慢补");
   renderChipList(elements.profileNeeds, summary.deep_needs, "这块还要再多看一点");
@@ -1022,7 +1983,7 @@ function renderProfileSummary(summary) {
 
 function appendChatMessage(role, content) {
   if (!(elements.chatMessages instanceof HTMLElement)) {
-    return;
+    return null;
   }
   const item = document.createElement("div");
   item.className = `chat-message${role === "你" ? " user" : ""}`;
@@ -1038,6 +1999,55 @@ function appendChatMessage(role, content) {
   item.append(label, text);
   elements.chatMessages.append(item);
   elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+  return item;
+}
+
+// Render a placeholder "thinking" bubble with animated dots while we
+// wait for the dialogue endpoint. Returns the bubble element so the
+// submit handler can swap it for the real reply (or an error) once
+// the request resolves.
+function appendChatThinkingPlaceholder() {
+  if (!(elements.chatMessages instanceof HTMLElement)) {
+    return null;
+  }
+  const item = document.createElement("div");
+  item.className = "chat-message chat-thinking";
+
+  const label = document.createElement("span");
+  label.className = "chat-role";
+  label.textContent = "助手";
+
+  const text = document.createElement("p");
+  text.className = "chat-content chat-thinking-content";
+  text.innerHTML =
+    '<span class="chat-thinking-label">正在想</span>' +
+    '<span class="chat-thinking-dots">' +
+    '<span class="chat-thinking-dot"></span>' +
+    '<span class="chat-thinking-dot"></span>' +
+    '<span class="chat-thinking-dot"></span>' +
+    "</span>";
+
+  item.append(label, text);
+  elements.chatMessages.append(item);
+  elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+  return item;
+}
+
+// Replace a previously-inserted placeholder with the final assistant
+// reply text in-place, so the visual position stays stable.
+function replaceChatThinkingPlaceholder(placeholder, content) {
+  if (!(placeholder instanceof HTMLElement)) {
+    return;
+  }
+  placeholder.classList.remove("chat-thinking");
+  const text = placeholder.querySelector(".chat-content");
+  if (text instanceof HTMLElement) {
+    text.classList.remove("chat-thinking-content");
+    text.textContent = content;
+  }
+  if (elements.chatMessages instanceof HTMLElement) {
+    elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+  }
 }
 
 function setFeedbackStatus(statusLine, message) {
@@ -1131,6 +2141,338 @@ function createActionButton(label, className, onClick) {
     onClick();
   });
   return button;
+}
+
+function renderDelightSlot() {
+  if (!(elements.delightSlot instanceof HTMLElement)) {
+    return;
+  }
+
+  const queueLength = state.activeDelights.length;
+  const currentIdx = state.delightCurrentIndex;
+  const head = state.activeDelights[currentIdx];
+  const uiState = getDelightUiState(head, {
+    highlightBvid: state.delightHighlightBvid,
+  });
+
+  if (!uiState.visible || !head?.bvid) {
+    elements.delightSlot.hidden = true;
+    elements.delightSlot.replaceChildren();
+    return;
+  }
+
+  const delight = head;
+  const isHandled = uiState.handled;
+  const isExpanded = Boolean(delight.expanded);
+
+  // Banner with thumbnail. Collapsed = ~64px row showing thumbnail +
+  // hook + truncated title + position counter (when more than one
+  // delight is queued). Click the row to expand; × dismisses just
+  // the head and the next delight slides in.
+  const banner = document.createElement("article");
+  banner.className =
+    `delight-banner${isExpanded ? " is-expanded" : ""}` +
+    `${uiState.highlighted ? " is-highlighted" : ""}`;
+  banner.dataset.state = delight.state || "pending";
+
+  // ── Row (always visible) ────────────────────────────────────────
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "delight-banner-row";
+  row.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+  row.addEventListener("click", () => {
+    updateDelightHead({ expanded: !isExpanded });
+    renderDelightSlot();
+  });
+
+  // Thumbnail (left)
+  const thumb = document.createElement("span");
+  thumb.className = "delight-banner-thumb";
+  if (delight.cover_url) {
+    const image = document.createElement("img");
+    image.src = delight.cover_url;
+    image.alt = "";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("error", () => {
+      image.remove();
+      thumb.classList.add("is-fallback");
+      thumb.textContent = "✨";
+    });
+    thumb.append(image);
+  } else {
+    thumb.classList.add("is-fallback");
+    thumb.textContent = "✨";
+  }
+
+  // Text column
+  const textCol = document.createElement("span");
+  textCol.className = "delight-banner-text";
+
+  const kickerLine = document.createElement("span");
+  kickerLine.className = "delight-banner-kicker-line";
+  const kicker = document.createElement("span");
+  kicker.className = "delight-banner-kicker";
+  kicker.textContent = `✨ ${delight.delight_hook || "惊喜推荐"}`;
+  kickerLine.append(kicker);
+  if (queueLength > 1) {
+    const prevBtn = document.createElement("button");
+    prevBtn.type = "button";
+    prevBtn.className = "delight-banner-nav";
+    prevBtn.textContent = "\u2039";  // ‹
+    prevBtn.title = "上一条";
+    prevBtn.disabled = currentIdx <= 0;
+    prevBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      navigateDelight(-1);
+      renderDelightSlot();
+    });
+
+    const counter = document.createElement("span");
+    counter.className = "delight-banner-counter";
+    counter.textContent = `${currentIdx + 1}/${queueLength}`;
+
+    const nextBtn = document.createElement("button");
+    nextBtn.type = "button";
+    nextBtn.className = "delight-banner-nav";
+    nextBtn.textContent = "\u203A";  // ›
+    nextBtn.title = "下一条";
+    nextBtn.disabled = currentIdx >= queueLength - 1;
+    nextBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      navigateDelight(1);
+      renderDelightSlot();
+    });
+
+    kickerLine.append(prevBtn, counter, nextBtn);
+  }
+
+  const titleText = document.createElement("span");
+  titleText.className = "delight-banner-title";
+  titleText.textContent = delight.title || "";
+
+  textCol.append(kickerLine, titleText);
+
+  const chevron = document.createElement("span");
+  chevron.className = "delight-banner-chevron";
+  chevron.textContent = isExpanded ? "▾" : "▸";
+
+  row.append(thumb, textCol, chevron);
+
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "delight-banner-dismiss";
+  dismiss.title = "稍后看";
+  dismiss.setAttribute("aria-label", "关闭这条惊喜推荐");
+  dismiss.textContent = "×";
+  dismiss.addEventListener("click", (event) => {
+    event.stopPropagation();
+    rememberDismissedDelight(delight.bvid);
+    shiftDelightQueue();
+    setHint(
+      state.activeDelights.length > 0
+        ? "这条收起了，下一条上。"
+        : "先给你收起来，回头想看再翻。",
+      "info",
+    );
+    renderDelightSlot();
+  });
+
+  banner.append(row, dismiss);
+
+  // ── Expanded body ───────────────────────────────────────────────
+  if (isExpanded) {
+    const body = document.createElement("div");
+    body.className = "delight-banner-body";
+
+    if (delight.delight_reason) {
+      const reason = document.createElement("p");
+      reason.className = "delight-banner-reason";
+      reason.textContent = delight.delight_reason;
+      body.append(reason);
+    }
+
+    if (uiState.response_message) {
+      const response = document.createElement("p");
+      response.className = "delight-banner-response";
+      response.dataset.tone = uiState.response_tone;
+      response.textContent = uiState.response_message;
+      body.append(response);
+    }
+
+    if (delight.chat_reply) {
+      const reply = document.createElement("p");
+      reply.className = "delight-banner-chat-reply";
+      reply.textContent = delight.chat_reply;
+      body.append(reply);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "delight-banner-actions";
+
+    const openButton = createActionButton(
+      "看看",
+      "action-button action-primary delight-banner-action",
+      async () => {
+        await openRecommendation(delight.bvid, delight);
+        // Mark viewed but keep in queue so user can see the response
+        // before the next one slides in. Auto-advance after 800ms.
+        updateDelightHead({
+          state: "viewed",
+          response_message: "已打开，阿B 会把这次点击当成强信号。",
+          composer_open: false,
+          expanded: true,
+        });
+        renderDelightSlot();
+        setTimeout(() => {
+          if (state.activeDelights[0]?.bvid === delight.bvid) {
+            shiftDelightQueue();
+            renderDelightSlot();
+          }
+        }, 800);
+      },
+    );
+
+    const likeButton = createActionButton(
+      "喜欢",
+      "action-button action-secondary delight-banner-action is-like",
+      async () => {
+        try {
+          await respondToDelight(delight.bvid, "like", delight.title);
+        } catch (err) {
+          console.error("Delight like failed:", err);
+        }
+        setHint("好，这类多来点。", "success");
+        rememberDismissedDelight(delight.bvid);
+        removeCurrentDelight();
+        renderDelightSlot();
+      },
+    );
+
+    const rejectButton = createActionButton(
+      "不感兴趣",
+      "action-button action-secondary delight-banner-action",
+      async () => {
+        try {
+          await respondToDelight(delight.bvid, "dislike", delight.title);
+        } catch (err) {
+          console.error("Delight dislike failed:", err);
+        }
+        rememberDismissedDelight(delight.bvid);
+        removeCurrentDelight();
+        setHint("记下了，这类惊喜先少来点。", "success");
+        renderDelightSlot();
+      },
+    );
+
+    const chatButton = createActionButton(
+      "聊一聊",
+      "action-button action-secondary delight-banner-action",
+      () => {
+        updateDelightHead({
+          composer_open: !delight.composer_open,
+          expanded: true,
+        });
+        renderDelightSlot();
+      },
+    );
+
+    if (isHandled) {
+      rejectButton.disabled = true;
+      likeButton.disabled = true;
+    }
+
+    actions.append(openButton, likeButton, rejectButton, chatButton);
+    body.append(actions);
+
+    if (delight.composer_open) {
+      const composer = document.createElement("div");
+      composer.className = "delight-chat-composer";
+
+      const input = document.createElement("textarea");
+      input.className = "chat-input";
+      input.rows = 3;
+      input.placeholder = "说说你为什么想点开，或者哪里还拿不准";
+      input.value = delight.chat_draft || "";
+      input.addEventListener("input", () => {
+        if (state.activeDelights[0]?.bvid === delight.bvid) {
+          updateDelightHead({ chat_draft: input.value });
+        }
+      });
+
+      const status = document.createElement("p");
+      status.className = "delight-chat-status";
+
+      const submit = createActionButton(
+        "发出去",
+        "action-button action-primary",
+        async () => {
+          const draft = input.value.trim();
+          if (!draft) {
+            status.textContent = "先写一句你的想法。";
+            input.focus();
+            return;
+          }
+          submit.disabled = true;
+          // Show animated thinking dots so the user knows the LLM
+          // is working — a static "正在整理…" line wasn't enough
+          // signal during the 5-30s delight chat round-trip.
+          status.replaceChildren();
+          status.append(
+            createChatThinkingPlaceholder("阿B 正在品你这句话"),
+          );
+          try {
+            const payload = await sendChatMessage(
+              `我想聊聊一条惊喜推荐。\n标题：${delight.title}\n理由：${delight.delight_reason}\n我的想法：${draft}`,
+            );
+            updateDelightHead({
+              state: "chatted",
+              response_message: "这句已经记下，后面会更会试探。",
+              chat_reply: payload.reply,
+              chat_draft: "",
+              composer_open: false,
+              expanded: true,
+            });
+            setHint("这句记下了，后面的惊喜推荐会继续学。", "success");
+            renderDelightSlot();
+            await refreshProfileSummaryAfterInteraction({
+              onProfileStart() {
+                setHint("正在同步画像。", "info");
+              },
+              onActivityStart() {
+                setHint("画像已同步，正在刷新最近动态。", "info");
+              },
+            });
+          } catch {
+            submit.disabled = false;
+            status.textContent = "这句还没发出去，稍后再试。";
+          }
+        },
+      );
+
+      composer.append(input, submit, status);
+      body.append(composer);
+    }
+
+    if (queueLength >= 5) {
+      const dismissAll = document.createElement("button");
+      dismissAll.type = "button";
+      dismissAll.className = "delight-banner-dismiss-all";
+      dismissAll.textContent = `全部稍后看 (${queueLength})`;
+      dismissAll.addEventListener("click", (event) => {
+        event.stopPropagation();
+        for (const d of state.activeDelights) rememberDismissedDelight(d.bvid);
+        clearDelightQueue();
+        setHint("都收起来了，需要时去邮箱里翻。", "info");
+        renderDelightSlot();
+      });
+      body.append(dismissAll);
+    }
+
+    banner.append(body);
+  }
+
+  elements.delightSlot.hidden = false;
+  elements.delightSlot.replaceChildren(banner);
 }
 
 function createCommentComposer(item, statusLine) {
@@ -1267,9 +2609,12 @@ function renderRecommendations(items, { append = false } = {}) {
       image.alt = `${item.title} 的封面`;
       image.referrerPolicy = "no-referrer";
       image.addEventListener("error", () => {
-        cover.replaceChildren();
+        image.remove();
         cover.classList.add("is-fallback");
-        cover.textContent = "封面加载慢了一下";
+        const fallbackText = document.createElement("span");
+        fallbackText.className = "recommendation-cover-fallback-text";
+        fallbackText.textContent = "封面加载慢了一下";
+        cover.prepend(fallbackText);
       });
       cover.append(image);
     } else {
@@ -1293,6 +2638,13 @@ function renderRecommendations(items, { append = false } = {}) {
       badge.textContent = item.topic_label;
       top.append(badge);
     }
+    const platformKey = (item.source_platform || "bilibili").toLowerCase();
+    const platformLabel =
+      { bilibili: "B 站", xiaohongshu: "小红书" }[platformKey] || item.source_platform;
+    const sourceCorner = document.createElement("span");
+    sourceCorner.className = `recommendation-source-corner source-platform-${platformKey}`;
+    sourceCorner.textContent = platformLabel;
+    cover.append(sourceCorner);
     top.append(stateBadge);
 
     const copyBlock = document.createElement("div");
@@ -1548,6 +2900,9 @@ async function loadProfileSummary({ force = false } = {}) {
     if (!state.online) {
       renderProfileSummary(normalizeProfileSummary({ initialized: false }));
     } else if (state.profile) {
+      // Cached path: still hydrate inbox so reopening popup with a
+      // warm profile cache still surfaces the active speculations.
+      hydrateInboxFromSpeculations(state.profile.speculative_interests);
       renderProfileSummary(state.profile);
     }
     return;
@@ -1569,9 +2924,54 @@ async function loadProfileSummary({ force = false } = {}) {
     };
     state.expandedCognitionIndex = null;
   }
+  // Hydrate after every successful or fallback profile load so the
+  // inbox stays in sync with the speculator state (the backend dedupes
+  // its WebSocket pushes via ``probed_domains``, so already-pushed
+  // probes won't re-arrive on reconnect).
+  hydrateInboxFromSpeculations(state.profile?.speculative_interests);
   state.profileLoaded = true;
   renderProfileSummary(state.profile);
   maybeLoadMoreCognitionHistory();
+}
+
+function hydrateInboxFromSpeculations(speculations) {
+  if (!Array.isArray(speculations)) return;
+  // Speculator regenerates probes on a runtime cycle; older actives may
+  // have rotated to cooldown.  We must REPLACE the interest.probe slice
+  // of state.messages with the current active set, otherwise the inbox
+  // accumulates stale entries from past cycles and drifts away from
+  // what the profile section shows.
+  // Delight messages are preserved untouched — they live on a separate
+  // lifecycle (delight/pending endpoint).
+  const activeDomains = new Set(
+    speculations
+      .filter((s) => s && s.domain && (!s.status || s.status === "active"))
+      .map((s) => s.domain),
+  );
+  // Drop interest.probe entries no longer in the active set.
+  state.messages = state.messages.filter((m) => {
+    const type = m?.type || "interest.probe";
+    if (type !== "interest.probe") return true;
+    return m.domain && activeDomains.has(m.domain);
+  });
+  // Add any current active probes not yet in state.messages.
+  const existingDomains = new Set(
+    state.messages
+      .filter((m) => (m?.type || "interest.probe") === "interest.probe" && m?.domain)
+      .map((m) => m.domain),
+  );
+  for (const item of speculations) {
+    if (!item || (item.status && item.status !== "active") || !item.domain) continue;
+    if (existingDomains.has(item.domain)) continue;
+    state.messages.push({
+      type: "interest.probe",
+      domain: item.domain,
+      reason: item.reason || "",
+      specifics: Array.isArray(item.specifics) ? item.specifics : [],
+    });
+    existingDomains.add(item.domain);
+  }
+  updateMessageBadge();
 }
 
 async function loadMoreCognitionHistory() {
@@ -1683,20 +3083,32 @@ async function initializeRecommendations() {
   if (!online) {
     state.runtimeStatus = null;
     state.recommendations = [];
+    clearDelightQueue();
     state.hasMoreRecommendations = false;
     state.loadingMore = false;
+    renderDelightSlot();
     renderRecommendationState(getPopupState({ online, items: [], runtimeStatus: null }));
     renderProfileSummary(normalizeProfileSummary({ initialized: false }));
     return;
   }
 
-  const [runtimeResult, recommendationResult] = await Promise.allSettled([
+  const [runtimeResult, recommendationResult, delightResult] = await Promise.allSettled([
     fetchRuntimeStatus(),
     fetchRecommendations(),
+    fetchPendingDelightBatch(20),
   ]);
 
   state.runtimeStatus = runtimeResult.status === "fulfilled" ? runtimeResult.value : null;
+  if (delightResult.status === "fulfilled" && Array.isArray(delightResult.value)) {
+    // Reset queue then re-push all from server so dismissed items in
+    // memory are still respected (pushDelightCandidate filters them).
+    clearDelightQueue();
+    for (const item of delightResult.value) {
+      pushDelightCandidate(item);
+    }
+  }
   renderPoolStatus(state.runtimeStatus);
+  renderDelightSlot();
   await loadActivityFeed();
 
   if (recommendationResult.status === "fulfilled") {
@@ -1856,6 +3268,7 @@ function bindChat() {
     }
 
     appendChatMessage("你", message);
+    const thinkingPlaceholder = appendChatThinkingPlaceholder();
     elements.chatInput.value = "";
     elements.chatSendButton.disabled = true;
     elements.chatSendButton.textContent = "发送中...";
@@ -1870,7 +3283,11 @@ function bindChat() {
     try {
       const payload = await sendChatMessage(message);
       clearSlowStatusTimer();
-      appendChatMessage("助手", payload.reply);
+      if (thinkingPlaceholder) {
+        replaceChatThinkingPlaceholder(thinkingPlaceholder, payload.reply);
+      } else {
+        appendChatMessage("助手", payload.reply);
+      }
       setHint("收到，这句记下了。", "success");
       await refreshProfileSummaryAfterInteraction({
         onProfileStart() {
@@ -1885,7 +3302,11 @@ function bindChat() {
       });
     } catch {
       clearSlowStatusTimer();
-      appendChatMessage("助手", "刚刚没发出去，换个说法再试试。");
+      if (thinkingPlaceholder) {
+        replaceChatThinkingPlaceholder(thinkingPlaceholder, "刚刚没发出去，换个说法再试试。");
+      } else {
+        appendChatMessage("助手", "刚刚没发出去，换个说法再试试。");
+      }
       setChatStatus(getSubmissionProgressMessage("chat", "error"), "error");
       setHint("聊天接口这会儿没接上，先看看本地后端是不是开着。", "error");
     } finally {
@@ -2044,7 +3465,7 @@ function bindSettings() {
       scheduler: {
         enabled: document.getElementById("cfgSchedulerEnabled")?.checked ?? true,
         discovery_cron: getVal("cfgDiscoveryCron"),
-        pool_target_count: parseInt(getVal("cfgPoolTarget"), 10) || 300,
+        pool_target_count: parseInt(getVal("cfgPoolTarget"), 10) || 600,
         auto_update_enabled: document.getElementById("cfgAutoUpdate")?.checked ?? true,
       },
       logging: {
@@ -2091,13 +3512,16 @@ function bindSettings() {
 }
 
 async function initializePopup() {
-  const requestedTab = new URLSearchParams(window.location.search).get("tab");
+  const params = new URLSearchParams(window.location.search);
+  const requestedTab = params.get("tab");
+  state.delightHighlightBvid = params.get("delight")?.trim() || "";
   bindTabs();
   bindProfileHistoryLoading();
   bindRefreshButton();
   bindActivityToggle();
   bindChat();
   bindSettings();
+  bindMessages();
   setActiveTab(
     requestedTab === "profile" || requestedTab === "chat" || requestedTab === "recommend"
       ? requestedTab
@@ -2105,6 +3529,11 @@ async function initializePopup() {
   );
   setHint("先看看本地后端连上没。");
   await initializeRecommendations();
+  // Always fetch profile-summary on startup so the messages inbox is
+  // populated regardless of which tab the user lands on.  Without this
+  // the inbox stays empty until the user manually opens the profile
+  // tab (the place where loadProfileSummary historically fired).
+  void loadProfileSummary();
   connectRuntimeStream();
 }
 

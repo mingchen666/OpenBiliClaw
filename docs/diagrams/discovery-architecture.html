@@ -111,10 +111,43 @@
   <text x="752" y="88" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">Explore</text>
 
   <!-- ── External: Bilibili API ── -->
-  <rect x="880" y="30" width="240" height="70" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="2"/>
-  <text x="1000" y="55" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">Bilibili API</text>
-  <text x="1000" y="73" text-anchor="middle" fill="#8b949e" font-size="10">search / ranking / related</text>
+  <rect x="880" y="30" width="110" height="70" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="2"/>
+  <text x="935" y="55" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600">Bilibili API</text>
+  <text x="935" y="73" text-anchor="middle" fill="#8b949e" font-size="9">search / ranking</text>
   <line x1="835" y1="70" x2="878" y2="60" stroke="#58a6ff" stroke-width="1" marker-end="url(#arrow)" stroke-dasharray="4,3"/>
+
+  <!-- ── External: XHS via Extension ── -->
+  <rect x="1000" y="30" width="120" height="70" rx="10" fill="#161b22" stroke="#da3633" stroke-width="2"/>
+  <text x="1060" y="50" text-anchor="middle" fill="#da3633" font-size="11" font-weight="600">XHS Extension</text>
+  <text x="1060" y="68" text-anchor="middle" fill="#8b949e" font-size="8">DOM 元数据提取</text>
+  <text x="1060" y="80" text-anchor="middle" fill="#8b949e" font-size="8">零后端爬取</text>
+
+  <!-- ══════════════════════════════════════════ -->
+  <!-- XHS Ingest Lane (parallel to Bilibili)    -->
+  <!-- ══════════════════════════════════════════ -->
+
+  <!-- XHS ingest box — right side, parallel path bypassing merge/rank -->
+  <rect x="940" y="150" width="180" height="170" rx="8" fill="#2a0d0d" stroke="#da3633" stroke-width="1.5"/>
+  <text x="1030" y="172" text-anchor="middle" fill="#da3633" font-size="12" font-weight="600">XHS 入池通道</text>
+  <text x="1030" y="188" text-anchor="middle" fill="#da3633" font-size="9">(源无关分类)</text>
+
+  <rect x="950" y="198" width="160" height="24" rx="4" fill="#161b22" stroke="#da3633" stroke-width="1"/>
+  <text x="1030" y="214" text-anchor="middle" fill="#da3633" font-size="9">_cache_xhs_notes()</text>
+
+  <rect x="950" y="230" width="160" height="24" rx="4" fill="#1a1208" stroke="#f0883e" stroke-width="1"/>
+  <text x="1030" y="246" text-anchor="middle" fill="#f0883e" font-size="9">classify_pool_backlog()</text>
+
+  <text x="1030" y="272" text-anchor="middle" fill="#8b949e" font-size="8">asyncio.create_task</text>
+  <text x="1030" y="284" text-anchor="middle" fill="#8b949e" font-size="8">Lock 防并发 LLM</text>
+  <text x="1030" y="300" text-anchor="middle" fill="#8b949e" font-size="8">→ style_key / topic_group</text>
+  <text x="1030" y="312" text-anchor="middle" fill="#8b949e" font-size="8">→ relevance_score</text>
+
+  <!-- Arrow from XHS Extension to XHS lane -->
+  <line x1="1060" y1="100" x2="1030" y2="148" stroke="#da3633" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Arrow from XHS lane directly to cache (bypassing merge/rank/compress) -->
+  <line x1="1030" y1="320" x2="700" y2="685" stroke="#da3633" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow)"/>
+  <text x="900" y="510" fill="#da3633" font-size="9" transform="rotate(-40 900 510)">直接入池 (跳过 merge/rank)</text>
 
   <!-- ══════════════════════════════════════════ -->
   <!-- 4 Strategy Detail Lanes                   -->
@@ -314,9 +347,11 @@
   <!-- Main loop                                  -->
   <!-- ══════════════════════════════════════════ -->
 
-  <rect x="20" y="20" width="240" height="55" rx="10" fill="#161b22" stroke="#bc8cff" stroke-width="2.5"/>
-  <text x="140" y="43" text-anchor="middle" fill="#bc8cff" font-size="14" font-weight="700">run_forever()</text>
-  <text x="140" y="62" text-anchor="middle" fill="#8b949e" font-size="10">while True: sleep(60s)</text>
+  <rect x="20" y="20" width="240" height="75" rx="10" fill="#161b22" stroke="#bc8cff" stroke-width="2.5"/>
+  <text x="140" y="40" text-anchor="middle" fill="#bc8cff" font-size="14" font-weight="700">run_forever()</text>
+  <text x="140" y="56" text-anchor="middle" fill="#8b949e" font-size="10">while True: sleep(60s)</text>
+  <text x="140" y="70" text-anchor="middle" fill="#8b949e" font-size="9">_tick_soul_pipeline()</text>
+  <text x="140" y="82" text-anchor="middle" fill="#da3633" font-size="9" font-weight="600">_tick_xhs_producer() (Soul-driven keywords)</text>
 
   <line x1="260" y1="47" x2="310" y2="47" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arr-s-purple)"/>
 
@@ -331,7 +366,7 @@
   <!-- ══════════════════════════════════════════ -->
 
   <polygon points="445,115 575,155 445,195 315,155" fill="#161b22" stroke="#da3633" stroke-width="2"/>
-  <text x="445" y="150" text-anchor="middle" fill="#da3633" font-size="12" font-weight="600">pool &lt; 300?</text>
+  <text x="445" y="150" text-anchor="middle" fill="#da3633" font-size="12" font-weight="600">pool &lt; 600?</text>
   <text x="445" y="168" text-anchor="middle" fill="#8b949e" font-size="9">count_pool_candidates()</text>
 
   <!-- ══════════════════════════════════════════ -->
@@ -362,7 +397,7 @@
   <rect x="180" y="325" width="130" height="28" rx="4" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
   <text x="245" y="343" text-anchor="middle" fill="#3fb950" font-size="10">explore: 4/15</text>
 
-  <text x="40" y="375" fill="#8b949e" font-size="9">例: pool=150 → 缺150</text>
+  <text x="40" y="375" fill="#8b949e" font-size="9">例: pool=300 → 缺300</text>
   <text x="40" y="390" fill="#8b949e" font-size="9">search+related 补 ~80, trending 补 ~40, explore 补 ~30</text>
   <text x="40" y="410" fill="#da3633" font-size="9" font-weight="600">每策略上限: min(缺口, 60)</text>
 
@@ -525,7 +560,7 @@
   <text x="845" y="537" fill="#bc8cff" font-size="10">check_interval</text>
   <text x="1000" y="537" fill="#8b949e" font-size="10">60s</text>
   <text x="845" y="557" fill="#da3633" font-size="10">pool_target_count</text>
-  <text x="1000" y="557" fill="#8b949e" font-size="10">300</text>
+  <text x="1000" y="557" fill="#8b949e" font-size="10">600</text>
   <text x="845" y="577" fill="#58a6ff" font-size="10">signal_event_threshold</text>
   <text x="1000" y="577" fill="#8b949e" font-size="10">6 events</text>
   <text x="845" y="597" fill="#f0883e" font-size="10">trending_refresh_hours</text>
@@ -782,10 +817,189 @@
   <line x1="860" y1="60" x2="775" y2="100" stroke="#f0883e" stroke-width="1" stroke-dasharray="4,3"/>
 
   <!-- Bilibili (bottom right) -->
-  <rect x="860" y="290" width="200" height="60" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="2"/>
-  <text x="960" y="315" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">Bilibili API</text>
-  <text x="960" y="333" text-anchor="middle" fill="#8b949e" font-size="9">/ MockBilibiliClient</text>
-  <line x1="860" y1="310" x2="775" y2="280" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4,3"/>
+  <rect x="860" y="240" width="200" height="55" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="2"/>
+  <text x="960" y="263" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">Bilibili API</text>
+  <text x="960" y="283" text-anchor="middle" fill="#8b949e" font-size="9">/ MockBilibiliClient</text>
+  <line x1="860" y1="268" x2="775" y2="240" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <!-- XHS via Extension (bottom right) -->
+  <rect x="860" y="310" width="200" height="65" rx="10" fill="#161b22" stroke="#da3633" stroke-width="2"/>
+  <text x="960" y="330" text-anchor="middle" fill="#da3633" font-size="13" font-weight="600">XHS Extension</text>
+  <text x="960" y="345" text-anchor="middle" fill="#8b949e" font-size="9">DOM 提取 → API → content_cache</text>
+  <text x="960" y="360" text-anchor="middle" fill="#8b949e" font-size="9">classify_pool_backlog() 源无关分类</text>
+  <line x1="860" y1="335" x2="775" y2="300" stroke="#da3633" stroke-width="1" stroke-dasharray="4,3"/>
+</svg>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- SECTION 5: XHS Safe Discovery Architecture (NEW)              -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="diagram-section">
+<div class="section-title">5. 小红书安全发现架构 &mdash; 三层被动-主动-订阅模型</div>
+
+<svg width="1140" height="720" viewBox="0 0 1140 720">
+  <defs>
+    <marker id="axhs" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#484f58"/>
+    </marker>
+    <marker id="axhs-red" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#da3633"/>
+    </marker>
+    <marker id="axhs-green" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3fb950"/>
+    </marker>
+    <marker id="axhs-blue" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#58a6ff"/>
+    </marker>
+    <marker id="axhs-orange" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#f0883e"/>
+    </marker>
+  </defs>
+
+  <!-- ══════════════════════════════════════════ -->
+  <!-- User's Browser (left column)              -->
+  <!-- ══════════════════════════════════════════ -->
+
+  <rect x="20" y="20" width="420" height="680" rx="12" fill="#0d2818" stroke="#3fb950" stroke-width="2"/>
+  <text x="230" y="48" text-anchor="middle" fill="#3fb950" font-size="16" font-weight="700">用户真实浏览器 (Chrome Extension)</text>
+  <text x="230" y="68" text-anchor="middle" fill="#8b949e" font-size="10">真实登录态 · 真实 Cookie · 不自动滚动</text>
+
+  <!-- Layer 1: Passive -->
+  <rect x="40" y="90" width="380" height="140" rx="8" fill="#161b22" stroke="#58a6ff" stroke-width="2"/>
+  <text x="230" y="112" text-anchor="middle" fill="#58a6ff" font-size="14" font-weight="700">Layer 1: 被动收集 (Passive)</text>
+  <text x="230" y="132" text-anchor="middle" fill="#8b949e" font-size="10">用户自然浏览 → 提取视口内笔记 URL</text>
+
+  <rect x="55" y="145" width="175" height="28" rx="4" fill="#161b22" stroke="#484f58" stroke-width="1"/>
+  <text x="142" y="163" text-anchor="middle" fill="#c9d1d9" font-size="9">collectVisibleNoteUrls()</text>
+
+  <rect x="240" y="145" width="165" height="28" rx="4" fill="#161b22" stroke="#484f58" stroke-width="1"/>
+  <text x="322" y="163" text-anchor="middle" fill="#c9d1d9" font-size="9">dedupeObservedUrls()</text>
+
+  <text x="230" y="195" text-anchor="middle" fill="#8b949e" font-size="9">scroll-stop debounce 500ms · 保留 xsec_token · 每批 ≤20 URL</text>
+  <text x="230" y="210" text-anchor="middle" fill="#da3633" font-size="9" font-weight="600">⚠ 严格不自动滚动 — 只读用户已经浏览的卡片</text>
+
+  <!-- Layer 2: Active Search -->
+  <rect x="40" y="250" width="380" height="170" rx="8" fill="#161b22" stroke="#f0883e" stroke-width="2"/>
+  <text x="230" y="272" text-anchor="middle" fill="#f0883e" font-size="14" font-weight="700">Layer 2: 主动搜索 (Task Dispatcher)</text>
+  <text x="230" y="292" text-anchor="middle" fill="#8b949e" font-size="10">后台标签页 · chrome.tabs.create({active:false})</text>
+
+  <rect x="55" y="305" width="350" height="28" rx="4" fill="#161b22" stroke="#484f58" stroke-width="1"/>
+  <text x="230" y="323" text-anchor="middle" fill="#c9d1d9" font-size="9">GET /api/sources/xhs/next-task → 打开后台标签 → 30s 超时</text>
+
+  <rect x="55" y="340" width="175" height="28" rx="4" fill="#161b22" stroke="#484f58" stroke-width="1"/>
+  <text x="142" y="358" text-anchor="middle" fill="#c9d1d9" font-size="9">MutationObserver 5s</text>
+
+  <rect x="240" y="340" width="165" height="28" rx="4" fill="#161b22" stroke="#484f58" stroke-width="1"/>
+  <text x="322" y="358" text-anchor="middle" fill="#c9d1d9" font-size="9">extractURLs (≤20)</text>
+
+  <text x="230" y="392" text-anchor="middle" fill="#8b949e" font-size="9">互斥锁 (单任务飞行) · task_interval_seconds = 45</text>
+  <text x="230" y="407" text-anchor="middle" fill="#da3633" font-size="9" font-weight="600">⚠ 无滚动执行器 — 只读初始视口渲染内容</text>
+
+  <!-- Layer 3: Creator Subscription -->
+  <rect x="40" y="440" width="380" height="100" rx="8" fill="#161b22" stroke="#bc8cff" stroke-width="2"/>
+  <text x="230" y="462" text-anchor="middle" fill="#bc8cff" font-size="14" font-weight="700">Layer 3: 创作者订阅</text>
+  <text x="230" y="482" text-anchor="middle" fill="#8b949e" font-size="10">后台打开创作者主页 → 抓取最新笔记 URL</text>
+
+  <rect x="55" y="495" width="350" height="28" rx="4" fill="#161b22" stroke="#484f58" stroke-width="1"/>
+  <text x="230" y="513" text-anchor="middle" fill="#c9d1d9" font-size="9">xhs_creator_subscriptions → due_for_fetch(24h) → 入队创作者任务</text>
+
+  <!-- Data flow arrows to backend -->
+  <text x="230" y="575" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="600">所有 URL 汇聚</text>
+
+  <line x1="230" y1="585" x2="230" y2="620" stroke="#3fb950" stroke-width="2" marker-end="url(#axhs-green)"/>
+
+  <rect x="55" y="625" width="350" height="40" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="230" y="643" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">POST /api/sources/xhs/observed-urls</text>
+  <text x="230" y="658" text-anchor="middle" fill="#8b949e" font-size="9">→ xhs_observed_urls 表 → 排队富化</text>
+
+  <!-- ══════════════════════════════════════════ -->
+  <!-- Backend (right column)                    -->
+  <!-- ══════════════════════════════════════════ -->
+
+  <rect x="480" y="20" width="640" height="680" rx="12" fill="#161b22" stroke="#bc8cff" stroke-width="2"/>
+  <text x="800" y="48" text-anchor="middle" fill="#bc8cff" font-size="16" font-weight="700">后端 (OpenBiliClaw Backend)</text>
+
+  <!-- Task Queue -->
+  <rect x="500" y="80" width="280" height="120" rx="8" fill="#1c1536" stroke="#bc8cff" stroke-width="1.5"/>
+  <text x="640" y="103" text-anchor="middle" fill="#bc8cff" font-size="13" font-weight="600">XhsTaskQueue</text>
+  <line x1="515" y1="113" x2="765" y2="113" stroke="#30363d" stroke-width="1"/>
+  <text x="640" y="133" text-anchor="middle" fill="#c9d1d9" font-size="9">xhs_tasks 表 (pending → completed/failed)</text>
+  <text x="640" y="150" text-anchor="middle" fill="#c9d1d9" font-size="9">daily_search_budget = 20</text>
+  <text x="640" y="167" text-anchor="middle" fill="#c9d1d9" font-size="9">daily_creator_budget = 10</text>
+  <text x="640" y="184" text-anchor="middle" fill="#8b949e" font-size="9">GET /next-task · POST /task-result</text>
+
+  <!-- XHS Adapter (stub) + Extension DOM extraction -->
+  <rect x="500" y="220" width="280" height="100" rx="8" fill="#161b22" stroke="#da3633" stroke-width="2"/>
+  <text x="640" y="243" text-anchor="middle" fill="#da3633" font-size="13" font-weight="600">XiaohongshuAdapter (stub)</text>
+  <line x1="515" y1="253" x2="765" y2="253" stroke="#30363d" stroke-width="1"/>
+  <text x="640" y="270" text-anchor="middle" fill="#c9d1d9" font-size="9">fetch() = no-op — 内容通过 API 入池</text>
+  <text x="640" y="287" text-anchor="middle" fill="#c9d1d9" font-size="9">注册占位：registry.has("xiaohongshu") = true</text>
+  <text x="640" y="304" text-anchor="middle" fill="#8b949e" font-size="9">真正的数据路径：扩展 DOM → API → content_cache</text>
+
+  <!-- Extension DOM extraction (replaces sidecar) -->
+  <rect x="820" y="220" width="280" height="100" rx="8" fill="#0d2818" stroke="#3fb950" stroke-width="2.5"/>
+  <text x="960" y="243" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="700">扩展 DOM 元数据提取</text>
+  <line x1="835" y1="253" x2="1085" y2="253" stroke="#30363d" stroke-width="1"/>
+  <text x="960" y="270" text-anchor="middle" fill="#c9d1d9" font-size="9">extractNoteMetadataFromAnchor()</text>
+  <text x="960" y="287" text-anchor="middle" fill="#c9d1d9" font-size="9">title / author / cover_url 从卡片 DOM 提取</text>
+  <text x="960" y="304" text-anchor="middle" fill="#8b949e" font-size="9">零额外请求 · 零后端爬取 · 零风控风险</text>
+
+  <line x1="780" y1="270" x2="818" y2="270" stroke="#3fb950" stroke-width="2" marker-end="url(#axhs-green)"/>
+  <text x="800" y="263" fill="#3fb950" font-size="8">DOM</text>
+
+  <!-- Content Cache (pool) -->
+  <rect x="500" y="350" width="280" height="60" rx="8" fill="#1a1a24" stroke="#8b949e" stroke-width="2"/>
+  <text x="640" y="375" text-anchor="middle" fill="#8b949e" font-size="13" font-weight="600">content_cache (Pool)</text>
+  <text x="640" y="395" text-anchor="middle" fill="#6e7681" font-size="9">source_platform = "xiaohongshu" | "bilibili"</text>
+
+  <line x1="640" y1="320" x2="640" y2="348" stroke="#484f58" stroke-width="1.5" marker-end="url(#axhs)"/>
+
+  <!-- Bilibili Adapter (parallel) -->
+  <rect x="820" y="80" width="280" height="110" rx="8" fill="#161b22" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="960" y="103" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="600">BilibiliAdapter</text>
+  <line x1="835" y1="113" x2="1085" y2="113" stroke="#30363d" stroke-width="1"/>
+  <text x="960" y="133" text-anchor="middle" fill="#c9d1d9" font-size="9">search / trending / related / explore</text>
+  <text x="960" y="150" text-anchor="middle" fill="#c9d1d9" font-size="9">wraps DiscoveryStrategy → SourceAdapter</text>
+  <text x="960" y="167" text-anchor="middle" fill="#8b949e" font-size="9">Bilibili API (WBI sign / SESSDATA)</text>
+
+  <line x1="960" y1="190" x2="640" y2="348" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#axhs)"/>
+
+  <!-- AdapterRegistry -->
+  <rect x="500" y="430" width="600" height="55" rx="8" fill="#1c1536" stroke="#bc8cff" stroke-width="1.5"/>
+  <text x="800" y="453" text-anchor="middle" fill="#bc8cff" font-size="12" font-weight="600">AdapterRegistry + SourceAdapter Protocol</text>
+  <text x="800" y="473" text-anchor="middle" fill="#8b949e" font-size="9">register_adapter(bilibili) · register_adapter(xiaohongshu) → source_type dispatch</text>
+
+  <!-- Flow from extension to backend -->
+  <line x1="440" y1="645" x2="498" y2="370" stroke="#3fb950" stroke-width="2" marker-end="url(#axhs-green)"/>
+
+  <!-- Config -->
+  <rect x="500" y="510" width="280" height="100" rx="8" fill="#161b22" stroke="#484f58" stroke-width="1"/>
+  <text x="640" y="533" text-anchor="middle" fill="#c9d1d9" font-size="12" font-weight="600">[sources.xiaohongshu] 配置</text>
+  <line x1="515" y1="543" x2="765" y2="543" stroke="#30363d" stroke-width="1"/>
+  <text x="640" y="563" text-anchor="middle" fill="#8b949e" font-size="9">(无 sidecar — 扩展直接提取元数据)</text>
+  <text x="640" y="578" text-anchor="middle" fill="#8b949e" font-size="9">daily_search_budget = 20 · daily_creator_budget = 10</text>
+  <text x="640" y="593" text-anchor="middle" fill="#8b949e" font-size="9">task_interval_seconds = 45</text>
+
+  <!-- Safety summary -->
+  <rect x="820" y="510" width="280" height="100" rx="8" fill="#2a0d0d" stroke="#da3633" stroke-width="1.5"/>
+  <text x="960" y="533" text-anchor="middle" fill="#da3633" font-size="12" font-weight="700">安全设计总结</text>
+  <line x1="835" y1="543" x2="1085" y2="543" stroke="#30363d" stroke-width="1"/>
+  <text x="960" y="560" text-anchor="middle" fill="#c9d1d9" font-size="9">✓ 后端不搜索/不爬取 xhs</text>
+  <text x="960" y="575" text-anchor="middle" fill="#c9d1d9" font-size="9">✓ 所有发现在用户真实浏览器中完成</text>
+  <text x="960" y="590" text-anchor="middle" fill="#c9d1d9" font-size="9">✓ 扩展直接从 DOM 提取元数据（零额外请求）</text>
+  <text x="960" y="605" text-anchor="middle" fill="#c9d1d9" font-size="9">✓ 严禁自动滚动 · 每日预算限制</text>
+
+  <!-- Bottom summary stats -->
+  <rect x="500" y="630" width="600" height="50" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+  <text x="530" y="652" fill="#3fb950" font-size="11" font-weight="600">扩展测试:</text>
+  <text x="610" y="652" fill="#8b949e" font-size="10">107 passed (passive + dispatcher + executor)</text>
+  <text x="530" y="670" fill="#bc8cff" font-size="11" font-weight="600">后端测试:</text>
+  <text x="610" y="670" fill="#8b949e" font-size="10">797 passed (adapter + API + tasks + config)</text>
 </svg>
 </div>
 

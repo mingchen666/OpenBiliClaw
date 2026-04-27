@@ -5,11 +5,13 @@ import {
   buildExtensionUiUrl,
   buildChromeNotificationOptions,
   buildCognitionNotificationId,
+  buildDelightNotificationId,
   buildNotificationId,
   buildProfileNotificationUrl,
   openExtensionUi,
   parseNotificationBvid,
   parseCognitionUpdateId,
+  parseDelightBvid,
 } from "../src/background/notifications.ts";
 
 test("buildNotificationId and parseNotificationBvid round trip bvid", () => {
@@ -26,6 +28,14 @@ test("buildCognitionNotificationId and parseCognitionUpdateId round trip update 
   assert.equal(notificationId, "openbiliclaw-cognition:cog-1");
   assert.equal(parseCognitionUpdateId(notificationId), "cog-1");
   assert.equal(parseCognitionUpdateId("other"), "");
+});
+
+test("buildDelightNotificationId and parseDelightBvid round trip bvid", () => {
+  const notificationId = buildDelightNotificationId("BV1SURPRISE");
+
+  assert.equal(notificationId, "openbiliclaw-delight:BV1SURPRISE");
+  assert.equal(parseDelightBvid(notificationId), "BV1SURPRISE");
+  assert.equal(parseDelightBvid("other"), "");
 });
 
 test("buildChromeNotificationOptions fills stable fallback copy", () => {
@@ -65,6 +75,13 @@ test("buildExtensionUiUrl opens recommend tab by default", () => {
   assert.equal(
     buildExtensionUiUrl(),
     "chrome-extension://__EXTENSION_ID__/popup/popup.html?tab=recommend",
+  );
+});
+
+test("buildExtensionUiUrl carries delight deep-link params", () => {
+  assert.equal(
+    buildExtensionUiUrl("recommend", { delightBvid: "BV1SURPRISE" }),
+    "chrome-extension://__EXTENSION_ID__/popup/popup.html?tab=recommend&delight=BV1SURPRISE",
   );
 });
 
@@ -122,6 +139,37 @@ test("openExtensionUi falls back to extension tab when sidePanel is unavailable"
     {
       type: "tab",
       value: { url: "chrome-extension://__EXTENSION_ID__/popup/popup.html?tab=chat" },
+    },
+  ]);
+});
+
+test("openExtensionUi forwards delight deep-link to the popup url", async () => {
+  const calls: Array<{ type: string; value: unknown }> = [];
+  const chromeLike = {
+    runtime: {
+      getURL(path: string) {
+        return `chrome-extension://__EXTENSION_ID__/${path}`;
+      },
+    },
+    tabs: {
+      async create(options: { url: string }) {
+        calls.push({ type: "tab", value: options });
+      },
+    },
+  };
+
+  const result = await openExtensionUi(chromeLike, {
+    tab: "recommend",
+    delightBvid: "BV1SURPRISE",
+  });
+
+  assert.equal(result, "tab");
+  assert.deepEqual(calls, [
+    {
+      type: "tab",
+      value: {
+        url: "chrome-extension://__EXTENSION_ID__/popup/popup.html?tab=recommend&delight=BV1SURPRISE",
+      },
     },
   ]);
 });

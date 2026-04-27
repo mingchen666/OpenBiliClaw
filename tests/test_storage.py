@@ -208,6 +208,287 @@ class TestDatabase:
 
             db.close()
 
+    def test_trim_topic_group_overflow_suppresses_cross_source_excess(self) -> None:
+        """A hot topic_group accumulated from multiple sources gets capped down
+        to max_per_group, keeping the highest-scored items regardless of
+        source."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            # 5 items in 人工智能 group across 3 sources, varying scores
+            for i, (score, source) in enumerate(
+                [
+                    (0.95, "related_chain"),
+                    (0.92, "related_chain"),
+                    (0.88, "search"),
+                    (0.85, "explore"),
+                    (0.80, "related_chain"),
+                ]
+            ):
+                db.cache_content(
+                    f"BV1AI{i}",
+                    title=f"AI 内容 {i}",
+                    up_name="UP",
+                    source=source,
+                    topic_key="人工智能",
+                    topic_group="人工智能",
+                    relevance_score=score,
+                )
+            # 1 item in a different group — must remain untouched
+            db.cache_content(
+                "BV1MUSIC",
+                title="古典音乐讲解",
+                up_name="UP",
+                source="trending",
+                topic_key="音乐",
+                topic_group="音乐",
+                relevance_score=0.7,
+            )
+            # 1 item with empty topic_group — must remain untouched
+            db.cache_content(
+                "BV1NOGROUP",
+                title="未分组",
+                up_name="UP",
+                source="search",
+                topic_key="random",
+                topic_group="",
+                relevance_score=0.6,
+            )
+
+            suppressed = db.trim_topic_group_overflow(max_per_group=2)
+
+            assert suppressed == 3  # 5 AI items - 2 kept = 3 suppressed
+            rows = db.get_cached_content(limit=20)
+            by_bvid = {row["bvid"]: row for row in rows}
+            # Top 2 AI items by score survive (cross-source)
+            assert by_bvid["BV1AI0"]["pool_status"] == "fresh"
+            assert by_bvid["BV1AI1"]["pool_status"] == "fresh"
+            assert by_bvid["BV1AI2"]["pool_status"] == "suppressed"
+            assert by_bvid["BV1AI3"]["pool_status"] == "suppressed"
+            assert by_bvid["BV1AI4"]["pool_status"] == "suppressed"
+            # Unrelated topic + empty-group items untouched
+            assert by_bvid["BV1MUSIC"]["pool_status"] == "fresh"
+            assert by_bvid["BV1NOGROUP"]["pool_status"] == "fresh"
+
+            db.close()
+
+    def test_trim_topic_group_overflow_noop_when_under_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            for i in range(3):
+                db.cache_content(
+                    f"BV1X{i}",
+                    title=f"AI {i}",
+                    up_name="UP",
+                    source="search",
+                    topic_group="人工智能",
+                    relevance_score=0.8,
+                )
+
+            suppressed = db.trim_topic_group_overflow(max_per_group=5)
+            assert suppressed == 0
+            db.close()
+
+    def test_cache_content_refreshes_previously_suppressed_items(self) -> None:
+        """Re-discovering a 'suppressed' item must flip pool_status back to
+        'fresh'. Suppression is an internal diversity decision (trim cuts,
+        topic cap); when the discovery layer re-finds the item it deserves
+        another shot. Without this, slow-churning sources like B站 trending
+        get bottlenecked because hot BVIDs cached as 'suppressed' never
+        recover. 'shown' / 'feedbacked' / 'purged_by_dislike' must NOT
+        re-fresh — those reflect user-facing state."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            # Seed three items, then force them into different terminal states.
+            for status in ("suppressed", "shown", "purged_by_dislike"):
+                bvid = f"BV1{status}"
+                db.cache_content(
+                    bvid,
+                    title=f"item {status}",
+                    up_name="UP",
+                    source="trending",
+                    relevance_score=0.7,
+                )
+                db._execute_write(
+                    "UPDATE content_cache SET pool_status = ? WHERE bvid = ?",
+                    (status, bvid),
+                )
+
+            # Re-discover all three (simulates trending re-fetching same BVIDs)
+            for status in ("suppressed", "shown", "purged_by_dislike"):
+                db.cache_content(
+                    f"BV1{status}",
+                    title=f"item {status}",
+                    up_name="UP",
+                    source="trending",
+                    relevance_score=0.8,
+                )
+
+            rows = db.get_cached_content(limit=10)
+            by_bvid = {row["bvid"]: row for row in rows}
+            # Suppressed re-fresh ✓
+            assert by_bvid["BV1suppressed"]["pool_status"] == "fresh"
+            # Shown stays shown (user already saw)
+            assert by_bvid["BV1shown"]["pool_status"] == "shown"
+            # Disliked stays purged
+            assert by_bvid["BV1purged_by_dislike"]["pool_status"] == "purged_by_dislike"
+            db.close()
+
+    def test_trim_pool_share_quotas_protect_under_target_sources(self) -> None:
+        """When trim is given source_share_quotas, items from over-quota
+        sources get suppressed first — even if they have higher scores
+        than items from under-quota sources. This prevents trending /
+        explore from being systematically axed when search /
+        related_chain overflow."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            # Search has 5 items at score 0.95 (high), trending has 3 at 0.60 (low).
+            # Total = 8, target = 6, so 2 must be suppressed.
+            # Without share quotas: all trending items get axed (lowest score).
+            # With quota search=2: 3 of search's 5 are over-quota → those go first,
+            # protecting trending entirely.
+            for i in range(5):
+                db.cache_content(
+                    f"BVS{i}",
+                    title=f"S{i}",
+                    up_name="UP",
+                    source="search",
+                    relevance_score=0.95,
+                )
+            for i in range(3):
+                db.cache_content(
+                    f"BVT{i}",
+                    title=f"T{i}",
+                    up_name="UP",
+                    source="trending",
+                    relevance_score=0.60,
+                )
+
+            suppressed = db.trim_pool_to_target_count(
+                target=6,
+                source_share_quotas={"search": 2, "trending": 4},
+            )
+            assert suppressed == 2
+
+            rows = db.get_cached_content(limit=20)
+            by_bvid = {row["bvid"]: row for row in rows}
+            # All trending kept (under quota of 4) — this is the protection.
+            # Without share quotas, trending (low score) would get axed first.
+            assert all(by_bvid[f"BVT{i}"]["pool_status"] == "fresh" for i in range(3))
+            # Search lost the bottom 2 (suppressed), kept top 3: 2 within quota
+            # + 1 backfill from over-quota since target=6 had remaining slot.
+            search_fresh = [
+                bvid for bvid in (f"BVS{i}" for i in range(5))
+                if by_bvid[bvid]["pool_status"] == "fresh"
+            ]
+            assert len(search_fresh) == 3
+            assert by_bvid["BVS3"]["pool_status"] == "suppressed"
+            assert by_bvid["BVS4"]["pool_status"] == "suppressed"
+            db.close()
+
+    def test_trim_pool_legacy_score_only_when_no_quotas(self) -> None:
+        """Without source_share_quotas, the trim must keep its old score-first
+        behavior — that's the path used by callers that don't care about
+        per-source diversity."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            for i in range(5):
+                db.cache_content(
+                    f"BVHIGH{i}",
+                    title=f"H{i}",
+                    up_name="UP",
+                    source="search",
+                    relevance_score=0.95,
+                )
+            for i in range(3):
+                db.cache_content(
+                    f"BVLOW{i}",
+                    title=f"L{i}",
+                    up_name="UP",
+                    source="trending",
+                    relevance_score=0.30,
+                )
+
+            suppressed = db.trim_pool_to_target_count(target=5)
+            assert suppressed == 3
+
+            rows = db.get_cached_content(limit=20)
+            by_bvid = {row["bvid"]: row for row in rows}
+            # All low-score trending suppressed, all high-score search kept
+            assert all(by_bvid[f"BVHIGH{i}"]["pool_status"] == "fresh" for i in range(5))
+            assert all(by_bvid[f"BVLOW{i}"]["pool_status"] == "suppressed" for i in range(3))
+            db.close()
+
+    def test_trim_pool_protects_under_quota_source_when_untracked_sources_present(
+        self,
+    ) -> None:
+        """The bug this prevents: untracked sources (e.g. xhs) eat pool slots,
+        pushing total > target. The trim must suppress untracked items before
+        cutting under-quota tracked sources (trending). Without this guard,
+        sum(in_quota) > target leads to score-based cuts that hit trending
+        first because trending scores are systematically lower."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            # search at quota (5/5), trending under quota (2 of 4), xhs (4 untracked).
+            # Total = 11, target = 8, so 3 must go.
+            # Bug-prone behavior: trending scores are 0.5 (low), so naïve
+            # trim would axe both trending items.
+            # Correct behavior: untracked xhs items get cut first.
+            for i in range(5):
+                db.cache_content(
+                    f"BVS{i}",
+                    title=f"S{i}",
+                    up_name="UP",
+                    source="search",
+                    relevance_score=0.95,
+                )
+            for i in range(2):
+                db.cache_content(
+                    f"BVT{i}",
+                    title=f"T{i}",
+                    up_name="UP",
+                    source="trending",
+                    relevance_score=0.50,
+                )
+            for i in range(4):
+                db.cache_content(
+                    f"BVX{i}",
+                    title=f"X{i}",
+                    up_name="UP",
+                    source="xhs-extension-task",
+                    relevance_score=0.70,
+                )
+
+            suppressed = db.trim_pool_to_target_count(
+                target=8,
+                source_share_quotas={"search": 5, "trending": 4},
+            )
+            assert suppressed == 3
+
+            rows = db.get_cached_content(limit=20)
+            by_bvid = {row["bvid"]: row for row in rows}
+            # Trending fully protected (under quota, no items lost)
+            assert all(by_bvid[f"BVT{i}"]["pool_status"] == "fresh" for i in range(2))
+            # Search fully protected (at quota, no over-quota items)
+            assert all(by_bvid[f"BVS{i}"]["pool_status"] == "fresh" for i in range(5))
+            # 3 of the 4 xhs items suppressed (lowest score among negotiable)
+            xhs_fresh = sum(
+                1 for i in range(4) if by_bvid[f"BVX{i}"]["pool_status"] == "fresh"
+            )
+            assert xhs_fresh == 1
+            db.close()
+
     def test_purge_pool_by_disliked_topics_matches_topic_key_exact(self) -> None:
         """An exact topic_key match should flip pool_status to purged_by_dislike."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -707,46 +988,60 @@ class TestDatabase:
 
             db.close()
 
-    def test_get_pool_candidates_balances_sources_in_candidate_window(self) -> None:
+    def test_get_pool_candidates_balances_topics_in_candidate_window(self) -> None:
+        """Candidate window is balanced by topic_group, not source.
+
+        Without rebalancing, a single dominant topic at the relevance head
+        would crowd out the rest. The pool sampler bucket-sorts by
+        ``topic_group`` (with ``topic_key`` fallback) and round-robins so
+        that no single topic monopolises the candidate window.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "test.db")
             db.initialize()
 
             for index in range(5):
                 db.cache_content(
-                    f"BVEXP{index}",
-                    title=f"探索候选 {index}",
-                    up_name="探索频道",
-                    source="explore",
+                    f"BVAI{index}",
+                    title=f"AI 候选 {index}",
+                    up_name="科技频道",
+                    source="search",
+                    topic_group="人工智能",
                     relevance_score=0.99 - index * 0.01,
                 )
             db.cache_content(
-                "BVSEARCH",
-                title="搜索候选",
-                up_name="搜索频道",
-                source="search",
+                "BVGAME",
+                title="游戏候选",
+                up_name="游戏频道",
+                source="trending",
+                topic_group="自走棋",
                 relevance_score=0.8,
             )
             db.cache_content(
-                "BVTREND",
-                title="热榜候选",
-                up_name="热榜频道",
-                source="trending",
+                "BVDOC",
+                title="纪录片候选",
+                up_name="纪录片频道",
+                source="explore",
+                topic_group="纪录片",
                 relevance_score=0.79,
             )
             db.cache_content(
-                "BVREL",
-                title="相关推荐候选",
-                up_name="相关频道",
+                "BVHIST",
+                title="历史候选",
+                up_name="历史频道",
                 source="related_chain",
+                topic_group="人文历史",
                 relevance_score=0.78,
             )
 
             items = db.get_pool_candidates(limit=6)
-            sources = [item["source"] for item in items]
+            topics = [item.get("topic_group", "") for item in items]
 
-            assert sources[:4] == ["search", "trending", "related_chain", "explore"]
-            assert sources.count("explore") == 3
+            # Top 4 slots cover all four distinct topic groups
+            assert set(topics[:4]) == {"人工智能", "自走棋", "纪录片", "人文历史"}
+            # AI cluster cannot monopolise — at most 3 of 6 even though it
+            # owns 5 of 9 source rows by raw relevance
+            assert topics.count("人工智能") == 3
 
             db.close()
 
@@ -769,6 +1064,159 @@ class TestDatabase:
             assert rows[0]["bvid"] == "BV1REC"
             assert rows[0]["confidence"] == 0.83
             assert rows[0]["presented"] == 0
+
+            db.close()
+
+    def test_get_recommendations_joins_multi_source_fields(self) -> None:
+        """Regression: get_recommendations must surface content_cache's
+        ``content_url``/``source_platform``/``content_id`` so xhs items
+        don't get rebuilt as bilibili URLs by the popup fallback.
+
+        Previous SELECT only joined title/up_name/cover_url, so every row
+        came back with ``source_platform=""`` (API defaulted to "bilibili")
+        and ``content_url=""`` (popup fell back to
+        ``https://www.bilibili.com/video/<note_id>``), producing broken
+        links that mixed xhs content into the bilibili namespace.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            note_id = "6548fd56000000001e0223b1"
+            tokenized_url = (
+                f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token=ABC="
+            )
+            db.cache_content(
+                bvid=note_id,
+                title="咒术回战复盘",
+                up_name="某老师",
+                cover_url="https://example.com/cover.jpg",
+                source="xhs-extension-search",
+                content_id=note_id,
+                content_url=tokenized_url,
+                source_platform="xiaohongshu",
+                author_name="某老师",
+            )
+            db.insert_recommendation(
+                note_id,
+                confidence=0.9,
+                expression="",
+                topic="",
+                presented=0,
+            )
+
+            rows = db.get_recommendations(limit=10)
+            assert len(rows) == 1
+            row = rows[0]
+            assert row["source_platform"] == "xiaohongshu"
+            assert row["content_url"] == tokenized_url
+            assert row["content_id"] == note_id
+
+            db.close()
+
+    def test_get_recommendations_filters_bare_xhs_rows(self) -> None:
+        """Regression: xhs rows without ``xsec_token`` in ``content_url``
+        must not be surfaced to the UI — clicking them hits xhs's 300031
+        login wall. Bilibili rows and tokenized xhs rows pass through.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            bare_id = "69ccda220000000021005a9b"
+            tokenized_id = "69d26d2e0000000023006c95"
+            bilibili_id = "BV1Xx411c7mD"
+
+            db.cache_content(
+                bvid=bare_id,
+                title="裸 xhs",
+                up_name="a",
+                cover_url="",
+                source="xhs-extension-task",
+                content_id=bare_id,
+                content_url=f"https://www.xiaohongshu.com/explore/{bare_id}",
+                source_platform="xiaohongshu",
+                author_name="a",
+            )
+            db.cache_content(
+                bvid=tokenized_id,
+                title="带 token xhs",
+                up_name="b",
+                cover_url="",
+                source="xhs-extension-task",
+                content_id=tokenized_id,
+                content_url=(
+                    f"https://www.xiaohongshu.com/explore/{tokenized_id}"
+                    "?xsec_token=XYZ="
+                ),
+                source_platform="xiaohongshu",
+                author_name="b",
+            )
+            db.cache_content(
+                bvid=bilibili_id,
+                title="b 站视频",
+                up_name="c",
+                cover_url="",
+                source="bilibili-search",
+                content_id=bilibili_id,
+                content_url=f"https://www.bilibili.com/video/{bilibili_id}",
+                source_platform="bilibili",
+                author_name="c",
+            )
+            for bv in (bare_id, tokenized_id, bilibili_id):
+                db.insert_recommendation(
+                    bv, confidence=0.5, expression="", topic="", presented=0,
+                )
+
+            rows = db.get_recommendations(limit=10)
+            bvids = {r["bvid"] for r in rows}
+            assert bare_id not in bvids
+            assert tokenized_id in bvids
+            assert bilibili_id in bvids
+
+            db.close()
+
+    def test_get_pool_candidates_filters_bare_xhs_rows(self) -> None:
+        """Regression: ranking pool must exclude bare xhs rows too, so the
+        engine never promotes them into recommendations in the first place.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            bare_id = "69ccda220000000021005a9b"
+            tokenized_id = "69d26d2e0000000023006c95"
+
+            db.cache_content(
+                bvid=bare_id,
+                title="bare",
+                up_name="",
+                cover_url="",
+                source="xhs-extension-task",
+                content_id=bare_id,
+                content_url=f"https://www.xiaohongshu.com/explore/{bare_id}",
+                source_platform="xiaohongshu",
+                author_name="",
+            )
+            db.cache_content(
+                bvid=tokenized_id,
+                title="tokenized",
+                up_name="",
+                cover_url="",
+                source="xhs-extension-task",
+                content_id=tokenized_id,
+                content_url=(
+                    f"https://www.xiaohongshu.com/explore/{tokenized_id}"
+                    "?xsec_token=XYZ="
+                ),
+                source_platform="xiaohongshu",
+                author_name="",
+            )
+
+            rows = db.get_pool_candidates(limit=10)
+            bvids = {r["bvid"] for r in rows}
+            assert bare_id not in bvids
+            assert tokenized_id in bvids
 
             db.close()
 

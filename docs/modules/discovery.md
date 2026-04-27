@@ -23,7 +23,24 @@
 - **SearchStrategy** — 基于画像生成搜索词并调用 B 站搜索的策略
 - **TrendingStrategy** — 从全站榜和相关分区榜中筛选高匹配热点内容
 - **RelatedChainStrategy** — 从近期高价值视频种子出发，沿相关推荐链扩展候选内容
-- **ExploreStrategy** — 推断“高相关的远域探索方向”，寻找更有陌生感但仍可解释的内容
+- **ExploreStrategy** — 推断"高相关的远域探索方向"，寻找更有陌生感但仍可解释的内容
+- **SourceAdapter 协议** — 多源适配层（`sources/`），在上述 4 个 B 站策略之外挂载非 B 站内容源（小红书、知乎、V2EX 等）
+
+## 多源适配层
+
+`sources/` 把"内容从哪里来"从"怎么挑"里彻底解耦。`ContentDiscoveryEngine` 通过 `register_adapter()` 挂载任意实现了 `SourceAdapter` 协议的源，每个源用一条 `SourceRecipe`（`source_type` + `strategy` + `config`）描述订阅，引擎在一轮 discovery 里并发驱动所有启用的 recipe。
+
+当前已实现的 adapter：
+
+- **BilibiliAdapter** — 把四大 B 站策略包装成 adapter 形态，对 recipe 的 `strategy` 字段分发到 `SearchStrategy` / `TrendingStrategy` / `RelatedChainStrategy` / `ExploreStrategy`。
+- **WebSourceAdapter / XiaohongshuAdapter** — 通用"浏览器 + LLM 抽取"通道。走 `BrowserManager` 拿页面 `(innerText, anchors)` 快照，用 LLM 从 innerText 提取标题 / 作者 / 摘要，再用 anchor 列表按标题模糊匹配回填 `content_url` / `content_id`。
+
+`BrowserManager` 有两个可替换后端，由 `[sources.browser].cdp_url` 决定：
+
+1. **CDP 后端（推荐）**：Playwright `connect_over_cdp` 连到你预先启动的 Chrome，复用真实登录 cookie。小红书这种反匿名严格的源只有这条路能稳定跑。
+2. **agent-browser 后端（回退）**：匿名访问，适合不要求登录的简单页面。
+
+启动步骤见 [`docs/modules/config.md` 的 `[sources.browser]`](./config.md#sourcesbrowser) 段落。
 
 ## 发现链路怎么工作
 

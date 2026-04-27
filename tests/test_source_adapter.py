@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 
 from openbiliclaw.discovery.engine import DiscoveredContent
 from openbiliclaw.sources.bilibili_adapter import BilibiliAdapter
 from openbiliclaw.sources.protocol import SourceAdapter, SourceRecipe
 from openbiliclaw.sources.registry import AdapterRegistry
-
 
 # ── Fake strategy for testing ───────────────────────────────────────
 

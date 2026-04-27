@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import sqlite3
-from dataclasses import dataclass, field
-from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -16,6 +14,9 @@ from openbiliclaw.recommendation.delight import (
     DelightWeights,
 )
 from openbiliclaw.storage.database import Database
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _make_candidate(**overrides: object) -> DiscoveredContent:
@@ -168,10 +169,10 @@ async def test_exploration_match_scales_with_openness(tmp_path: Path) -> None:
 
 def test_effective_threshold_raises_for_conservative_users(tmp_path: Path) -> None:
     database = _make_database(tmp_path)
-    scorer = DelightScorer(embedding_service=None, database=database, threshold=0.80)
+    scorer = DelightScorer(embedding_service=None, database=database, threshold=0.70)
 
-    assert scorer.effective_threshold(0.6) == 0.80
-    assert scorer.effective_threshold(0.2) == 0.90  # Conservative user
+    assert scorer.effective_threshold(0.6) == 0.70
+    assert scorer.effective_threshold(0.2) == 0.80  # Conservative user
 
 
 def test_reason_stub_includes_relevance_fallback(tmp_path: Path) -> None:
@@ -255,6 +256,45 @@ def test_database_get_delight_candidate_returns_none_below_threshold(
     assert candidate is None
 
 
+def test_database_get_delight_candidate_requires_ready_copy(tmp_path: Path) -> None:
+    database = _make_database(tmp_path)
+    database.cache_content("BV1BLANK", title="只有分数没有文案", relevance_score=0.9)
+    database.update_delight_score(
+        "BV1BLANK", delight_score=0.92, delight_reason="", delight_hook="",
+    )
+
+    candidate = database.get_delight_candidate(min_delight_score=0.70)
+
+    assert candidate is None
+
+
+def test_database_get_delight_candidate_allows_suppressed_delight_item(
+    tmp_path: Path,
+) -> None:
+    database = _make_database(tmp_path)
+    database.cache_content(
+        "BV1SUPPRESS",
+        title="被普通池压下去的惊喜内容",
+        relevance_score=0.92,
+    )
+    database.conn.execute(
+        "UPDATE content_cache SET pool_status = 'suppressed' WHERE bvid = ?",
+        ("BV1SUPPRESS",),
+    )
+    database.conn.commit()
+    database.update_delight_score(
+        "BV1SUPPRESS",
+        delight_score=0.91,
+        delight_reason="虽然普通池压掉了，但这条对你还是很可能是惊喜。",
+        delight_hook="压箱惊喜",
+    )
+
+    candidate = database.get_delight_candidate(min_delight_score=0.70)
+
+    assert candidate is not None
+    assert candidate["bvid"] == "BV1SUPPRESS"
+
+
 def test_database_mark_delight_notified(tmp_path: Path) -> None:
     database = _make_database(tmp_path)
     database.cache_content("BV1DLN", title="已通知", relevance_score=0.9)
@@ -302,3 +342,45 @@ def test_database_get_pool_candidates_needing_delight_score(tmp_path: Path) -> N
     bvids = [c["bvid"] for c in candidates]
     assert "BV1UNSCORE" in bvids
     assert "BV1SCORED" not in bvids
+
+
+def test_database_get_pool_candidates_needing_delight_score_includes_high_score_backfill(
+    tmp_path: Path,
+) -> None:
+    database = _make_database(tmp_path)
+    database.cache_content("BV1READY", title="Ready", relevance_score=0.9)
+    database.update_delight_score(
+        "BV1READY",
+        delight_score=0.72,
+        delight_reason="已经有解释",
+        delight_hook="已完成",
+    )
+    database.cache_content("BV1BACKFILL", title="Backfill", relevance_score=0.88)
+    database.update_delight_score(
+        "BV1BACKFILL",
+        delight_score=0.71,
+        delight_reason="",
+        delight_hook="",
+    )
+    database.conn.execute(
+        "UPDATE content_cache SET pool_status = 'suppressed' WHERE bvid = ?",
+        ("BV1BACKFILL",),
+    )
+    database.conn.commit()
+    database.cache_content("BV1LOW", title="Low", relevance_score=0.7)
+    database.update_delight_score(
+        "BV1LOW",
+        delight_score=0.55,
+        delight_reason="",
+        delight_hook="",
+    )
+
+    candidates = database.get_pool_candidates_needing_delight_score(
+        limit=10,
+        min_delight_score_for_reason=0.70,
+    )
+
+    bvids = [c["bvid"] for c in candidates]
+    assert "BV1BACKFILL" in bvids
+    assert "BV1READY" not in bvids
+    assert "BV1LOW" not in bvids

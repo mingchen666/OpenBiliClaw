@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -101,7 +98,12 @@ def _build_scenario() -> DiscoveryScenario:
             {
                 "event_type": "view",
                 "title": "纪录片原理讲解",
-                "metadata": {"bvid": "BV001", "up_name": "知识UP", "duration": 720, "progress": 0.9},
+                "metadata": {
+                    "bvid": "BV001",
+                    "up_name": "知识UP",
+                    "duration": 720,
+                    "progress": 0.9,
+                },
             },
             {
                 "event_type": "like",
@@ -177,7 +179,7 @@ async def test_mock_search_pagination() -> None:
     client = MockBilibiliClient(scenario)
 
     page1 = await client.search("纪录片", page=1, page_size=1)
-    page2 = await client.search("纪录片", page=2, page_size=1)
+    await client.search("纪录片", page=2, page_size=1)
 
     assert len(page1) <= 1
     # page2 may be empty if only 1 result

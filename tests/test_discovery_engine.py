@@ -131,6 +131,33 @@ async def test_discovery_engine_runs_registered_search_strategy() -> None:
 
 
 @pytest.mark.asyncio
+async def test_evaluate_content_passes_style_preferences_to_prompt() -> None:
+    llm_service = FakeLLMService(
+        '{"score": 0.82, "reason": "匹配", "topic_group": "摄影", "style_key": "light_chat"}'
+    )
+    engine = ContentDiscoveryEngine(llm_service=llm_service)
+    profile = _build_profile()
+    profile.preferences.style.preferred_duration = "short"
+    profile.preferences.style.humor_preference = 0.8
+    profile.preferences.style.depth_preference = 0.25
+
+    await engine.evaluate_content(
+        DiscoveredContent(
+            bvid="BV1STYLE",
+            title="摄影散步 vlog",
+            description="轻松聊拍照",
+            source_strategy="search",
+        ),
+        profile,
+    )
+
+    user_input = str(llm_service.calls[0]["user_input"])
+    assert '"preferred_duration": "short"' in user_input
+    assert '"humor_preference": 0.8' in user_input
+    assert '"depth_preference": 0.25' in user_input
+
+
+@pytest.mark.asyncio
 async def test_discovery_engine_handles_empty_strategy_results() -> None:
     from openbiliclaw.discovery.strategies.strategies import SearchStrategy
 
@@ -770,6 +797,52 @@ async def test_discovery_engine_caches_final_results() -> None:
         assert [item.bvid for item in results] == ["BV1A", "BV1B"]
         assert [item["bvid"] for item in cached] == ["BV1A", "BV1B"]
         assert cached[0]["source"] == "search"
+
+
+@pytest.mark.asyncio
+async def test_discovery_engine_cache_results_preserves_multi_source_fields() -> None:
+    """Regression: rescoring xhs rows must not overwrite source_platform.
+
+    Previously `_cache_results` dropped `source_platform` / `content_id` /
+    `content_url` on the cache_content call, so the upsert reverted xhs
+    rows to the `bilibili` default — producing rows labeled with
+    `source_platform='bilibili'` even though their bvid was an xhs note id.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "test.db")
+        db.initialize()
+
+        engine = ContentDiscoveryEngine(database=db)
+        engine.register_strategy(
+            _RecordingStrategy(
+                "search",
+                [
+                    DiscoveredContent(
+                        bvid="6613e9ac000000001a015e65",
+                        title="鸡煲复刻",
+                        up_name="作者A",
+                        relevance_score=0.7,
+                        source_strategy="xhs-extension-task",
+                        content_id="6613e9ac000000001a015e65",
+                        content_url="https://www.xiaohongshu.com/explore/6613e9ac000000001a015e65",
+                        source_platform="xiaohongshu",
+                    )
+                ],
+            )
+        )
+
+        await engine.discover(_build_profile(), limit=20)
+
+        row = db.conn.execute(
+            "SELECT source, source_platform, content_id, content_url "
+            "FROM content_cache WHERE bvid=?",
+            ("6613e9ac000000001a015e65",),
+        ).fetchone()
+        assert row is not None
+        assert row["source_platform"] == "xiaohongshu"
+        assert row["source"] == "xhs-extension-task"
+        assert row["content_id"] == "6613e9ac000000001a015e65"
+        assert row["content_url"].endswith("/6613e9ac000000001a015e65")
 
 
 @pytest.mark.asyncio

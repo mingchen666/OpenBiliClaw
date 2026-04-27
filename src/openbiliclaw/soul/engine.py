@@ -13,15 +13,23 @@ from uuid import uuid4
 
 if TYPE_CHECKING:
     from openbiliclaw.llm.base import LLMProvider
-    from openbiliclaw.llm.service import LLMService
     from openbiliclaw.memory.manager import MemoryManager
 
+from openbiliclaw.llm.service import LLMService
+
 from .awareness_analyzer import AwarenessAnalyzer
+from .cognition_cycle import (
+    DEFAULT_MIN_INTERVAL_SECONDS as _DEFAULT_COG_INTERVAL,
+)
+from .cognition_cycle import (
+    CognitionCycle,
+)
 from .dialogue_insight_analyzer import (
     DialogueInsightAnalysisError,
     DialogueInsightAnalyzer,
 )
 from .insight_analyzer import InsightAnalyzer
+from .pipeline import ProfileUpdatePipeline
 from .preference_analyzer import PreferenceAnalyzer
 from .profile import (
     AwarenessNote,
@@ -33,6 +41,7 @@ from .profile import (
     insight_hypothesis_to_dict,
 )
 from .profile_builder import ProfileBuilder
+from .speculator import InterestSpeculator
 
 logger = logging.getLogger(__name__)
 
@@ -70,15 +79,6 @@ class SoulEngine:
         embedding_service: Any | None = None,
         cognition_cycle_interval_seconds: int | None = None,
     ) -> None:
-        from openbiliclaw.llm.service import LLMService
-
-        from .cognition_cycle import (
-            DEFAULT_MIN_INTERVAL_SECONDS as _DEFAULT_COG_INTERVAL,
-            CognitionCycle,
-        )
-        from .pipeline import ProfileUpdatePipeline
-        from .speculator import InterestSpeculator
-
         self._llm = llm
         self._memory = memory
         self._llm_service: LLMService = LLMService(registry=llm, memory=memory)
@@ -126,7 +126,12 @@ class SoulEngine:
         """Access the ProfileUpdatePipeline for direct signal ingestion."""
         return self._pipeline
 
-    async def analyze_events(self, events: list[dict[str, Any]]) -> None:
+    async def analyze_events(
+        self,
+        events: list[dict[str, Any]],
+        *,
+        event_chunk_size: int = 0,
+    ) -> None:
         """Analyze new behavioral events and update all memory layers.
 
         This is the primary entry point for processing new user behavior.
@@ -135,16 +140,33 @@ class SoulEngine:
 
         Args:
             events: List of behavioral event dicts from the collector.
+            event_chunk_size: When > 0, split the event list into chunks
+                of this size and analyse each chunk in parallel. Useful
+                for the init bootstrap where a single max-thinking call
+                on ~800 events would block for ~6 minutes.
         """
-        logger.info("Analyzing %d new events...", len(events))
+        import time as _time
+
+        logger.info(
+            "analyze_events start: events=%d chunk_size=%d",
+            len(events),
+            event_chunk_size,
+        )
+        t0 = _time.monotonic()
         preference_layer = self._memory.get_layer("preference")
         updated_preference = await self._preference_analyzer.analyze_events(
             events=events,
             existing_preference=preference_layer.data,
+            event_chunk_size=event_chunk_size,
         )
         preference_layer.data.clear()
         preference_layer.data.update(updated_preference)
         preference_layer.save()
+        logger.info(
+            "analyze_events done: events=%d elapsed=%.1fs",
+            len(events),
+            _time.monotonic() - t0,
+        )
 
     async def build_initial_profile(self, history: list[dict[str, Any]]) -> OnionProfile:
         """Build an initial soul profile from historical data.
@@ -158,17 +180,20 @@ class SoulEngine:
         Returns:
             Initial OnionProfile.
         """
-        logger.info("Building initial soul profile from %d history items...", len(history))
+        import time as _time
+
+        logger.info("build_initial_profile start: history=%d items", len(history))
+        t0 = _time.monotonic()
         preference_layer = self._memory.get_layer("preference").data
         legacy_profile = await self._profile_builder.build(
             history=history,
             preference=preference_layer,
-            awareness_notes=[
-                awareness_note_to_dict(item) for item in self._load_awareness_notes()
-            ],
-            active_insights=[
-                insight_hypothesis_to_dict(item) for item in self._load_insights()
-            ],
+            awareness_notes=[awareness_note_to_dict(item) for item in self._load_awareness_notes()],
+            active_insights=[insight_hypothesis_to_dict(item) for item in self._load_insights()],
+        )
+        logger.info(
+            "build_initial_profile: legacy profile built in %.1fs",
+            _time.monotonic() - t0,
         )
         profile = OnionProfile.from_legacy(legacy_profile)
         profile.populate_from_flat_preference(preference_layer)
@@ -177,6 +202,10 @@ class SoulEngine:
         soul_layer.data.update(profile.to_dict())
         soul_layer.save()
         self._memory.sync_profile_files(profile)
+        logger.info(
+            "build_initial_profile done: total_elapsed=%.1fs",
+            _time.monotonic() - t0,
+        )
 
         # Trigger speculator immediately after init to seed speculative interests
         try:
@@ -418,9 +447,7 @@ class SoulEngine:
 
         self._memory.save_feedback_state(
             {
-                "last_processed_feedback_event_id": self._to_int(
-                    feedback_events[-1].get("id", 0)
-                ),
+                "last_processed_feedback_event_id": self._to_int(feedback_events[-1].get("id", 0)),
                 "last_feedback_reanalyzed_at": datetime.now().isoformat(),
             }
         )
@@ -467,9 +494,7 @@ class SoulEngine:
             note_text = note.strip()
             generic_dislike_notes = {"太浅了", "不喜欢", "一般", "太水了", "没意思"}
             topic = (
-                title.strip()
-                if not note_text or note_text in generic_dislike_notes
-                else note_text
+                title.strip() if not note_text or note_text in generic_dislike_notes else note_text
             )
             if topic:
                 kind = "dislike_added"
@@ -634,11 +659,7 @@ class SoulEngine:
     def _load_insights(self) -> list[InsightHypothesis]:
         layer_data = self._memory.get_layer("insight").data
         hypotheses = layer_data.get("hypotheses", [])
-        return [
-            insight_hypothesis_from_dict(item)
-            for item in hypotheses
-            if isinstance(item, dict)
-        ]
+        return [insight_hypothesis_from_dict(item) for item in hypotheses if isinstance(item, dict)]
 
     def _save_insights(self, insights: list[InsightHypothesis]) -> None:
         layer = self._memory.get_layer("insight")
@@ -854,9 +875,7 @@ class SoulEngine:
 
         if self._profile_shifted(previous_profile, current_profile):
             portrait = str(current_profile.get("personality_portrait", "")).strip()
-            summary = (
-                portrait[:72].rstrip("，。！？,.!?") if portrait else "我对你又对上了一点。"
-            )
+            summary = portrait[:72].rstrip("，。！？,.!?") if portrait else "我对你又对上了一点。"
             updates.append(
                 {
                     "id": f"cognition-{uuid4()}",
@@ -1010,9 +1029,7 @@ class SoulEngine:
             str(current_profile.get("personality_portrait", ""))
         )
         return bool(
-            previous_portrait
-            and current_portrait
-            and previous_portrait != current_portrait
+            previous_portrait and current_portrait and previous_portrait != current_portrait
         )
 
     @staticmethod

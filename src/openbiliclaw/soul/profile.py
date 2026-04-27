@@ -55,6 +55,7 @@ class PreferenceLayer:
     exploration_openness: float = 0.5  # How open to new domains (0-1)
     disliked_topics: list[str] = field(default_factory=list)
     favorite_up_users: list[str] = field(default_factory=list)
+    source_platform_mix: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -150,6 +151,11 @@ class SoulProfile:
             )
             parts.append(f"## 近期观察\n{notes}")
 
+        if len(self.preferences.source_platform_mix) > 1:
+            mix_line = _format_source_mix_line(self.preferences.source_platform_mix)
+            if mix_line:
+                parts.append(f"## 来源分布\n{mix_line}")
+
         return "\n\n".join(parts) if parts else "（尚未建立用户画像）"
 
     def to_dict(self) -> dict[str, object]:
@@ -209,12 +215,20 @@ def preference_layer_to_dict(layer: PreferenceLayer) -> dict[str, object]:
         "exploration_openness": layer.exploration_openness,
         "disliked_topics": layer.disliked_topics,
         "favorite_up_users": layer.favorite_up_users,
+        "source_platform_mix": dict(layer.source_platform_mix),
     }
 
 
 def preference_layer_from_dict(raw_value: object) -> PreferenceLayer:
     """Build a preference layer from persisted JSON data."""
     data = raw_value if isinstance(raw_value, dict) else {}
+    raw_mix = data.get("source_platform_mix")
+    mix: dict[str, float] = {}
+    if isinstance(raw_mix, dict):
+        for key, value in raw_mix.items():
+            if not isinstance(key, str):
+                continue
+            mix[key] = _as_float(value, 0.0)
     return PreferenceLayer(
         interests=[
             interest_tag_from_dict(item)
@@ -226,6 +240,7 @@ def preference_layer_from_dict(raw_value: object) -> PreferenceLayer:
         exploration_openness=_as_float(data.get("exploration_openness", 0.5), 0.5),
         disliked_topics=_as_str_list(data.get("disliked_topics")),
         favorite_up_users=_as_str_list(data.get("favorite_up_users")),
+        source_platform_mix=mix,
     )
 
 
@@ -367,6 +382,23 @@ def _as_int(raw_value: object) -> int:
     return 0
 
 
+def _as_source_mix(raw_value: object) -> dict[str, float]:
+    if not isinstance(raw_value, dict):
+        return {}
+    mix: dict[str, float] = {}
+    for key, value in raw_value.items():
+        if not isinstance(key, str) or not key:
+            continue
+        mix[key] = _as_float(value, 0.0)
+    return mix
+
+
+def _format_source_mix_line(mix: dict[str, float]) -> str:
+    items = sorted(mix.items(), key=lambda kv: kv[1], reverse=True)
+    parts = [f"{name} {share * 100:.0f}%" for name, share in items if share > 0]
+    return " · ".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Onion Model — five-layer personality profile
 # ---------------------------------------------------------------------------
@@ -472,6 +504,10 @@ class OnionProfile:
     recent_awareness: list[AwarenessNote] = field(default_factory=list)
     active_insights: list[InsightHypothesis] = field(default_factory=list)
 
+    # Normalized {platform: share} computed from observed events. Downstream
+    # prompts read this to know whether the user is single- or multi-source.
+    source_platform_mix: dict[str, float] = field(default_factory=dict)
+
     created_at: str = ""
     updated_at: str = ""
     version: int = 2
@@ -531,6 +567,7 @@ class OnionProfile:
             exploration_openness=self.surface.exploration_openness,
             disliked_topics=flat_disliked,
             favorite_up_users=self.interest.favorite_up_users,
+            source_platform_mix=dict(self.source_platform_mix),
         )
 
     # -- Mutation helpers ------------------------------------------------------
@@ -563,6 +600,8 @@ class OnionProfile:
         self.surface.style = pref.style
         self.surface.context = pref.context
         self.surface.exploration_openness = pref.exploration_openness
+        if pref.source_platform_mix:
+            self.source_platform_mix = dict(pref.source_platform_mix)
 
     # -- Serialization --------------------------------------------------------
 
@@ -575,6 +614,7 @@ class OnionProfile:
             "interest": _interest_layer_to_dict(self.interest),
             "role": _role_layer_to_dict(self.role),
             "surface": _surface_layer_to_dict(self.surface),
+            "source_platform_mix": dict(self.source_platform_mix),
             "recent_awareness": [awareness_note_to_dict(n) for n in self.recent_awareness],
             "active_insights": [insight_hypothesis_to_dict(h) for h in self.active_insights],
             "created_at": self.created_at,
@@ -593,6 +633,7 @@ class OnionProfile:
             interest=_interest_layer_from_dict(raw_data.get("interest")),
             role=_role_layer_from_dict(raw_data.get("role")),
             surface=_surface_layer_from_dict(raw_data.get("surface")),
+            source_platform_mix=_as_source_mix(raw_data.get("source_platform_mix")),
             recent_awareness=[
                 awareness_note_from_dict(item)
                 for item in _as_list(raw_data.get("recent_awareness"))
@@ -699,6 +740,10 @@ class OnionProfile:
         if self.interest.dislikes:
             dislike_names = ", ".join(d.domain for d in self.interest.dislikes[:5])
             parts.append(f"## 不喜欢\n{dislike_names}")
+        if len(self.source_platform_mix) > 1:
+            mix_line = _format_source_mix_line(self.source_platform_mix)
+            if mix_line:
+                parts.append(f"## 来源分布\n{mix_line}")
         # Speculative interests (set externally via attach_speculations)
         speculations = getattr(self, "_active_speculations", None)
         if speculations:

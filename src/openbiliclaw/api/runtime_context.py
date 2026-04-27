@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
@@ -178,7 +178,31 @@ class RuntimeContext:
         )
         new_discovery_engine.register_adapter(bilibili_adapter)
 
+        # Register Xiaohongshu adapter — content enters the pool via the
+        # extension's API endpoints (POST /api/sources/xhs/observed-urls),
+        # not via adapter.fetch(). The adapter is a stub so the registry
+        # knows "xiaohongshu" is a valid source type.
+        from openbiliclaw.sources.xiaohongshu_adapter import XiaohongshuAdapter
+
+        xiaohongshu_adapter = XiaohongshuAdapter()
+        new_discovery_engine.register_adapter(xiaohongshu_adapter)
+
         # 8. Continuous refresh controller
+        new_xhs_producer: Any = None
+        if hasattr(self.database, "conn"):
+            from openbiliclaw.runtime.xhs_producer import XhsTaskProducer
+            from openbiliclaw.sources.xhs_tasks import XhsTaskQueue
+
+            xhs_cfg = getattr(new_config.sources, "xiaohongshu", None)
+            sched_cfg = getattr(new_config, "scheduler", None)
+            new_xhs_producer = XhsTaskProducer(
+                task_queue=XhsTaskQueue(self.database),
+                soul_engine=new_soul_engine,
+                llm_service=new_llm_service,
+                enabled=bool(getattr(sched_cfg, "enabled", True)),
+                daily_budget=int(getattr(xhs_cfg, "daily_search_budget", 30)),
+            )
+
         new_runtime_controller = ContinuousRefreshController(
             memory_manager=self.memory_manager,
             database=self.database,
@@ -187,6 +211,7 @@ class RuntimeContext:
             recommendation_engine=new_recommendation_engine,
             pool_target_count=new_config.scheduler.pool_target_count,
             event_hub=self.event_hub,
+            xhs_producer=new_xhs_producer,
         )
 
         # 9. Account sync
@@ -197,12 +222,17 @@ class RuntimeContext:
             sync_interval_hours=new_config.scheduler.account_sync_interval_hours,
         )
 
-        # 10. Dialogue
+        # 10. Dialogue (with source management tools)
+        from openbiliclaw.sources.tools import SOURCE_TOOLS, SourceToolDispatcher
+
+        source_tool_dispatcher = SourceToolDispatcher(self.database)
         new_dialogue = SocraticDialogue(
             llm=None,
             soul_engine=new_soul_engine,
             llm_service=new_llm_service,
             session="popup",
+            tools=SOURCE_TOOLS,
+            tool_dispatcher=source_tool_dispatcher,
         )
 
         # 11. Auto-update service
@@ -246,23 +276,17 @@ class RuntimeContext:
         # Start new tasks from the freshly-built components
         run_forever = getattr(self.runtime_controller, "run_forever", None)
         app.state.refresh_task = (
-            asyncio.create_task(run_forever())
-            if callable(run_forever)
-            else None
+            asyncio.create_task(run_forever()) if callable(run_forever) else None
         )
 
         sync_forever = getattr(self.account_sync_service, "run_forever", None)
         app.state.account_sync_task = (
-            asyncio.create_task(sync_forever())
-            if callable(sync_forever)
-            else None
+            asyncio.create_task(sync_forever()) if callable(sync_forever) else None
         )
 
         update_forever = getattr(self.auto_update_service, "run_forever", None)
         app.state.auto_update_task = (
-            asyncio.create_task(update_forever())
-            if callable(update_forever)
-            else None
+            asyncio.create_task(update_forever()) if callable(update_forever) else None
         )
 
         # Kick speculator to seed speculative interests
@@ -310,6 +334,28 @@ def build_runtime_context(
         memory_manager.initialize()
     if event_hub is None:
         event_hub = RuntimeEventHub()
+
+    # Wire the soul-layer change callback so any code path that updates
+    # the profile (init, cognition cycle, dialogue ingestion, manual
+    # rebuild …) automatically broadcasts a ``profile_updated`` event
+    # over the WebSocket. The popup listens and re-fetches without
+    # requiring a manual ``init_completed`` poke.
+    setter = getattr(memory_manager, "set_profile_change_callback", None)
+    if callable(setter):
+
+        async def _on_profile_changed() -> None:
+            publish = getattr(event_hub, "publish", None)
+            if callable(publish):
+                with suppress(Exception):
+                    await publish(
+                        {
+                            "type": "profile_updated",
+                            "phase": "ready",
+                            "message": "画像已更新",
+                        }
+                    )
+
+        setter(_on_profile_changed)
 
     ctx = RuntimeContext(
         database=database,

@@ -9,4 +9,8 @@ pipeline.
 from openbiliclaw.sources.protocol import SourceAdapter, SourceRecipe
 from openbiliclaw.sources.registry import AdapterRegistry
 
-__all__ = ["AdapterRegistry", "SourceAdapter", "SourceRecipe"]
+__all__ = [
+    "AdapterRegistry",
+    "SourceAdapter",
+    "SourceRecipe",
+]

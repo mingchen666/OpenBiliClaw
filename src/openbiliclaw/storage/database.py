@@ -115,7 +115,7 @@ class Database:
     def initialize(self) -> None:
         """Initialize the database and run migrations if needed."""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._db_path), timeout=30.0)
+        self._conn = sqlite3.connect(str(self._db_path), timeout=30.0, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout = 30000")
@@ -128,6 +128,7 @@ class Database:
         self._ensure_content_cache_delight_columns()
         self._ensure_content_cache_multisource_columns()
         self._ensure_source_recipes_table()
+        self._ensure_xhs_observed_urls_table()
 
         # Set schema version
         self._conn.execute(
@@ -313,24 +314,55 @@ class Database:
                 pool_topic_label,
                 candidate_tier,
                 last_scored_at,
-                source
+                source,
+                content_id,
+                content_url,
+                source_platform,
+                author_name
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                CURRENT_TIMESTAMP, ?, ?, ?, ?, ?
+            )
             ON CONFLICT(bvid) DO UPDATE SET
                 title = excluded.title,
                 up_name = excluded.up_name,
                 up_mid = excluded.up_mid,
                 duration = excluded.duration,
                 tags = excluded.tags,
-                topic_key = excluded.topic_key,
-                topic_group = excluded.topic_group,
-                style_key = excluded.style_key,
+                -- Preserve LLM-classified fields: when the incoming value
+                -- is empty/zero, keep the existing DB value.  This prevents
+                -- re-ingest from raw sources (e.g. xhs extension re-sending
+                -- the same notes on every page load) from wiping out
+                -- classifications that classify_pool_backlog has written.
+                topic_key = COALESCE(
+                    NULLIF(excluded.topic_key, ''),
+                    content_cache.topic_key,
+                    ''
+                ),
+                topic_group = COALESCE(
+                    NULLIF(excluded.topic_group, ''),
+                    content_cache.topic_group,
+                    ''
+                ),
+                style_key = COALESCE(
+                    NULLIF(excluded.style_key, ''),
+                    content_cache.style_key,
+                    ''
+                ),
                 description = excluded.description,
                 cover_url = excluded.cover_url,
                 view_count = excluded.view_count,
                 like_count = excluded.like_count,
-                relevance_score = excluded.relevance_score,
-                relevance_reason = excluded.relevance_reason,
+                relevance_score = CASE
+                    WHEN excluded.relevance_score > 0 THEN excluded.relevance_score
+                    ELSE COALESCE(content_cache.relevance_score, 0)
+                END,
+                relevance_reason = COALESCE(
+                    NULLIF(excluded.relevance_reason, ''),
+                    content_cache.relevance_reason,
+                    ''
+                ),
                 pool_expression = COALESCE(
                     NULLIF(excluded.pool_expression, ''),
                     content_cache.pool_expression,
@@ -343,7 +375,27 @@ class Database:
                 ),
                 candidate_tier = excluded.candidate_tier,
                 last_scored_at = CURRENT_TIMESTAMP,
-                source = excluded.source
+                -- Re-fresh items previously trim-suppressed: 'suppressed' is
+                -- an internal diversity decision (over-quota cuts, topic cap),
+                -- not a user signal. When a discovery strategy re-finds the
+                -- item it deserves another shot. Without this, B站 trending
+                -- (which churns slowly) stays bottlenecked because most hot
+                -- BVIDs are already cached as 'suppressed' from earlier
+                -- trim cycles. User-driven states ('shown', 'feedbacked',
+                -- 'purged_by_dislike') are preserved.
+                pool_status = CASE
+                    WHEN content_cache.pool_status = 'suppressed' THEN 'fresh'
+                    ELSE content_cache.pool_status
+                END,
+                source = excluded.source,
+                content_id = excluded.content_id,
+                content_url = excluded.content_url,
+                source_platform = excluded.source_platform,
+                author_name = COALESCE(
+                    NULLIF(excluded.author_name, ''),
+                    content_cache.author_name,
+                    ''
+                )
             """,
             (
                 bvid,
@@ -365,6 +417,10 @@ class Database:
                 kwargs.get("pool_topic_label", ""),
                 kwargs.get("candidate_tier", "primary"),
                 kwargs.get("source", ""),
+                kwargs.get("content_id", bvid),
+                kwargs.get("content_url", ""),
+                kwargs.get("source_platform", "bilibili"),
+                kwargs.get("author_name", ""),
             ),
         )
 
@@ -412,7 +468,16 @@ class Database:
         return self._balance_pool_rows(rows, limit=limit)
 
     def get_pool_candidates(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Get fresh recommendation candidates directly from the discovery pool."""
+        """Get fresh recommendation candidates directly from the discovery pool.
+
+        Notes:
+            xhs rows without ``xsec_token`` in their ``content_url`` are
+            excluded. Bare xhs URLs get rejected by xhs with error 300031
+            when shared outbound, so surfacing them in recommendations
+            would just mint dead links. Tokens get backfilled by the
+            MAIN-world sniffer as the user browses xhs; bare rows become
+            eligible again once ``_backfill_xhs_tokens`` upgrades them.
+        """
         self._ensure_fresh_read()
         cursor = self.conn.execute(
             """
@@ -420,6 +485,10 @@ class Database:
             FROM content_cache
             WHERE COALESCE(pool_status, 'fresh') = 'fresh'
               AND COALESCE(feedback_type, '') != 'dislike'
+              AND (
+                source_platform != 'xiaohongshu'
+                OR content_url LIKE '%xsec_token=%'
+              )
               AND NOT EXISTS (
                 SELECT 1
                 FROM recommendations AS r
@@ -486,6 +555,23 @@ class Database:
             counts[source] += 1
         return dict(counts)
 
+    def get_distinct_topic_groups(self) -> list[str]:
+        """Return distinct non-empty ``topic_group`` values in the fresh pool.
+
+        Used by recommendation pre-warming so the embedding cache is hot
+        before the popup hits ``serve()``. Cheap GROUP BY on a small
+        column with no JOIN.
+        """
+        cursor = self.conn.execute(
+            """
+            SELECT DISTINCT topic_group
+            FROM content_cache
+            WHERE COALESCE(pool_status, 'fresh') = 'fresh'
+              AND COALESCE(topic_group, '') != ''
+            """
+        )
+        return [str(row[0]) for row in cursor.fetchall() if row and row[0]]
+
     def trim_explore_cluster_overflow(self, *, max_per_cluster: int = 3) -> int:
         """Suppress excess fresh explore items from high-risk topic clusters."""
         cursor = self.conn.execute(
@@ -534,28 +620,212 @@ class Database:
         )
         return len(clean_bvids)
 
+    def trim_topic_group_overflow(self, *, max_per_group: int) -> int:
+        """Suppress fresh items where any single ``topic_group`` exceeds *max_per_group*.
+
+        Generalises the source-and-keyword-specific
+        :meth:`trim_explore_cluster_overflow` to a cross-source, dynamic cap on
+        every populated ``topic_group`` value. Without this, a single topic
+        (e.g. ``人工智能``) can accumulate hundreds of fresh candidates as
+        related_chain/search/explore each keep returning the same coarse group
+        across rounds — m118's per-call ``_compress_topic_repeats`` doesn't
+        compose across rounds, and the explore-only cluster cap doesn't see
+        related_chain or search.
+
+        Items with empty ``topic_group`` are ignored. Within an over-cap
+        group, the highest-scored / most-recently-scored items are kept;
+        the rest get ``pool_status='suppressed'``.
+        """
+        if max_per_group <= 0:
+            return 0
+
+        cursor = self.conn.execute(
+            """
+            SELECT bvid, topic_group, relevance_score, last_scored_at
+            FROM content_cache
+            WHERE COALESCE(pool_status, 'fresh') = 'fresh'
+              AND COALESCE(feedback_type, '') != 'dislike'
+              AND COALESCE(topic_group, '') != ''
+              AND NOT EXISTS (
+                SELECT 1 FROM recommendations AS r WHERE r.bvid = content_cache.bvid
+              )
+            """
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        if not rows:
+            return 0
+
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            group = str(row.get("topic_group", "") or "").strip().lower()
+            if not group:
+                continue
+            grouped[group].append(row)
+
+        overflow_bvids: list[str] = []
+        for items in grouped.values():
+            if len(items) <= max_per_group:
+                continue
+            ranked = sorted(
+                items,
+                key=lambda row: (
+                    -float(row.get("relevance_score", 0.0) or 0.0),
+                    -self._sort_timestamp_score(str(row.get("last_scored_at", ""))),
+                    str(row.get("bvid", "")),
+                ),
+            )
+            overflow_bvids.extend(
+                str(row.get("bvid", "")).strip() for row in ranked[max_per_group:]
+            )
+
+        clean_bvids = [bvid for bvid in overflow_bvids if bvid]
+        if not clean_bvids:
+            return 0
+
+        placeholders = ", ".join("?" for _ in clean_bvids)
+        self._execute_write(
+            f"""
+            UPDATE content_cache
+            SET pool_status = 'suppressed'
+            WHERE bvid IN ({placeholders})
+            """,
+            clean_bvids,
+        )
+        return len(clean_bvids)
+
+    def trim_pool_to_target_count(
+        self,
+        *,
+        target: int,
+        source_share_quotas: dict[str, int] | None = None,
+    ) -> int:
+        """Suppress overflow fresh items so the pool does not exceed *target*.
+
+        Ranking (what we keep): higher ``relevance_score`` > newer
+        ``last_scored_at`` > non-``explore`` source > stable ``bvid``. Items
+        already surfaced as recommendations are excluded from the count — the
+        recommendation side treats the pool as a queue, so consumed rows are
+        never trimmed here.
+
+        When ``source_share_quotas`` is provided, the trim respects per-source
+        share targets: items from sources already at or above their quota
+        get suppressed *before* lower-scored items from under-quota sources.
+        Without this, score-only trim systematically axes low-relevance
+        sources (trending, explore) when high-relevance sources (search,
+        related_chain) overflow — defeating the per-source diversity goal.
+        """
+        if target <= 0:
+            return 0
+
+        cursor = self.conn.execute(
+            """
+            SELECT bvid, source, relevance_score, last_scored_at
+            FROM content_cache
+            WHERE COALESCE(pool_status, 'fresh') = 'fresh'
+              AND COALESCE(feedback_type, '') != 'dislike'
+              AND NOT EXISTS (
+                SELECT 1 FROM recommendations AS r WHERE r.bvid = content_cache.bvid
+              )
+            """
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        if len(rows) <= target:
+            return 0
+
+        ranked = sorted(
+            rows,
+            key=lambda row: (
+                -float(row.get("relevance_score", 0.0) or 0.0),
+                -self._sort_timestamp_score(str(row.get("last_scored_at", ""))),
+                1 if str(row.get("source", "") or "") == "explore" else 0,
+                str(row.get("bvid", "")),
+            ),
+        )
+
+        if source_share_quotas:
+            # Three-tier protection so under-quota sources stay fully intact:
+            #   protected: items from sources whose total ≤ quota, OR top-N
+            #              items from sources whose total > quota (where N=quota)
+            #   negotiable_tracked: bottom (total-quota) items from over-quota
+            #              tracked sources
+            #   negotiable_untracked: items from sources without a declared
+            #              share (e.g. xhs) — eligible to be cut before
+            #              touching protected.
+            # Order for the final keep walk: protected → negotiable_untracked
+            # → negotiable_tracked.  This ensures trending (under quota) stays
+            # 100% protected even when sum of in_quota > target due to
+            # untracked sources eating slots.
+            counts_per_source: dict[str, int] = defaultdict(int)
+            for row in rows:
+                counts_per_source[str(row.get("source", "") or "")] += 1
+
+            protected: list[dict[str, Any]] = []
+            negotiable_tracked: list[dict[str, Any]] = []
+            negotiable_untracked: list[dict[str, Any]] = []
+            seen: dict[str, int] = defaultdict(int)
+            for row in ranked:
+                src = str(row.get("source", "") or "")
+                quota = source_share_quotas.get(src)
+                if quota is None:
+                    negotiable_untracked.append(row)
+                    continue
+                if counts_per_source[src] <= quota:
+                    # entire source under quota — every item protected
+                    protected.append(row)
+                else:
+                    # over quota: top `quota` items protected, rest negotiable
+                    if seen[src] < quota:
+                        protected.append(row)
+                        seen[src] += 1
+                    else:
+                        negotiable_tracked.append(row)
+            ranked = protected + negotiable_untracked + negotiable_tracked
+
+        overflow_bvids = [str(row.get("bvid", "")).strip() for row in ranked[target:]]
+        clean_bvids = [bvid for bvid in overflow_bvids if bvid]
+        if not clean_bvids:
+            return 0
+
+        placeholders = ", ".join("?" for _ in clean_bvids)
+        self._execute_write(
+            f"""
+            UPDATE content_cache
+            SET pool_status = 'suppressed'
+            WHERE bvid IN ({placeholders})
+            """,
+            clean_bvids,
+        )
+        return len(clean_bvids)
+
     @staticmethod
     def _balance_pool_rows(rows: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+        """Round-robin sample from a relevance-ordered pool, balanced by content topic.
+
+        Buckets by ``topic_group`` (with fallback to ``topic_key`` then a
+        sentinel) so that one dominant topic in the relevance head can't
+        crowd out the candidate window. Source/platform are intentionally
+        ignored — content-side features drive richness, not provenance.
+        """
         if limit <= 0 or len(rows) <= limit:
             return rows[:limit]
 
         buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        source_order: list[str] = []
+        topic_order: list[str] = []
         for row in rows:
-            source = str(row.get("source", "") or "").strip() or "unknown"
-            if source not in buckets:
-                source_order.append(source)
-            buckets[source].append(row)
-
-        preferred = ["search", "trending", "related_chain", "explore"]
-        ordered_sources = [source for source in preferred if source in buckets]
-        ordered_sources.extend(source for source in source_order if source not in ordered_sources)
+            key = str(row.get("topic_group", "") or "").strip().lower()
+            if not key:
+                key = str(row.get("topic_key", "") or "").strip().lower()
+            if not key:
+                key = "unknown"
+            if key not in buckets:
+                topic_order.append(key)
+            buckets[key].append(row)
 
         balanced: list[dict[str, Any]] = []
         while len(balanced) < limit:
             progressed = False
-            for source in ordered_sources:
-                bucket = buckets[source]
+            for key in topic_order:
+                bucket = buckets[key]
                 if not bucket:
                     continue
                 balanced.append(bucket.pop(0))
@@ -673,9 +943,7 @@ class Database:
         # throughout — topic values may contain SQL metacharacters that must
         # not be interpolated into the query string.
         exact_placeholders = ", ".join("?" for _ in clean)
-        like_conditions = " OR ".join(
-            "title LIKE ? OR pool_topic_label LIKE ?" for _ in clean
-        )
+        like_conditions = " OR ".join("title LIKE ? OR pool_topic_label LIKE ?" for _ in clean)
 
         params: list[Any] = []
         params.extend(clean)  # topic_key IN (...)
@@ -706,7 +974,9 @@ class Database:
         return cursor.rowcount
 
     def get_fresh_pool_candidates_for_purge_scan(
-        self, *, limit: int = 500,
+        self,
+        *,
+        limit: int = 500,
     ) -> list[dict[str, Any]]:
         """Return fresh, not-yet-recommended pool candidates for a semantic scan.
 
@@ -744,6 +1014,44 @@ class Database:
             clean,
         )
         return cursor.rowcount
+
+    def get_pool_candidates_needing_evaluation(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Return fresh pool candidates that lack LLM content classification.
+
+        Targets items with empty ``style_key`` AND empty ``topic_group`` —
+        typically content from non-bilibili sources (e.g. xiaohongshu) that
+        was inserted directly into ``content_cache`` without passing through
+        the discovery engine's ``evaluate_content`` pipeline.
+
+        These items need LLM evaluation to receive ``style_key``,
+        ``topic_group``, and ``relevance_score`` so the diversity mechanism
+        in ``_select_diversified_batch`` can treat them equally alongside
+        bilibili content.
+        """
+        cursor = self.conn.execute(
+            """
+            SELECT *
+            FROM content_cache
+            WHERE COALESCE(pool_status, 'fresh') = 'fresh'
+              AND COALESCE(feedback_type, '') != 'dislike'
+              AND COALESCE(style_key, '') = ''
+              AND COALESCE(topic_group, '') = ''
+              AND COALESCE(relevance_score, 0) = 0
+              AND NOT EXISTS (
+                SELECT 1
+                FROM recommendations AS r
+                WHERE r.bvid = content_cache.bvid
+              )
+            ORDER BY
+                last_scored_at DESC,
+                bvid ASC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        rows = self._exclude_viewed_rows(rows, self.get_recent_viewed_bvids(), limit=len(rows))
+        return rows[:limit]
 
     def get_pool_candidates_needing_copy(self, limit: int = 20) -> list[dict[str, Any]]:
         """Return fresh pool candidates missing precomputed popup copy."""
@@ -840,6 +1148,53 @@ class Database:
         )
         return cursor.lastrowid or 0
 
+    def batch_insert_recommendations(
+        self,
+        items: list[dict[str, Any]],
+    ) -> list[int]:
+        """Insert N recommendation rows in one transaction; return row IDs in order.
+
+        Single fsync replaces N (was 200-300ms each under discovery write
+        contention → ~3s for the popup's 10-item batch). Returns
+        ``lastrowid`` per item, computed from the auto-increment delta
+        since this connection's last id.
+        """
+        if not items:
+            return []
+        attempts = _LOCK_RETRY_ATTEMPTS
+        while True:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute("BEGIN IMMEDIATE")
+                try:
+                    ids: list[int] = []
+                    for item in items:
+                        cursor.execute(
+                            """
+                            INSERT INTO recommendations
+                                (bvid, expression, topic, confidence, presented)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (
+                                str(item.get("bvid", "")),
+                                str(item.get("expression", "")),
+                                str(item.get("topic", "")),
+                                float(item.get("confidence", 0.0) or 0.0),
+                                int(item.get("presented", 0) or 0),
+                            ),
+                        )
+                        ids.append(cursor.lastrowid or 0)
+                    self.conn.commit()
+                    return ids
+                except Exception:
+                    self.conn.rollback()
+                    raise
+            except sqlite3.OperationalError as exc:
+                if "database is locked" not in str(exc).lower() or attempts <= 1:
+                    raise
+                attempts -= 1
+                time.sleep(_LOCK_RETRY_SLEEP_SECONDS)
+
     def get_recent_recommendation_signals(self, *, limit: int = 30) -> list[dict[str, Any]]:
         """Return recent recommendations with topic/source for scoring context."""
         cursor = self.conn.execute(
@@ -870,7 +1225,11 @@ class Database:
         return [dict(row) for row in cursor.fetchall()]
 
     def get_recommendations(self, limit: int = 100) -> list[dict[str, Any]]:
-        """Get recommendation history ordered by newest first."""
+        """Get recommendation history ordered by newest first.
+
+        xhs rows whose cached ``content_url`` is missing ``xsec_token``
+        are filtered out — clicking them hits xhs's 300031 login wall.
+        """
         self._ensure_fresh_read()
         cursor = self.conn.execute(
             """
@@ -878,9 +1237,16 @@ class Database:
                 r.*,
                 c.title AS title,
                 c.up_name AS up_name,
-                c.cover_url AS cover_url
+                c.cover_url AS cover_url,
+                c.content_id AS content_id,
+                c.content_url AS content_url,
+                c.source_platform AS source_platform
             FROM recommendations AS r
             LEFT JOIN content_cache AS c ON c.bvid = r.bvid
+            WHERE (
+                COALESCE(c.source_platform, '') != 'xiaohongshu'
+                OR COALESCE(c.content_url, '') LIKE '%xsec_token=%'
+            )
             ORDER BY created_at DESC, id DESC
             LIMIT ?
             """,
@@ -1050,9 +1416,7 @@ class Database:
         for column_name, column_type in required_columns.items():
             if column_name in existing_columns:
                 continue
-            self.conn.execute(
-                f"ALTER TABLE recommendations ADD COLUMN {column_name} {column_type}"
-            )
+            self.conn.execute(f"ALTER TABLE recommendations ADD COLUMN {column_name} {column_type}")
 
     def _ensure_content_cache_runtime_columns(self) -> None:
         """Backfill content-cache runtime columns for continuous refresh."""
@@ -1072,9 +1436,7 @@ class Database:
         for column_name, column_type in required_columns.items():
             if column_name in existing_columns:
                 continue
-            self.conn.execute(
-                f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}"
-            )
+            self.conn.execute(f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}")
 
     def _ensure_content_cache_relevance_columns(self) -> None:
         """Backfill relevance fields for existing content-cache rows."""
@@ -1090,9 +1452,7 @@ class Database:
         for column_name, column_type in required_columns.items():
             if column_name in existing_columns:
                 continue
-            self.conn.execute(
-                f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}"
-            )
+            self.conn.execute(f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}")
 
     def _ensure_content_cache_topic_columns(self) -> None:
         """Backfill topic bucketing fields for existing content-cache rows."""
@@ -1101,17 +1461,11 @@ class Database:
             for row in self.conn.execute("PRAGMA table_info(content_cache)").fetchall()
         }
         if "topic_key" not in existing_columns:
-            self.conn.execute(
-                "ALTER TABLE content_cache ADD COLUMN topic_key TEXT DEFAULT ''"
-            )
+            self.conn.execute("ALTER TABLE content_cache ADD COLUMN topic_key TEXT DEFAULT ''")
         if "topic_group" not in existing_columns:
-            self.conn.execute(
-                "ALTER TABLE content_cache ADD COLUMN topic_group TEXT DEFAULT ''"
-            )
+            self.conn.execute("ALTER TABLE content_cache ADD COLUMN topic_group TEXT DEFAULT ''")
         if "style_key" not in existing_columns:
-            self.conn.execute(
-                "ALTER TABLE content_cache ADD COLUMN style_key TEXT DEFAULT ''"
-            )
+            self.conn.execute("ALTER TABLE content_cache ADD COLUMN style_key TEXT DEFAULT ''")
 
     def _ensure_content_cache_pool_copy_columns(self) -> None:
         """Backfill precomputed pool-copy fields for existing databases."""
@@ -1126,9 +1480,7 @@ class Database:
         for column_name, column_type in required_columns.items():
             if column_name in existing_columns:
                 continue
-            self.conn.execute(
-                f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}"
-            )
+            self.conn.execute(f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}")
 
     def _ensure_content_cache_delight_columns(self) -> None:
         """Backfill proactive delight scoring fields for existing databases."""
@@ -1146,9 +1498,7 @@ class Database:
         for column_name, column_type in required_columns.items():
             if column_name in existing_columns:
                 continue
-            self.conn.execute(
-                f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}"
-            )
+            self.conn.execute(f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}")
 
     def _ensure_content_cache_multisource_columns(self) -> None:
         """Add multi-source content identity fields for existing databases."""
@@ -1160,19 +1510,16 @@ class Database:
             "content_id": "TEXT DEFAULT ''",
             "content_url": "TEXT DEFAULT ''",
             "source_platform": "TEXT DEFAULT 'bilibili'",
+            "author_name": "TEXT DEFAULT ''",
         }
         added = False
         for column_name, column_type in required_columns.items():
             if column_name in existing_columns:
                 continue
-            self.conn.execute(
-                f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}"
-            )
+            self.conn.execute(f"ALTER TABLE content_cache ADD COLUMN {column_name} {column_type}")
             added = True
         if added:
-            self.conn.execute(
-                "UPDATE content_cache SET content_id = bvid WHERE content_id = ''"
-            )
+            self.conn.execute("UPDATE content_cache SET content_id = bvid WHERE content_id = ''")
 
     def _ensure_source_recipes_table(self) -> None:
         """Create the source_recipes table if it does not exist."""
@@ -1190,6 +1537,39 @@ class Database:
                 last_fetched_at TIMESTAMP
             );
         """)
+
+    def _ensure_xhs_observed_urls_table(self) -> None:
+        """Create the xhs_observed_urls table if it does not exist."""
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS xhs_observed_urls (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                url         TEXT NOT NULL,
+                page_type   TEXT NOT NULL DEFAULT 'other',
+                observed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                enriched    INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_xhs_observed_urls_url
+                ON xhs_observed_urls (url);
+        """)
+
+    # ── XHS observed URL ingest ───────────────────────────────────
+
+    def save_xhs_observed_urls(self, urls: list[str], page_type: str) -> int:
+        """Insert observed xhs URLs, skipping duplicates. Returns count inserted."""
+        inserted = 0
+        for url in urls:
+            # Skip if we've already seen this URL
+            existing = self.conn.execute(
+                "SELECT 1 FROM xhs_observed_urls WHERE url = ?", (url,)
+            ).fetchone()
+            if existing:
+                continue
+            self._execute_write(
+                "INSERT INTO xhs_observed_urls (url, page_type) VALUES (?, ?)",
+                (url, page_type),
+            )
+            inserted += 1
+        return inserted
 
     # ── Source recipe CRUD ──────────────────────────────────────────
 
@@ -1225,9 +1605,7 @@ class Database:
     def get_all_recipes(self) -> list[dict[str, Any]]:
         """Return all source recipes."""
         self._ensure_fresh_read()
-        rows = self.conn.execute(
-            "SELECT * FROM source_recipes ORDER BY created_at"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM source_recipes ORDER BY created_at").fetchall()
         return [self._row_to_recipe(row) for row in rows]
 
     def get_enabled_recipes(self) -> list[dict[str, Any]]:
@@ -1293,24 +1671,43 @@ class Database:
         self,
         *,
         min_delight_score: float = 0.85,
+        limit: int = 1,
     ) -> dict[str, Any] | None:
-        """Return one un-notified pool item with the highest delight_score."""
+        """Return one un-notified pool item with the highest delight_score.
+
+        Backwards-compatible: ``limit=1`` returns a single dict (or None);
+        callers that want multiple candidates (for example to filter
+        disliked topics in Python) should call
+        ``get_delight_candidates`` instead.
+        """
+        rows = self.get_delight_candidates(
+            min_delight_score=min_delight_score,
+            limit=max(1, int(limit)),
+        )
+        return rows[0] if rows else None
+
+    def get_delight_candidates(
+        self,
+        *,
+        min_delight_score: float = 0.85,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return up to ``limit`` un-notified delight candidates ordered by score."""
         cursor = self.conn.execute(
             """
             SELECT *
             FROM content_cache
             WHERE COALESCE(delight_score, 0.0) >= ?
               AND COALESCE(delight_notified, 0) = 0
-              AND COALESCE(pool_status, 'fresh') IN ('fresh', 'shown')
+              AND COALESCE(delight_reason, '') != ''
+              AND COALESCE(delight_hook, '') != ''
+              AND COALESCE(pool_status, 'fresh') IN ('fresh', 'shown', 'suppressed')
             ORDER BY delight_score DESC, relevance_score DESC, discovered_at DESC
-            LIMIT 1
+            LIMIT ?
             """,
-            (min_delight_score,),
+            (min_delight_score, max(1, int(limit))),
         )
-        row = cursor.fetchone()
-        if row is None:
-            return None
-        return dict(row)
+        return [dict(row) for row in cursor.fetchall()]
 
     def mark_delight_notified(self, bvid: str) -> None:
         """Mark one content item as delight-notified."""
@@ -1356,7 +1753,9 @@ class Database:
             FROM content_cache
             WHERE COALESCE(delight_score, 0.0) >= ?
               AND COALESCE(delight_notified, 0) = 0
-              AND COALESCE(pool_status, 'fresh') IN ('fresh', 'shown')
+              AND COALESCE(delight_reason, '') != ''
+              AND COALESCE(delight_hook, '') != ''
+              AND COALESCE(pool_status, 'fresh') IN ('fresh', 'shown', 'suppressed')
             """,
             (min_delight_score,),
         )
@@ -1366,25 +1765,59 @@ class Database:
     def get_pool_candidates_needing_delight_score(
         self,
         limit: int = 30,
+        *,
+        min_delight_score_for_reason: float | None = None,
     ) -> list[dict[str, Any]]:
-        """Return fresh pool candidates that haven't been delight-scored yet."""
-        cursor = self.conn.execute(
-            """
-            SELECT *
-            FROM content_cache
-            WHERE COALESCE(pool_status, 'fresh') = 'fresh'
-              AND COALESCE(feedback_type, '') != 'dislike'
-              AND COALESCE(delight_score, 0.0) = 0.0
-              AND NOT EXISTS (
-                SELECT 1
-                FROM recommendations AS r
-                WHERE r.bvid = content_cache.bvid
-              )
-            ORDER BY relevance_score DESC, discovered_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
+        """Return pool candidates that still need delight evaluation or copy."""
+        if min_delight_score_for_reason is None:
+            cursor = self.conn.execute(
+                """
+                SELECT *
+                FROM content_cache
+                WHERE COALESCE(pool_status, 'fresh') IN ('fresh', 'suppressed')
+                  AND COALESCE(feedback_type, '') != 'dislike'
+                  AND COALESCE(delight_score, 0.0) = 0.0
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM recommendations AS r
+                    WHERE r.bvid = content_cache.bvid
+                  )
+                ORDER BY relevance_score DESC, discovered_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+        else:
+            cursor = self.conn.execute(
+                """
+                SELECT *
+                FROM content_cache
+                WHERE COALESCE(pool_status, 'fresh') IN ('fresh', 'suppressed')
+                  AND COALESCE(feedback_type, '') != 'dislike'
+                  AND (
+                    COALESCE(delight_score, 0.0) = 0.0
+                    OR (
+                      COALESCE(delight_score, 0.0) >= ?
+                      AND (
+                        COALESCE(delight_reason, '') = ''
+                        OR COALESCE(delight_hook, '') = ''
+                      )
+                    )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM recommendations AS r
+                    WHERE r.bvid = content_cache.bvid
+                  )
+                ORDER BY
+                    CASE WHEN COALESCE(delight_score, 0.0) > 0.0 THEN 0 ELSE 1 END ASC,
+                    delight_score DESC,
+                    relevance_score DESC,
+                    discovered_at DESC
+                LIMIT ?
+                """,
+                (min_delight_score_for_reason, limit),
+            )
         return [dict(row) for row in cursor.fetchall()]
 
     @staticmethod
@@ -1415,7 +1848,5 @@ class Database:
     ) -> list[dict[str, Any]]:
         if not viewed_bvids:
             return rows[:limit]
-        filtered = [
-            row for row in rows if str(row.get("bvid", "")).strip() not in viewed_bvids
-        ]
+        filtered = [row for row in rows if str(row.get("bvid", "")).strip() not in viewed_bvids]
         return filtered[:limit]

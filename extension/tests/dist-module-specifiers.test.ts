@@ -6,8 +6,11 @@ import { execFileSync } from "node:child_process";
 
 const DIST_FILES = [
   "dist/background/service-worker.js",
-  "dist/content/collector.js",
+  "dist/content/bilibili.js",
+  "dist/content/xiaohongshu.js",
 ];
+
+const CONTENT_SCRIPT_FILES = ["dist/content/bilibili.js", "dist/content/xiaohongshu.js"];
 
 test("built extension runtime scripts are directly loadable by Chrome", () => {
   const root = process.cwd();
@@ -22,10 +25,12 @@ test("built extension runtime scripts are directly loadable by Chrome", () => {
     }
   }
 
-  const collectorContent = readFileSync(join(root, "dist/content/collector.js"), "utf8");
-  assert.doesNotMatch(
-    collectorContent,
-    /^\s*import\s/m,
-    "content script output must not contain ESM imports",
-  );
+  for (const relativePath of CONTENT_SCRIPT_FILES) {
+    const content = readFileSync(join(root, relativePath), "utf8");
+    assert.doesNotMatch(
+      content,
+      /^\s*import\s/m,
+      `content script ${relativePath} must not contain ESM imports`,
+    );
+  }
 });

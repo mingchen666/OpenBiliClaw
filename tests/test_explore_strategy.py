@@ -195,15 +195,9 @@ async def test_explore_strategy_prioritizes_interest_anchored_domains() -> None:
             "纪录片 幕后 工艺": [
                 {"bvid": "BV1A", "title": "纪录片幕后", "author": "UP1", "mid": 1}
             ],
-            "历史 事件 复盘": [
-                {"bvid": "BV1B", "title": "历史复盘", "author": "UP2", "mid": 2}
-            ],
-            "排水 系统 科普": [
-                {"bvid": "BV1C", "title": "排水系统", "author": "UP3", "mid": 3}
-            ],
-            "电影 拟音 幕后": [
-                {"bvid": "BV1D", "title": "电影拟音", "author": "UP4", "mid": 4}
-            ],
+            "历史 事件 复盘": [{"bvid": "BV1B", "title": "历史复盘", "author": "UP2", "mid": 2}],
+            "排水 系统 科普": [{"bvid": "BV1C", "title": "排水系统", "author": "UP3", "mid": 3}],
+            "电影 拟音 幕后": [{"bvid": "BV1D", "title": "电影拟音", "author": "UP4", "mid": 4}],
         }
     )
 
@@ -244,11 +238,7 @@ async def test_explore_strategy_applies_exploration_bonus() -> None:
         ]
     )
     bilibili_client = FakeBilibiliClient(
-        {
-            "城市 建筑 纪录片": [
-                {"bvid": "BV1A", "title": "城市与建筑", "author": "UP1", "mid": 1}
-            ]
-        }
+        {"城市 建筑 纪录片": [{"bvid": "BV1A", "title": "城市与建筑", "author": "UP1", "mid": 1}]}
     )
 
     strategy = ExploreStrategy(
@@ -292,11 +282,7 @@ async def test_explore_strategy_tolerates_partial_failures() -> None:
         ]
     )
     bilibili_client = FakeBilibiliClient(
-        {
-            "城市 建筑 纪录片": [
-                {"bvid": "BV1A", "title": "城市与建筑", "author": "UP1", "mid": 1}
-            ]
-        },
+        {"城市 建筑 纪录片": [{"bvid": "BV1A", "title": "城市与建筑", "author": "UP1", "mid": 1}]},
         failing_queries={"声音 文化 纪录片"},
     )
 
@@ -329,7 +315,10 @@ async def test_explore_strategy_uses_bounded_evaluation_concurrency() -> None:
               ]
             }
             """,
-            '[{"score": 0.82, "reason": "A"}, {"score": 0.81, "reason": "B"}, {"score": 0.80, "reason": "C"}]',
+            (
+                '[{"score": 0.82, "reason": "A"}, {"score": 0.81, "reason": "B"}, '
+                '{"score": 0.80, "reason": "C"}]'
+            ),
         ]
     )
     bilibili_client = FakeBilibiliClient(
@@ -338,9 +327,7 @@ async def test_explore_strategy_uses_bounded_evaluation_concurrency() -> None:
                 {"bvid": "BV1A", "title": "A", "author": "UP1", "mid": 1},
                 {"bvid": "BV1B", "title": "B", "author": "UP2", "mid": 2},
             ],
-            "空间 设计 深度讲解": [
-                {"bvid": "BV1C", "title": "C", "author": "UP3", "mid": 3}
-            ],
+            "空间 设计 深度讲解": [{"bvid": "BV1C", "title": "C", "author": "UP3", "mid": 3}],
         }
     )
     strategy = ExploreStrategy(
@@ -357,4 +344,70 @@ async def test_explore_strategy_uses_bounded_evaluation_concurrency() -> None:
 
     # Batch evaluation sends fewer LLM calls than items (1 batch for 3 items)
     assert llm_service.max_active_calls >= 1
+    # Both queries belong to the same domain bucket, so interleave is a no-op
+    # and the natural order (query1 entries, then query2 entry) is preserved.
     assert [item.bvid for item in results] == ["BV1A", "BV1B", "BV1C"]
+
+
+@pytest.mark.asyncio
+async def test_explore_strategy_interleaves_domains_for_eval_fairness() -> None:
+    """Two domains with equal novelty must be round-robin interleaved before
+    the 30-item eval cap. Verifying via post-eval order works only when
+    novelty (and therefore the exploration bonus) matches across domains;
+    otherwise _sort_results re-ranks by score."""
+    from openbiliclaw.discovery.strategies.strategies import ExploreStrategy
+
+    llm_service = FakeLLMService(
+        [
+            """
+            {
+              "domains": [
+                {
+                  "domain": "声音景观",
+                  "why_it_might_resonate": "扩展认知边界。",
+                  "novelty_level": 0.7,
+                  "queries": ["声音 文化"]
+                },
+                {
+                  "domain": "城市建筑",
+                  "why_it_might_resonate": "结构化理解。",
+                  "novelty_level": 0.7,
+                  "queries": ["城市 建筑"]
+                }
+              ]
+            }
+            """,
+            (
+                '[{"score": 0.82, "reason": "a"}, {"score": 0.82, "reason": "b"}, '
+                '{"score": 0.82, "reason": "c"}, {"score": 0.82, "reason": "d"}]'
+            ),
+        ]
+    )
+    bilibili_client = FakeBilibiliClient(
+        {
+            "声音 文化": [
+                {"bvid": "BVS1", "title": "S1", "author": "U", "mid": 1},
+                {"bvid": "BVS2", "title": "S2", "author": "U", "mid": 2},
+            ],
+            "城市 建筑": [
+                {"bvid": "BVC1", "title": "C1", "author": "U", "mid": 3},
+                {"bvid": "BVC2", "title": "C2", "author": "U", "mid": 4},
+            ],
+        }
+    )
+    strategy = ExploreStrategy(
+        llm_service=llm_service,
+        bilibili_client=bilibili_client,
+        score_threshold=0.0,
+    )
+
+    results = await strategy.discover(_build_profile(), limit=20)
+
+    # With equal novelty, all four end up at the same blended score, so the
+    # stable sort in _sort_results preserves the pre-eval interleave order:
+    # depth0 → BVS1, BVC1; depth1 → BVS2, BVC2.
+    bvids = [item.bvid for item in results]
+    assert set(bvids) == {"BVS1", "BVS2", "BVC1", "BVC2"}
+    # The crucial property: at least one C-domain item appears before BVS2,
+    # proving each domain got a turn before the first one finished.
+    assert bvids.index("BVC1") < bvids.index("BVS2")

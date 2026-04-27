@@ -42,6 +42,9 @@ class PreferenceAnalyzer:
     registry: SupportsCoreMemoryTask
     decay_factor_per_week: float = 0.9
     min_interest_weight: float = 0.05
+    # EMA blend: 0.3 * latest batch + 0.7 * prior mix. Chosen so one-off
+    # cross-platform batches don't erase long-running bilibili history.
+    source_mix_blend_alpha: float = 0.3
 
     def __post_init__(self) -> None:
         if not hasattr(self.registry, "complete_structured_task"):
@@ -54,8 +57,37 @@ class PreferenceAnalyzer:
         *,
         events: list[dict[str, object]],
         existing_preference: dict[str, object],
+        event_chunk_size: int = 0,
     ) -> dict[str, object]:
-        """Run structured extraction and merge the result with existing preference state."""
+        """Run structured extraction and merge the result with existing preference state.
+
+        When ``event_chunk_size`` > 0 and the event list exceeds that size,
+        the input is split into chunks of at most ``event_chunk_size``
+        events and each chunk is analysed concurrently in a separate LLM
+        call. Partial preferences from each chunk are then folded into
+        ``existing_preference`` via the regular ``merge_preferences``
+        path, preserving weighted interest merging and cognitive-style
+        union. Use this for latency-sensitive flows (e.g. init bootstrap
+        with hundreds of historical events) where a single max-thinking
+        call on the whole batch would block for minutes.
+        """
+        if event_chunk_size > 0 and len(events) > event_chunk_size:
+            return await self._analyze_events_chunked(
+                events=events,
+                existing_preference=existing_preference,
+                chunk_size=event_chunk_size,
+            )
+        return await self._analyze_events_single(
+            events=events,
+            existing_preference=existing_preference,
+        )
+
+    async def _analyze_events_single(
+        self,
+        *,
+        events: list[dict[str, object]],
+        existing_preference: dict[str, object],
+    ) -> dict[str, object]:
         messages = build_preference_analysis_prompt(
             events=events,
             existing_preference=existing_preference,
@@ -72,6 +104,10 @@ class PreferenceAnalyzer:
         raw_preference = self._parse_response(response.content)
         normalized = self._normalize_preference(raw_preference)
         merged = self.merge_preferences(existing_preference, normalized, now=datetime.now())
+        merged["source_platform_mix"] = self._merge_source_mix(
+            existing_preference.get("source_platform_mix"),
+            self.compute_source_platform_mix(events),
+        )
         # Preserve cognitive_style from LLM output (not modeled in PreferenceLayer)
         raw_cs = raw_preference.get("cognitive_style")
         if isinstance(raw_cs, list):
@@ -81,6 +117,133 @@ class PreferenceAnalyzer:
             if isinstance(existing_cs, list):
                 merged["cognitive_style"] = existing_cs
         return merged
+
+    async def _analyze_events_chunked(
+        self,
+        *,
+        events: list[dict[str, object]],
+        existing_preference: dict[str, object],
+        chunk_size: int,
+    ) -> dict[str, object]:
+        """Split events into chunks, analyse each concurrently, then fold."""
+        import asyncio as _asyncio
+
+        chunks = [events[i : i + chunk_size] for i in range(0, len(events), chunk_size)]
+        logger.info(
+            "analyze_events chunked: total_events=%d chunks=%d chunk_size=%d",
+            len(events),
+            len(chunks),
+            chunk_size,
+        )
+
+        # Each chunk is analysed against an empty seed so the LLM calls
+        # are truly independent — we don't want one chunk's partial
+        # state to leak into another's prompt. The final merge step
+        # below folds each chunk's normalized output into the real
+        # ``existing_preference`` using merge_preferences, which already
+        # handles weighted interest aggregation across calls.
+        async def _run_chunk(
+            chunk: list[dict[str, object]],
+        ) -> tuple[dict[str, object], dict[str, object]]:
+            messages = build_preference_analysis_prompt(
+                events=chunk,
+                existing_preference={},
+            )
+            try:
+                response = await self.registry.complete_structured_task(
+                    system_instruction=messages[0]["content"],
+                    user_input=messages[1]["content"],
+                    max_tokens=DEFAULT_STRUCTURED_MAX_TOKENS,
+                )
+            except (LLMProviderError, LLMServiceError) as exc:
+                raise PreferenceAnalysisError(str(exc)) from exc
+            raw = self._parse_response(response.content)
+            return raw, self._normalize_preference(raw)
+
+        outcomes = await _asyncio.gather(*(_run_chunk(chunk) for chunk in chunks))
+
+        # Fold each chunk's normalized preference into the running merge
+        # one at a time. merge_preferences already does weighted interest
+        # aggregation + dislike-list union, so stacking calls gives an
+        # aggregate comparable in spirit to a single big-prompt analysis.
+        merged: dict[str, object] = dict(existing_preference)
+        cognitive_style_union: list[str] = []
+        for raw_preference, normalized in outcomes:
+            merged = self.merge_preferences(merged, normalized, now=datetime.now())
+            raw_cs = raw_preference.get("cognitive_style")
+            if isinstance(raw_cs, list):
+                for item in raw_cs:
+                    if item and str(item) not in cognitive_style_union:
+                        cognitive_style_union.append(str(item))
+
+        merged["source_platform_mix"] = self._merge_source_mix(
+            existing_preference.get("source_platform_mix"),
+            self.compute_source_platform_mix(events),
+        )
+        if cognitive_style_union:
+            merged["cognitive_style"] = cognitive_style_union
+        elif "cognitive_style" not in merged:
+            existing_cs = existing_preference.get("cognitive_style")
+            if isinstance(existing_cs, list):
+                merged["cognitive_style"] = existing_cs
+        logger.info(
+            "analyze_events chunked done: total_events=%d chunks=%d",
+            len(events),
+            len(chunks),
+        )
+        return merged
+
+    @staticmethod
+    def compute_source_platform_mix(
+        events: list[dict[str, object]],
+    ) -> dict[str, float]:
+        """Count events by source_platform and return a normalized share dict."""
+        counts: dict[str, int] = {}
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            metadata = event.get("metadata")
+            source = ""
+            if isinstance(metadata, dict):
+                raw = metadata.get("source_platform")
+                if isinstance(raw, str):
+                    source = raw.strip()
+            if not source:
+                # Events predating source_platform are always bilibili.
+                source = "bilibili"
+            counts[source] = counts.get(source, 0) + 1
+        total = sum(counts.values())
+        if total == 0:
+            return {}
+        return {name: count / total for name, count in counts.items()}
+
+    def _merge_source_mix(
+        self,
+        existing: object,
+        batch: dict[str, float],
+    ) -> dict[str, float]:
+        """Blend the existing persisted mix with the latest batch using EMA."""
+        prior: dict[str, float] = {}
+        if isinstance(existing, dict):
+            for key, value in existing.items():
+                if isinstance(key, str) and key:
+                    try:
+                        prior[key] = float(value)
+                    except (TypeError, ValueError):
+                        continue
+        if not batch:
+            return prior
+        if not prior:
+            return dict(batch)
+        alpha = max(0.0, min(1.0, self.source_mix_blend_alpha))
+        keys = set(prior) | set(batch)
+        blended = {
+            key: alpha * batch.get(key, 0.0) + (1.0 - alpha) * prior.get(key, 0.0) for key in keys
+        }
+        total = sum(blended.values())
+        if total <= 0:
+            return {}
+        return {key: round(value / total, 4) for key, value in blended.items() if value > 0}
 
     def merge_preferences(
         self,
@@ -129,10 +292,12 @@ class PreferenceAnalyzer:
         new_up = self._as_str_list(new_preference.get("favorite_up_users", []))
         old_up = self._as_str_list(existing_preference.get("favorite_up_users", []))
         favorite_up_users = sorted(set(new_up)) if new_up else old_up
-        disliked_topics = sorted({
-            *self._as_str_list(existing_preference.get("disliked_topics", [])),
-            *self._as_str_list(new_preference.get("disliked_topics", [])),
-        })
+        disliked_topics = sorted(
+            {
+                *self._as_str_list(existing_preference.get("disliked_topics", [])),
+                *self._as_str_list(new_preference.get("disliked_topics", [])),
+            }
+        )
 
         default_preference = self._default_preference()
         style = self._as_dict(default_preference["style"]).copy()
@@ -188,8 +353,7 @@ class PreferenceAnalyzer:
                 last_seen = now
             weeks = max((now - last_seen).days, 0) / 7
             decayed_weight = self._clamp_weight(
-                self._to_float(item.get("weight", 0.0))
-                * (self.decay_factor_per_week ** weeks)
+                self._to_float(item.get("weight", 0.0)) * (self.decay_factor_per_week**weeks)
             )
             if decayed_weight < self.min_interest_weight:
                 continue
@@ -211,7 +375,7 @@ class PreferenceAnalyzer:
             )
         if not isinstance(parsed, dict):
             raise PreferenceAnalysisError("LLM preference response must be a JSON object.")
-        return parsed
+        return {key: value for key, value in parsed.items()}
 
     def _normalize_preference(self, raw_preference: dict[str, object]) -> dict[str, object]:
         normalized = self._default_preference()
@@ -229,9 +393,7 @@ class PreferenceAnalyzer:
         normalized["exploration_openness"] = self._clamp_weight(
             self._to_float(raw_preference.get("exploration_openness", 0.5))
         )
-        normalized["disliked_topics"] = self._as_str_list(
-            raw_preference.get("disliked_topics", [])
-        )
+        normalized["disliked_topics"] = self._as_str_list(raw_preference.get("disliked_topics", []))
         normalized["favorite_up_users"] = self._as_str_list(
             raw_preference.get("favorite_up_users", [])
         )

@@ -10,13 +10,17 @@ import asyncio
 import json
 import logging
 import re
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+
+from openbiliclaw.discovery.strategies._utils import build_profile_summary
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Sequence
 
+    from openbiliclaw.llm.embedding import SupportsEmbeddingService
     from openbiliclaw.soul.profile import SoulProfile
     from openbiliclaw.storage.database import Database
 
@@ -29,7 +33,18 @@ class DiscoveryConcurrencyController:
     """Shared bounded concurrency for external discovery dependencies."""
 
     bilibili_request_concurrency: int = 2
-    llm_evaluation_concurrency: int = 2
+    # Cap on simultaneous discovery LLM calls. Sized so a typical init
+    # discover (4 strategies × ~8 batches each = ~32 batches) fans out
+    # in a single wave rather than queueing behind the cap. Each batch
+    # is a max-thinking deepseek call (~60-100s); without enough
+    # concurrency we'd spend the full P4 budget waiting on the
+    # semaphore (observed 17 min wall on 40 batches at concurrency=8,
+    # of which only ~100s was actual LLM compute per batch).
+    # deepseek has no effective RPM cap at our request sizes, so the
+    # only practical limits are the local event loop overhead and the
+    # ``chat_active`` yield (which still works to give interactive
+    # dialogue priority).
+    llm_evaluation_concurrency: int = 32
     search_budget_total: int = 30
     """Total bilibili search API calls allowed per discovery run.
 
@@ -39,9 +54,7 @@ class DiscoveryConcurrencyController:
     """
     _search_strategy_count: int = field(init=False, default=3, repr=False)
     _loop: asyncio.AbstractEventLoop | None = field(init=False, default=None, repr=False)
-    _bilibili_semaphore: asyncio.Semaphore | None = field(
-        init=False, default=None, repr=False
-    )
+    _bilibili_semaphore: asyncio.Semaphore | None = field(init=False, default=None, repr=False)
     _llm_semaphore: asyncio.Semaphore | None = field(init=False, default=None, repr=False)
 
     @property
@@ -55,9 +68,7 @@ class DiscoveryConcurrencyController:
         if self._loop is loop:
             return
         self._loop = loop
-        self._bilibili_semaphore = asyncio.Semaphore(
-            max(1, self.bilibili_request_concurrency)
-        )
+        self._bilibili_semaphore = asyncio.Semaphore(max(1, self.bilibili_request_concurrency))
         self._llm_semaphore = asyncio.Semaphore(max(1, self.llm_evaluation_concurrency))
 
     async def run_bilibili(self, awaitable: Awaitable[_T]) -> _T:
@@ -67,12 +78,36 @@ class DiscoveryConcurrencyController:
         async with self._bilibili_semaphore:
             return await awaitable
 
+    chat_active: bool = False
+    llm_throttle_seconds: float = 0.0
+    """Minimum delay between consecutive discovery LLM calls.
+
+    Kept at 0 for deepseek, which has no effective RPM cap at our
+    request sizes. Raise above 0 when fronting a provider with a
+    strict RPM ceiling (e.g. Gemini free tier at 15 RPM). The
+    ``chat_active`` flag already yields the lane when a dialogue is
+    in progress, so the throttle is no longer needed for chat
+    protection on deepseek.
+    """
+
     async def run_llm(self, awaitable: Awaitable[_T]) -> _T:
-        """Run one LLM-facing awaitable within the evaluation limit."""
+        """Run one LLM-facing awaitable within the evaluation limit.
+
+        When ``chat_active`` is True (a user dialogue is in progress),
+        discovery LLM calls yield until the dialogue finishes.  This
+        prevents discovery from saturating the LLM API's RPM quota and
+        starving interactive chat requests.
+        """
+        while self.chat_active:
+            await asyncio.sleep(0.5)
         self._ensure_loop_bound()
         assert self._llm_semaphore is not None
         async with self._llm_semaphore:
-            return await awaitable
+            result = await awaitable
+            # Throttle: space out discovery LLM calls to avoid RPM exhaustion
+            if self.llm_throttle_seconds > 0:
+                await asyncio.sleep(self.llm_throttle_seconds)
+            return result
 
 
 class SupportsStructuredTask(Protocol):
@@ -129,6 +164,55 @@ class DiscoveredContent:
         if not self.content_url and self.bvid:
             self.content_url = f"https://www.bilibili.com/video/{self.bvid}"
 
+    def to_cache_kwargs(self) -> dict[str, object]:
+        """Build the kwargs dict for ``Database.cache_content()``.
+
+        Single source of truth for the DiscoveredContent → content_cache
+        field mapping.  Used by discovery's ``_cache_results`` and the
+        recommendation engine's ``classify_pool_backlog`` persist loop.
+        """
+        return {
+            "title": self.title,
+            "up_name": self.up_name,
+            "up_mid": self.up_mid,
+            "duration": self.duration,
+            "tags": self.tags,
+            "topic_key": self.topic_key,
+            "topic_group": self.topic_group,
+            "style_key": self.style_key,
+            "description": self.description,
+            "cover_url": self.cover_url,
+            "view_count": self.view_count,
+            "like_count": self.like_count,
+            "relevance_score": self.relevance_score,
+            "relevance_reason": self.relevance_reason,
+            "candidate_tier": self.candidate_tier,
+            "source": self.source_strategy,
+            "source_platform": self.source_platform or "bilibili",
+            "content_id": self.content_id or self.bvid,
+            "content_url": self.content_url,
+            "author_name": self.author_name or self.up_name,
+        }
+
+
+# Canonical set of LLM-returned style_key values accepted by evaluation.
+# Shared across discovery and recommendation — must stay in sync.
+VALID_STYLE_KEYS: frozenset[str] = frozenset(
+    {
+        "game_strategy",
+        "news_brief",
+        "practical_guide",
+        "story_doc",
+        "visual_showcase",
+        "tech_analysis",
+        "deep_dive",
+        "fun_variety",
+        "lifestyle",
+        "review_roundup",
+        "light_chat",
+    }
+)
+
 
 class DiscoveryStrategy(ABC):
     """Base class for content discovery strategies."""
@@ -140,9 +224,7 @@ class DiscoveryStrategy(ABC):
         ...
 
     @abstractmethod
-    async def discover(
-        self, profile: SoulProfile, limit: int = 20
-    ) -> list[DiscoveredContent]:
+    async def discover(self, profile: SoulProfile, limit: int = 20) -> list[DiscoveredContent]:
         """Execute the discovery strategy.
 
         Args:
@@ -177,7 +259,7 @@ class ContentDiscoveryEngine:
         database: Database | None = None,
         *,
         concurrency: DiscoveryConcurrencyController | None = None,
-        embedding_service: Any | None = None,
+        embedding_service: SupportsEmbeddingService | None = None,
         target_primary_count: int = 20,
         backfill_target_count: int = 40,
     ) -> None:
@@ -222,6 +304,8 @@ class ContentDiscoveryEngine:
         profile: SoulProfile,
         strategies: list[str] | None = None,
         limit: int = 30,
+        *,
+        fully_parallel: bool = False,
     ) -> list[DiscoveredContent]:
         """Run discovery with selected (or all) strategies.
 
@@ -229,6 +313,13 @@ class ContentDiscoveryEngine:
             profile: User soul profile for relevance evaluation.
             strategies: Optional list of strategy names to run.
                        If None, runs all registered strategies.
+            fully_parallel: When True, skip the default two-phase split
+                (search-first then others) and run every strategy in a
+                single ``asyncio.gather``. Rate limiting still holds —
+                ``bilibili_request_concurrency`` caps simultaneous HTTP
+                requests and ``search_budget_total`` caps total search
+                calls — so this only sacrifices the 2s cool-down between
+                phases. Use for latency-critical flows (init bootstrap).
 
         Returns:
             Combined, deduplicated, and scored list of discovered content.
@@ -245,6 +336,7 @@ class ContentDiscoveryEngine:
             active,
             profile=profile,
             limit=effective_limit,
+            fully_parallel=fully_parallel,
         )
         # Normalize topic_group using embeddings before dedup
         merged_primary = self._merge_and_rank(primary_results)
@@ -331,7 +423,10 @@ class ContentDiscoveryEngine:
             if best_label is not None and best_sim >= threshold:
                 item.topic_group = best_label
                 logger.debug(
-                    "Topic assigned: %r → %r (sim=%.3f)", topic, best_label, best_sim,
+                    "Topic assigned: %r → %r (sim=%.3f)",
+                    topic,
+                    best_label,
+                    best_sim,
                 )
 
     async def _normalize_topic_keys(
@@ -419,13 +514,15 @@ class ContentDiscoveryEngine:
         # Step 4: Reassign topic_key on items
         for item in results:
             key = (item.topic_key or "").strip().lower()
-            canonical = canonical_map.get(key)
-            if canonical:
+            canonical_key = canonical_map.get(key)
+            if canonical_key:
                 logger.debug(
                     "Topic key normalized: %r → %r (strategy=%s)",
-                    item.topic_key, canonical, item.source_strategy,
+                    item.topic_key,
+                    canonical_key,
+                    item.source_strategy,
                 )
-                item.topic_key = canonical
+                item.topic_key = canonical_key
 
     @staticmethod
     def _label_quality_score(label: str) -> float:
@@ -503,26 +600,17 @@ class ContentDiscoveryEngine:
                     content.relevance_score = round(max_sim * 0.5, 4)
                     content.relevance_reason = "embedding 预过滤: 与所有兴趣相似度极低"
                     self._eval_cache[cache_key] = (
-                        content.relevance_score, content.relevance_reason, "", "",
+                        content.relevance_score,
+                        content.relevance_reason,
+                        "",
+                        "",
                     )
                     return content.relevance_score
 
         from openbiliclaw.llm.prompts import build_content_evaluation_prompt
 
         messages = build_content_evaluation_prompt(
-            profile_summary={
-                "personality_portrait": profile.personality_portrait,
-                "core_traits": profile.core_traits[:5],
-                "deep_needs": profile.deep_needs[:5],
-                "interests": [
-                    {
-                        "name": item.name,
-                        "category": item.category,
-                        "weight": item.weight,
-                    }
-                    for item in profile.preferences.interests[:10]
-                ],
-            },
+            profile_summary=build_profile_summary(profile),
             content_summary={
                 "title": content.title,
                 "up_name": content.up_name,
@@ -532,6 +620,7 @@ class ContentDiscoveryEngine:
                 "source_strategy": content.source_strategy,
             },
             source_context=source_context or content.source_strategy,
+            source_platform=content.source_platform or "bilibili",
         )
         try:
             llm_call = self._llm_service.complete_structured_task(
@@ -554,21 +643,26 @@ class ContentDiscoveryEngine:
             return 0.0
 
         # Validate LLM-returned style_key against allowed values
-        _VALID_STYLES = {
-            "game_strategy", "news_brief", "practical_guide", "story_doc",
-            "visual_showcase", "tech_analysis",
-            "deep_dive", "fun_variety", "lifestyle", "review_roundup",
-            "light_chat",
-        }
+        valid_styles = VALID_STYLE_KEYS
 
         content.relevance_score = score
         content.relevance_reason = reason
         if topic_group:
             content.topic_group = topic_group
-        if style_key in _VALID_STYLES:
+        if style_key in valid_styles:
             content.style_key = style_key
         self._eval_cache[cache_key] = (score, reason, topic_group, style_key)
         return score
+
+    # Safety cap applied at the evaluator level regardless of caller.
+    # Strategies that over-fetch (related_chain depth-2 fanout, explore
+    # with expanded budget, etc.) would otherwise dump 400+ items into a
+    # single discover run. 30 keeps each strategy at ~3 eval batches,
+    # so 4 strategies × 3 batches = 12 fits in a single concurrency
+    # wave under the default ``llm_evaluation_concurrency=32`` cap.
+    # Truncation is top-of-list (natural ranking from strategies), and
+    # a WARNING is emitted so we see when strategies hit the cap.
+    _EVALUATE_BATCH_HARD_CAP = 30
 
     async def evaluate_content_batch(
         self,
@@ -588,6 +682,16 @@ class ContentDiscoveryEngine:
         """
         if self._llm_service is None or not contents:
             return [0.0] * len(contents)
+
+        original_len = len(contents)
+        if original_len > self._EVALUATE_BATCH_HARD_CAP:
+            logger.warning(
+                "evaluate_content_batch: truncating %d -> %d items (source=%s)",
+                original_len,
+                self._EVALUATE_BATCH_HARD_CAP,
+                source_context or "mixed",
+            )
+            contents = contents[: self._EVALUATE_BATCH_HARD_CAP]
 
         # Split into cached vs uncached
         uncached_indices: list[int] = []
@@ -610,15 +714,59 @@ class ContentDiscoveryEngine:
         if not uncached_indices:
             return scores
 
-        # Process uncached items in batches
-        for batch_start in range(0, len(uncached_indices), batch_size):
-            batch_indices = uncached_indices[batch_start:batch_start + batch_size]
+        total_batches = (len(uncached_indices) + batch_size - 1) // batch_size
+        logger.info(
+            "eval_batch start: source=%s items=%d batches=%d (cached=%d)",
+            source_context or "mixed",
+            len(uncached_indices),
+            total_batches,
+            len(contents) - len(uncached_indices),
+        )
+
+        # Fan every batch out concurrently. The ``run_llm`` wrapper
+        # already caps actual parallelism to
+        # ``llm_evaluation_concurrency``, so this just lets the
+        # semaphore do its job without the sequential for-loop
+        # throttling us to 1 active batch per strategy.
+        async def _run_batch(
+            batch_idx: int,
+            batch_indices: list[int],
+        ) -> tuple[list[int], list[float]]:
             batch_contents = [contents[i] for i in batch_indices]
+            t0 = time.monotonic()
             batch_scores = await self._evaluate_batch(
-                batch_contents, profile, source_context=source_context,
+                batch_contents,
+                profile,
+                source_context=source_context,
             )
-            for idx, batch_score in zip(batch_indices, batch_scores):
+            elapsed = time.monotonic() - t0
+            kept = sum(1 for s in batch_scores if s > 0)
+            logger.info(
+                "eval_batch %d/%d done: source=%s size=%d elapsed=%.1fs kept=%d",
+                batch_idx,
+                total_batches,
+                source_context or "mixed",
+                len(batch_indices),
+                elapsed,
+                kept,
+            )
+            return batch_indices, batch_scores
+
+        tasks = []
+        for batch_idx, batch_start in enumerate(
+            range(0, len(uncached_indices), batch_size), start=1
+        ):
+            batch_indices = uncached_indices[batch_start : batch_start + batch_size]
+            tasks.append(_run_batch(batch_idx, batch_indices))
+
+        for batch_indices, batch_scores in await asyncio.gather(*tasks):
+            for idx, batch_score in zip(batch_indices, batch_scores, strict=True):
                 scores[idx] = batch_score
+
+        # Pad for any items dropped by the hard cap above so callers
+        # that ``zip(candidates, scores, strict=True)`` still line up.
+        if len(scores) < original_len:
+            scores = scores + [0.0] * (original_len - len(scores))
 
         return scores
 
@@ -632,15 +780,7 @@ class ContentDiscoveryEngine:
         """Send one LLM call for a batch of items."""
         from openbiliclaw.llm.prompts import build_batch_content_evaluation_prompt
 
-        profile_data = {
-            "personality_portrait": profile.personality_portrait,
-            "core_traits": profile.core_traits[:5],
-            "deep_needs": profile.deep_needs[:5],
-            "interests": [
-                {"name": item.name, "category": item.category, "weight": item.weight}
-                for item in profile.preferences.interests[:10]
-            ],
-        }
+        profile_data = build_profile_summary(profile)
         content_items = [
             {
                 "title": c.title,
@@ -656,15 +796,24 @@ class ContentDiscoveryEngine:
             profile_summary=profile_data,
             content_items=content_items,
             source_context=source_context or (batch[0].source_strategy if batch else ""),
+            source_platform=(batch[0].source_platform or "bilibili") if batch else "bilibili",
         )
 
-        _VALID_STYLES = {
-            "game_strategy", "news_brief", "practical_guide", "story_doc",
-            "visual_showcase", "tech_analysis",
-            "deep_dive", "fun_variety", "lifestyle", "review_roundup",
+        valid_styles = {
+            "game_strategy",
+            "news_brief",
+            "practical_guide",
+            "story_doc",
+            "visual_showcase",
+            "tech_analysis",
+            "deep_dive",
+            "fun_variety",
+            "lifestyle",
+            "review_roundup",
             "light_chat",
         }
 
+        assert self._llm_service is not None
         try:
             llm_call = self._llm_service.complete_structured_task(
                 system_instruction=messages[0]["content"],
@@ -708,7 +857,7 @@ class ContentDiscoveryEngine:
             content.relevance_reason = reason
             if topic_group:
                 content.topic_group = topic_group
-            if style_key in _VALID_STYLES:
+            if style_key in valid_styles:
                 content.style_key = style_key
 
             cache_key = f"{content.bvid}:{id(profile)}"
@@ -745,33 +894,68 @@ class ContentDiscoveryEngine:
         *,
         profile: SoulProfile,
         limit: int,
+        fully_parallel: bool = False,
     ) -> list[DiscoveredContent]:
-        # Split strategies into two phases to avoid B站 IP-level search
-        # rate-limiting.  Search strategy runs first (Phase 1) with a
-        # dedicated cookie-free client so it gets clean quota.  Other
-        # strategies (explore, related_chain) also call the search API,
-        # so each strategy's calls are capped by the per-strategy search
-        # budget in DiscoveryConcurrencyController.
-        search_strategies = [s for s in strategies if s.name == "search"]
-        other_strategies = [s for s in strategies if s.name != "search"]
-
         results: list[DiscoveredContent] = []
 
-        # Phase 1: run search strategy first to get clean IP quota
-        if search_strategies:
-            tasks = [s.discover(profile, limit=limit) for s in search_strategies]
-            gathered = await asyncio.gather(*tasks, return_exceptions=True)
-            results.extend(self._collect_strategy_results(search_strategies, gathered))
+        if fully_parallel:
+            # One shot: every strategy runs in a single gather. We rely
+            # on ``bilibili_request_concurrency`` + ``search_budget_total``
+            # to bound IP-level pressure; the default phase split is
+            # safer but adds ~search_wall_time before others start.
+            names = [s.name for s in strategies]
+            logger.info("discover start (fully_parallel): strategies=%s limit=%d", names, limit)
+            t0 = time.monotonic()
 
-        # Brief cooldown between phases to let IP-level rate limit recover
-        if search_strategies and other_strategies:
-            await asyncio.sleep(2.0)
+            async def _timed(strategy: DiscoveryStrategy) -> list[DiscoveredContent]:
+                s_t0 = time.monotonic()
+                logger.info("strategy %s: dispatch", strategy.name)
+                try:
+                    result = await strategy.discover(profile, limit=limit)
+                finally:
+                    logger.info(
+                        "strategy %s: done in %.1fs",
+                        strategy.name,
+                        time.monotonic() - s_t0,
+                    )
+                return result
 
-        # Phase 2: run remaining strategies concurrently
-        if other_strategies:
-            tasks = [s.discover(profile, limit=limit) for s in other_strategies]
-            gathered = await asyncio.gather(*tasks, return_exceptions=True)
-            results.extend(self._collect_strategy_results(other_strategies, gathered))
+            gathered = await asyncio.gather(
+                *(_timed(s) for s in strategies), return_exceptions=True
+            )
+            results.extend(self._collect_strategy_results(strategies, gathered))
+            logger.info(
+                "discover done (fully_parallel): strategies=%s total_elapsed=%.1fs results=%d",
+                names,
+                time.monotonic() - t0,
+                len(results),
+            )
+        else:
+            # Split strategies into two phases to avoid B站 IP-level
+            # search rate-limiting. Search runs first (Phase 1) with a
+            # dedicated cookie-free client so it gets clean quota.
+            # Other strategies (explore, related_chain) also call the
+            # search API, so each strategy's calls are capped by the
+            # per-strategy search budget in
+            # ``DiscoveryConcurrencyController``.
+            search_strategies = [s for s in strategies if s.name == "search"]
+            other_strategies = [s for s in strategies if s.name != "search"]
+
+            # Phase 1: run search strategy first to get clean IP quota
+            if search_strategies:
+                tasks = [s.discover(profile, limit=limit) for s in search_strategies]
+                gathered = await asyncio.gather(*tasks, return_exceptions=True)
+                results.extend(self._collect_strategy_results(search_strategies, gathered))
+
+            # Brief cooldown between phases to let IP-level rate limit recover
+            if search_strategies and other_strategies:
+                await asyncio.sleep(2.0)
+
+            # Phase 2: run remaining strategies concurrently
+            if other_strategies:
+                tasks = [s.discover(profile, limit=limit) for s in other_strategies]
+                gathered = await asyncio.gather(*tasks, return_exceptions=True)
+                results.extend(self._collect_strategy_results(other_strategies, gathered))
 
         logger.info(
             "Discovery gather returned %d results for %d strategies: %s",
@@ -784,7 +968,7 @@ class ContentDiscoveryEngine:
     @staticmethod
     def _collect_strategy_results(
         strategies: list[DiscoveryStrategy],
-        gathered: list[object],
+        gathered: Sequence[list[DiscoveredContent] | BaseException],
     ) -> list[DiscoveredContent]:
         results: list[DiscoveredContent] = []
         for strategy, outcome in zip(strategies, gathered, strict=True):
@@ -892,6 +1076,9 @@ class ContentDiscoveryEngine:
                     candidate_tier="backfill",
                     discovered_at=str(row.get("discovered_at", "")),
                     last_scored_at=str(row.get("last_scored_at", "")),
+                    content_id=str(row.get("content_id", "") or bvid),
+                    content_url=str(row.get("content_url", "")),
+                    source_platform=str(row.get("source_platform", "") or "bilibili"),
                 )
             )
             if len(candidates) >= limit:
@@ -948,12 +1135,9 @@ class ContentDiscoveryEngine:
         # Pass reserved items' topics/sources so _select_diverse knows what
         # has already been committed.
         remaining_limit = limit - len(reserved)
-        reserved_topics = {
-            ContentDiscoveryEngine._topic_bucket(i) for i in reserved
-        } - {""}
+        reserved_topics = {ContentDiscoveryEngine._topic_bucket(i) for i in reserved} - {""}
         reserved_sources = {
-            ContentDiscoveryEngine._normalize_topic_token(i.source_strategy)
-            for i in reserved
+            ContentDiscoveryEngine._normalize_topic_token(i.source_strategy) for i in reserved
         } - {""}
         selected, overflow = ContentDiscoveryEngine._select_diverse(
             unreserved,
@@ -976,7 +1160,8 @@ class ContentDiscoveryEngine:
 
         # Step 2: backfill from overflow with relaxed constraints
         combined = ContentDiscoveryEngine._backfill_from_overflow(
-            combined, overflow,
+            combined,
+            overflow,
             limit=limit,
             per_style_cap=per_style_cap,
             per_source_cap=per_source_cap,
@@ -1055,7 +1240,8 @@ class ContentDiscoveryEngine:
             style = ContentDiscoveryEngine._style_bucket(item)
             source = ContentDiscoveryEngine._normalize_topic_token(item.source_strategy)
             is_new_source = (
-                bool(source) and source not in seen_sources
+                bool(source)
+                and source not in seen_sources
                 and len(seen_sources) < unique_source_target
             )
 
@@ -1113,7 +1299,11 @@ class ContentDiscoveryEngine:
         per_topic_cap = max(1, limit // 5)
         # Hard source ceiling: even with infinite topic diversity, a single
         # source cannot take more than this many slots in total.
-        source_ceiling = per_source_ceiling if per_source_ceiling > 0 else max(per_source_cap + 1, limit * 35 // 100)
+        source_ceiling = (
+            per_source_ceiling
+            if per_source_ceiling > 0
+            else max(per_source_cap + 1, limit * 35 // 100)
+        )
 
         topic_counts: dict[str, int] = {}
         style_counts: dict[str, int] = {}
@@ -1234,24 +1424,6 @@ class ContentDiscoveryEngine:
             return
         for item in results:
             try:
-                self._database.cache_content(
-                    item.bvid,
-                    title=item.title,
-                    up_name=item.up_name,
-                    up_mid=item.up_mid,
-                    duration=item.duration,
-                    tags=item.tags,
-                    topic_key=item.topic_key,
-                    topic_group=item.topic_group,
-                    style_key=item.style_key,
-                    description=item.description,
-                    cover_url=item.cover_url,
-                    view_count=item.view_count,
-                    like_count=item.like_count,
-                    relevance_score=item.relevance_score,
-                    relevance_reason=item.relevance_reason,
-                    candidate_tier=item.candidate_tier,
-                    source=item.source_strategy,
-                )
+                self._database.cache_content(item.bvid, **item.to_cache_kwargs())
             except Exception:
                 logger.exception("Failed to cache discovered content: %s", item.bvid)

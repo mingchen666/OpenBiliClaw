@@ -10,8 +10,16 @@ const entrypoints = [
     outfile: resolve(root, "dist/background/service-worker.js"),
   },
   {
-    entry: resolve(root, "src/content/collector.ts"),
-    outfile: resolve(root, "dist/content/collector.js"),
+    entry: resolve(root, "src/content/bilibili.ts"),
+    outfile: resolve(root, "dist/content/bilibili.js"),
+  },
+  {
+    entry: resolve(root, "src/content/xiaohongshu.ts"),
+    outfile: resolve(root, "dist/content/xiaohongshu.js"),
+  },
+  {
+    entry: resolve(root, "src/main/xhs-token-sniffer.ts"),
+    outfile: resolve(root, "dist/main/xhs-token-sniffer.js"),
   },
 ];
 

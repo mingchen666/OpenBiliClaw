@@ -6,6 +6,7 @@ import {
   buildFeedbackPayload,
   buildNextCognitionHistoryState,
   buildVideoUrl,
+  getDelightUiState,
   formatRelativeTimestamp,
   getCommentSubmitUiState,
   getCognitionHistoryUiState,
@@ -16,7 +17,9 @@ import {
   getNextExpandedCognitionIndex,
   getRuntimeRefreshSubmissionState,
   getSubmissionProgressMessage,
+  mergeDelightCandidate,
   normalizeCognitionUpdateCard,
+  normalizeDelightCandidate,
   getRealtimePoolStatusSummary,
   getPoolStatusSummary,
   getPopupState,
@@ -108,6 +111,78 @@ test("normalizeRecommendation does not fall back to relevance_reason when expres
   });
 
   assert.equal(item.expression, "");
+});
+
+test("normalizeDelightCandidate fills stable fallbacks and upgrades cover urls", () => {
+  const item = normalizeDelightCandidate({
+    bvid: "BV1DELIGHT",
+    title: "",
+    delight_reason: "",
+    delight_score: 0.72,
+    delight_hook: "换个方向试试",
+    cover_url: "//i0.hdslb.com/bfs/archive/delight-cover.jpg",
+  });
+
+  assert.deepEqual(item, {
+    bvid: "BV1DELIGHT",
+    title: "这条惊喜推荐还没起好标题",
+    delight_reason: "这条可能会给你一点意外之喜。",
+    delight_score: 0.72,
+    delight_hook: "换个方向试试",
+    cover_url: "https://i0.hdslb.com/bfs/archive/delight-cover.jpg",
+    state: "pending",
+    response_message: "",
+    chat_reply: "",
+  });
+});
+
+test("mergeDelightCandidate keeps handled local state for the same bvid and ignores dismissed items", () => {
+  const current = normalizeDelightCandidate({
+    bvid: "BV1DELIGHT",
+    title: "旧标题",
+    delight_reason: "旧理由",
+    state: "viewed",
+    response_message: "已打开，阿B 会把这次点击当成强信号。",
+  });
+
+  const merged = mergeDelightCandidate(current, {
+    bvid: "BV1DELIGHT",
+    title: "新标题",
+    delight_reason: "新理由",
+    delight_score: 0.9,
+  });
+  const ignored = mergeDelightCandidate(current, {
+    bvid: "BV1SNOOZED",
+    title: "先别出现",
+  }, ["BV1SNOOZED"]);
+
+  assert.equal(merged.title, "新标题");
+  assert.equal(merged.delight_reason, "新理由");
+  assert.equal(merged.state, "viewed");
+  assert.equal(merged.response_message, "已打开，阿B 会把这次点击当成强信号。");
+  assert.equal(ignored, current);
+});
+
+test("getDelightUiState keeps handled delight visible with stable copy and highlight state", () => {
+  const uiState = getDelightUiState(
+    normalizeDelightCandidate({
+      bvid: "BV1DELIGHT",
+      title: "这条你会意外喜欢",
+      delight_reason: "它不完全像你最近常看的，但入口很准。",
+      delight_score: 0.88,
+      state: "viewed",
+    }),
+    { highlightBvid: "BV1DELIGHT" },
+  );
+
+  assert.deepEqual(uiState, {
+    visible: true,
+    highlighted: true,
+    handled: true,
+    score_label: "大概率会戳中你",
+    response_tone: "success",
+    response_message: "已打开，阿B 会把这次点击当成强信号。",
+  });
 });
 
 test("getPopupState distinguishes offline uninitialized refreshing empty and ready states", () => {

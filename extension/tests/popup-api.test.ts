@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   appendRecommendations,
+  fetchPendingDelight,
   fetchActivityFeed,
   fetchConfig,
   fetchProfileSummary,
@@ -176,6 +177,42 @@ test("fetchActivityFeed loads popup activity summaries", async () => {
     live_summary: "正在补候选",
     headline: "阿B 刚记下了你最近更吃深拆",
     items: [],
+  });
+});
+
+test("fetchPendingDelight loads the current pending delight candidate", async () => {
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    return {
+      ok: true,
+      async json() {
+        return {
+          item: {
+            bvid: "BV1DELIGHT",
+            title: "你可能会意外喜欢的这条",
+            delight_reason: "它和你最近的节奏不完全一样，但入口很对味。",
+            delight_score: 0.78,
+            delight_hook: "换个方向试试",
+            cover_url: "//i0.hdslb.com/bfs/archive/delight-cover.jpg",
+          },
+        };
+      },
+    };
+  };
+
+  const result = await fetchPendingDelight();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "http://127.0.0.1:8420/api/delight/pending");
+  assert.equal(calls[0].options.method, "GET");
+  assert.deepEqual(result, {
+    bvid: "BV1DELIGHT",
+    title: "你可能会意外喜欢的这条",
+    delight_reason: "它和你最近的节奏不完全一样，但入口很对味。",
+    delight_score: 0.78,
+    delight_hook: "换个方向试试",
+    cover_url: "//i0.hdslb.com/bfs/archive/delight-cover.jpg",
   });
 });
 

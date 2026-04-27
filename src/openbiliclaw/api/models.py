@@ -12,6 +12,7 @@ class BehaviorEventIn(BaseModel):
     url: str = ""
     title: str = ""
     timestamp: int
+    source_platform: str = "bilibili"
     context: dict[str, object] = Field(default_factory=dict)
     metadata: dict[str, object] = Field(default_factory=dict)
 
@@ -110,6 +111,8 @@ class ActivityFeedResponse(BaseModel):
     live_summary: str = ""
     headline: str = ""
     items: list[ActivityFeedItemOut] = Field(default_factory=list)
+    has_more: bool = False
+    next_cursor: str = ""
 
 
 class PendingNotificationOut(BaseModel):
@@ -432,7 +435,7 @@ class BilibiliConfigOut(BaseModel):
 class SchedulerConfigOut(BaseModel):
     enabled: bool = True
     discovery_cron: str = "0 */4 * * *"
-    pool_target_count: int = 300
+    pool_target_count: int = 600
     account_sync_interval_hours: int = 6
     auto_update_enabled: bool = True
     auto_update_check_interval_hours: int = 6

@@ -16,6 +16,7 @@ from .openrouter_provider import OpenRouterProvider
 
 if TYPE_CHECKING:
     from openbiliclaw.config import Config
+    from openbiliclaw.llm.embedding import SupportsEmbeddingService
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def build_llm_registry(
 def build_embedding_service(
     config: Config,
     registry: LLMRegistry,
-) -> object | None:
+) -> SupportsEmbeddingService | None:
     """Build an EmbeddingService from config, or None if unavailable.
 
     Uses ``[llm.embedding]`` config section for model and threshold.
@@ -125,9 +126,7 @@ def summarize_registry(config: Config, registry: LLMRegistry) -> RegistrySummary
     )
 
 
-def _maybe_openai_provider(
-    config: Config, overrides: dict[str, LLMProvider]
-) -> LLMProvider | None:
+def _maybe_openai_provider(config: Config, overrides: dict[str, LLMProvider]) -> LLMProvider | None:
     if "openai" in overrides:
         return overrides["openai"]
     if not config.llm.openai.api_key.strip():
@@ -139,9 +138,7 @@ def _maybe_openai_provider(
     )
 
 
-def _maybe_claude_provider(
-    config: Config, overrides: dict[str, LLMProvider]
-) -> LLMProvider | None:
+def _maybe_claude_provider(config: Config, overrides: dict[str, LLMProvider]) -> LLMProvider | None:
     if "claude" in overrides:
         return overrides["claude"]
     if not config.llm.claude.api_key.strip():
@@ -161,19 +158,18 @@ def _maybe_deepseek_provider(
         return None
     return DeepSeekProvider(
         api_key=config.llm.deepseek.api_key,
-        model=config.llm.deepseek.model or "deepseek-chat",
+        model=config.llm.deepseek.model or "deepseek-v4-flash",
+        reasoning_effort=config.llm.deepseek.reasoning_effort,
     )
 
 
 def _gemini_env_api_key() -> str:
-    return os.environ.get("GOOGLE_API_KEY", "").strip() or os.environ.get(
-        "GEMINI_API_KEY", ""
-    ).strip()
+    return (
+        os.environ.get("GOOGLE_API_KEY", "").strip() or os.environ.get("GEMINI_API_KEY", "").strip()
+    )
 
 
-def _maybe_gemini_provider(
-    config: Config, overrides: dict[str, LLMProvider]
-) -> LLMProvider | None:
+def _maybe_gemini_provider(config: Config, overrides: dict[str, LLMProvider]) -> LLMProvider | None:
     if "gemini" in overrides:
         return overrides["gemini"]
     api_key = config.llm.gemini.api_key.strip() or _gemini_env_api_key()
@@ -187,9 +183,7 @@ def _maybe_gemini_provider(
     )
 
 
-def _maybe_ollama_provider(
-    config: Config, overrides: dict[str, LLMProvider]
-) -> LLMProvider | None:
+def _maybe_ollama_provider(config: Config, overrides: dict[str, LLMProvider]) -> LLMProvider | None:
     if "ollama" in overrides:
         return overrides["ollama"]
 

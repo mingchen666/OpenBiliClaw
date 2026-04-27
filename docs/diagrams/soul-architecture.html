@@ -146,6 +146,71 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- SECTION 1b: Multi-Source Profile Extension (NEW)              -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<div class="diagram-section">
+<div class="section-title">1b. 多源行为融合 &mdash; source_platform_mix 与跨站信号</div>
+
+<svg width="1140" height="320" viewBox="0 0 1140 320">
+  <defs>
+    <marker id="arr1b" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#484f58"/>
+    </marker>
+  </defs>
+
+  <!-- Bilibili events -->
+  <rect x="20" y="30" width="200" height="60" rx="8" fill="#161b22" stroke="#58a6ff" stroke-width="2"/>
+  <text x="120" y="55" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="600">Bilibili Events</text>
+  <text x="120" y="75" text-anchor="middle" fill="#8b949e" font-size="9">view / search / like / coin</text>
+
+  <!-- XHS events -->
+  <rect x="260" y="30" width="200" height="60" rx="8" fill="#161b22" stroke="#da3633" stroke-width="2"/>
+  <text x="360" y="55" text-anchor="middle" fill="#da3633" font-size="12" font-weight="600">小红书 Events</text>
+  <text x="360" y="75" text-anchor="middle" fill="#8b949e" font-size="9">view / search / like / favorite</text>
+
+  <!-- Extension label -->
+  <rect x="480" y="30" width="180" height="60" rx="8" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="570" y="55" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="600">Chrome Extension</text>
+  <text x="570" y="75" text-anchor="middle" fill="#8b949e" font-size="9">BehaviorEvent.source_platform</text>
+
+  <line x1="120" y1="90" x2="350" y2="130" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arr1b)"/>
+  <line x1="360" y1="90" x2="350" y2="130" stroke="#da3633" stroke-width="1.5" marker-end="url(#arr1b)"/>
+
+  <!-- PreferenceAnalyzer -->
+  <rect x="200" y="135" width="300" height="50" rx="8" fill="#1a1208" stroke="#f0883e" stroke-width="2"/>
+  <text x="350" y="157" text-anchor="middle" fill="#f0883e" font-size="12" font-weight="600">PreferenceAnalyzer</text>
+  <text x="350" y="175" text-anchor="middle" fill="#8b949e" font-size="9">compute_source_platform_mix() → EMA(α=0.3) 融合</text>
+
+  <line x1="350" y1="185" x2="350" y2="215" stroke="#484f58" stroke-width="1.5" marker-end="url(#arr1b)"/>
+
+  <!-- source_platform_mix output -->
+  <rect x="150" y="220" width="400" height="70" rx="10" fill="#161b22" stroke="#bc8cff" stroke-width="2"/>
+  <text x="350" y="243" text-anchor="middle" fill="#bc8cff" font-size="13" font-weight="600">source_platform_mix</text>
+  <text x="350" y="263" text-anchor="middle" fill="#c9d1d9" font-size="10">bilibili: 0.62 · xiaohongshu: 0.38</text>
+  <text x="350" y="280" text-anchor="middle" fill="#8b949e" font-size="9">PreferenceLayer 持久化 / to_llm_context() 自动注入</text>
+
+  <!-- Consumers -->
+  <line x1="550" y1="255" x2="650" y2="195" stroke="#484f58" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr1b)"/>
+  <line x1="550" y1="255" x2="650" y2="255" stroke="#484f58" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr1b)"/>
+
+  <rect x="660" y="175" width="200" height="35" rx="6" fill="#161b22" stroke="#f0883e" stroke-width="1"/>
+  <text x="760" y="197" text-anchor="middle" fill="#f0883e" font-size="10">LLM prompts (源感知)</text>
+
+  <rect x="660" y="240" width="200" height="35" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+  <text x="760" y="262" text-anchor="middle" fill="#3fb950" font-size="10">Discovery 策略 (配额分配)</text>
+
+  <!-- Safety note -->
+  <rect x="900" y="30" width="220" height="90" rx="8" fill="#2a0d0d" stroke="#da3633" stroke-width="1.5"/>
+  <text x="1010" y="55" text-anchor="middle" fill="#da3633" font-size="11" font-weight="600">⚠ xhs 安全设计</text>
+  <line x1="915" y1="65" x2="1105" y2="65" stroke="#30363d" stroke-width="1"/>
+  <text x="1010" y="82" text-anchor="middle" fill="#c9d1d9" font-size="8">后端不主动爬取小红书</text>
+  <text x="1010" y="95" text-anchor="middle" fill="#c9d1d9" font-size="8">扩展被动收集 + 后台标签页</text>
+  <text x="1010" y="108" text-anchor="middle" fill="#c9d1d9" font-size="8">严禁自动滚动</text>
+</svg>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- SECTION 2: Signal Pipeline                                     -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <div class="diagram-section">

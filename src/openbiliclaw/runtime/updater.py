@@ -7,10 +7,10 @@ import logging
 import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 import httpx
 
@@ -49,6 +49,14 @@ def _parse_version(v: str) -> tuple[int, ...]:
         except ValueError:
             break
     return tuple(parts) or (0,)
+
+
+def _string_from_mapping_field(
+    payload: Mapping[str, object],
+    field: str,
+) -> str:
+    value = payload.get(field)
+    return value.strip() if isinstance(value, str) else ""
 
 
 @dataclass
@@ -171,7 +179,9 @@ class AutoUpdateService:
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    tag = data.get("tag_name", "")
+                    if not isinstance(data, Mapping):
+                        data = {}
+                    tag = _string_from_mapping_field(data, "tag_name")
                     if tag:
                         return tag
             except Exception:
@@ -186,7 +196,9 @@ class AutoUpdateService:
                 tags = resp.json()
                 if tags and isinstance(tags, list):
                     # Tags are returned newest first
-                    return tags[0].get("name", "")
+                    first_tag = tags[0]
+                    if isinstance(first_tag, Mapping):
+                        return _string_from_mapping_field(first_tag, "name")
         return ""
 
     async def _apply_update(self) -> None:

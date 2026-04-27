@@ -1,21 +1,15 @@
-import type { ActionHint, BehaviorContext, BehaviorEvent, PageType } from "./types.js";
+/**
+ * Generic behavior kernel — DOM snapshot + BehaviorEvent factory.
+ *
+ * Platform-specific logic (page-type rules, content-id extraction,
+ * action keywords) lives in `shared/platforms/*` and is passed in as
+ * a PlatformAdapter.
+ */
 
-const BV_PATTERN = /(BV[0-9A-Za-z]{10})/;
+import type { BehaviorContext, BehaviorEvent, PlatformAdapter } from "./types.js";
 
 function normalizeText(value: string | null | undefined): string {
   return (value ?? "").trim();
-}
-
-export function detectPageType(url: string): PageType {
-  if (url.includes("/video/")) return "video";
-  if (url.includes("/search")) return "search";
-  if (url.includes("space.bilibili.com") || url.includes("/space/")) return "user";
-  if (url.includes("/v/")) return "category";
-  return "home";
-}
-
-export function extractBvid(url: string): string | null {
-  return url.match(BV_PATTERN)?.[1] ?? null;
 }
 
 export function createDOMSnapshot(doc: Document): string {
@@ -25,8 +19,9 @@ export function createDOMSnapshot(doc: Document): string {
     description:
       doc.querySelector('meta[name="description"]')?.getAttribute("content")?.trim() ?? null,
     author: normalizeText(
-      doc.querySelector(".up-name,.username,.bili-video-card__info--author,.up-info__name")
-        ?.textContent,
+      doc.querySelector(
+        ".up-name,.username,.bili-video-card__info--author,.up-info__name,.author-wrapper .username,.author-name",
+      )?.textContent,
     ),
   };
   return JSON.stringify(snapshot);
@@ -35,10 +30,11 @@ export function createDOMSnapshot(doc: Document): string {
 export function createBehaviorContext(
   win: Window,
   doc: Document,
+  adapter: PlatformAdapter,
   options: { snapshot?: boolean } = {},
 ): BehaviorContext {
   return {
-    pageType: detectPageType(win.location.href),
+    pageType: adapter.detectPageType(win.location.href),
     ...(options.snapshot !== false && { domSnapshot: createDOMSnapshot(doc) }),
     viewport: { width: win.innerWidth, height: win.innerHeight },
     scrollPosition: win.scrollY,
@@ -49,44 +45,32 @@ export function createBehaviorEvent(
   type: string,
   win: Window,
   doc: Document,
+  adapter: PlatformAdapter,
   metadata: Record<string, unknown> = {},
   options: { snapshot?: boolean } = {},
 ): BehaviorEvent {
+  const url = win.location.href;
+  const contentId = adapter.extractContentId(url);
+  const platformMeta = adapter.buildEventMetadata(url);
   return {
     type,
-    url: win.location.href,
+    url,
     title: doc.title,
     timestamp: Date.now(),
-    context: createBehaviorContext(win, doc, options),
-    metadata,
+    source_platform: adapter.sourcePlatform,
+    context: createBehaviorContext(win, doc, adapter, options),
+    metadata: {
+      ...platformMeta,
+      ...(contentId ? { content_id: contentId } : {}),
+      ...metadata,
+    },
   };
 }
 
-export function inferActionType(hint: ActionHint): string | null {
-  const text = `${normalizeText(hint.text)} ${normalizeText(hint.ariaLabel)} ${hint.className}`
-    .toLowerCase();
-
-  if (!text) return null;
-  if (text.includes("点赞") || text.includes("like")) return "like";
-  if (text.includes("投币") || text.includes("coin")) return "coin";
-  if (text.includes("收藏") || text.includes("collect") || text.includes("favorite")) {
-    return "favorite";
-  }
-  if (text.includes("评论") || text.includes("comment")) return "comment";
-  return null;
-}
-
-export function isTrackableCardElement(element: Element | null): boolean {
+export function isTrackableCardElement(
+  element: Element | null,
+  adapter: PlatformAdapter,
+): boolean {
   if (!element) return false;
-  return Boolean(
-    element.closest(
-      [
-        'a[href*="/video/BV"]',
-        ".bili-video-card",
-        ".video-page-card",
-        ".search-all-list .video-item",
-        ".feed-card",
-      ].join(","),
-    ),
-  );
+  return Boolean(element.closest(adapter.cardSelector));
 }

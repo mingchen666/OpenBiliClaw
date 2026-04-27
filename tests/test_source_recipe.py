@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from openbiliclaw.storage.database import Database
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _make_cross_thread_db(tmp_path: Path) -> Database:

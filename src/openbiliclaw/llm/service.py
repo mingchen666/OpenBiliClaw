@@ -60,13 +60,17 @@ class LLMService:
         json_mode: bool = False,
     ) -> LLMResponse:
         """Execute a task with automatically injected core memory context."""
-        system_content = "\n\n".join(
-            [
-                system_instruction.strip(),
-                "以下是当前用户的 core memory，请作为理解背景：",
-                self.memory.render_core_memory_prompt(),
-            ]
-        )
+        core_memory_block = ""
+        if self.memory is not None:
+            try:
+                core_memory_block = self.memory.render_core_memory_prompt()
+            except Exception:
+                pass
+        parts = [system_instruction.strip()]
+        if core_memory_block:
+            parts.append("以下是当前用户的 core memory，请作为理解背景：")
+            parts.append(core_memory_block)
+        system_content = "\n\n".join(parts)
         messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
         if history:
             messages.extend(history)
@@ -103,6 +107,68 @@ class LLMService:
             json_mode=True,
         )
 
+    async def complete_with_tools(
+        self,
+        *,
+        system_instruction: str,
+        user_input: str,
+        tools: list[dict[str, object]],
+        history: list[dict[str, str]] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+    ) -> LLMResponse:
+        """Execute a completion that may include tool/function calls.
+
+        The LLM is given a set of tool definitions.  If it decides to call
+        a tool, the response will have ``tool_calls`` populated.  Otherwise
+        ``content`` will contain the text reply.
+
+        This method uses JSON mode under the hood: the tools are serialised
+        into the system prompt and the model is asked to return a JSON
+        wrapper with either ``reply`` or ``tool_call`` keys.
+        """
+        tools_desc = "\n".join(
+            f"- {t['name']}: {t.get('description', '')}"
+            for t in tools
+        )
+        tool_names = [t["name"] for t in tools]
+        augmented_system = (
+            system_instruction + "\n\n"
+            "<available_tools>\n"
+            + tools_desc + "\n"
+            "</available_tools>\n\n"
+            "<tool_call_format>\n"
+            "如果你需要调用工具，请返回如下 JSON（不要附带任何其他文字）：\n"
+            '{"tool_call": {"name": "工具名", "arguments": {参数}}}\n'
+            "如果不需要调用工具，正常回复用户即可（不要输出 JSON）。\n"
+            "</tool_call_format>"
+        )
+        response = await self.complete_with_core_memory(
+            system_instruction=augmented_system,
+            user_input=user_input,
+            history=history,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=False,
+        )
+
+        # Try to parse tool calls from the response
+        import json
+
+        content = (response.content or "").strip()
+        if content.startswith("{"):
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, dict) and "tool_call" in parsed:
+                    call = parsed["tool_call"]
+                    if isinstance(call, dict) and call.get("name") in tool_names:
+                        response.tool_calls = [call]
+                        response.content = ""
+            except (json.JSONDecodeError, TypeError):
+                pass  # Not valid JSON — treat as normal text reply
+
+        return response
+
     async def complete_socratic_dialogue(
         self,
         *,
@@ -111,11 +177,14 @@ class LLMService:
     ) -> LLMResponse:
         """Generate a Socratic dialogue reply using core memory context."""
         tone_profile = self._build_dialogue_tone_profile()
+        preference_raw = self.memory.get_layer("preference").data
+        source_mix = preference_layer_from_dict(preference_raw).source_platform_mix
         prompt_messages = build_socratic_dialogue_prompt(
             user_message=user_message,
             core_memory_text="",
             tone_profile=tone_profile,
             history=[],
+            source_platform_mix=source_mix or None,
         )
         return await self.complete_with_core_memory(
             system_instruction=prompt_messages[0]["content"],

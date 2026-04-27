@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -25,6 +25,34 @@ if TYPE_CHECKING:
     from openbiliclaw.soul.speculator import InterestSpeculator
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_int(value: object, *, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
+def _coerce_float(value: object, *, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return default
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -154,13 +182,14 @@ class LayerBuffer:
         except ValueError:
             layer = OnionLayer.SURFACE
         raw_signals = data.get("signals")
-        signals = [s for s in (raw_signals if isinstance(raw_signals, list) else [])
-                   if isinstance(s, dict)]
+        signals = [
+            s for s in (raw_signals if isinstance(raw_signals, list) else []) if isinstance(s, dict)
+        ]
         return cls(
             layer=layer,
             signals=signals,
             last_updated_at=str(data.get("last_updated_at", "")),
-            update_count=int(data.get("update_count", 0) or 0),
+            update_count=_coerce_int(data.get("update_count", 0) or 0),
         )
 
 
@@ -203,25 +232,44 @@ class FlushResult:
 # ---------------------------------------------------------------------------
 
 _STATIC_LAYER_MAP: dict[SignalType, frozenset[OnionLayer]] = {
-    SignalType.BEHAVIOR_EVENT: frozenset({
-        OnionLayer.SURFACE, OnionLayer.INTEREST, OnionLayer.ROLE,
-    }),
-    SignalType.ENGAGEMENT_EVENT: frozenset({
-        OnionLayer.INTEREST, OnionLayer.SURFACE, OnionLayer.ROLE,
-    }),
-    SignalType.FEEDBACK: frozenset({
-        OnionLayer.INTEREST, OnionLayer.SURFACE, OnionLayer.VALUES,
-    }),
+    SignalType.BEHAVIOR_EVENT: frozenset(
+        {
+            OnionLayer.SURFACE,
+            OnionLayer.INTEREST,
+            OnionLayer.ROLE,
+        }
+    ),
+    SignalType.ENGAGEMENT_EVENT: frozenset(
+        {
+            OnionLayer.INTEREST,
+            OnionLayer.SURFACE,
+            OnionLayer.ROLE,
+        }
+    ),
+    SignalType.FEEDBACK: frozenset(
+        {
+            OnionLayer.INTEREST,
+            OnionLayer.SURFACE,
+            OnionLayer.VALUES,
+        }
+    ),
     SignalType.DIALOGUE_TURN: frozenset({OnionLayer.SURFACE, OnionLayer.INTEREST}),
-    SignalType.ACCOUNT_SNAPSHOT: frozenset({
-        OnionLayer.INTEREST, OnionLayer.SURFACE, OnionLayer.ROLE,
-    }),
+    SignalType.ACCOUNT_SNAPSHOT: frozenset(
+        {
+            OnionLayer.INTEREST,
+            OnionLayer.SURFACE,
+            OnionLayer.ROLE,
+        }
+    ),
     # Click-through reveals immediate topical preference (INTEREST) and
     # content-style preference (SURFACE). It does not touch ROLE/VALUES —
     # a single click is not strong enough evidence about life stage or values.
-    SignalType.RECOMMENDATION_CLICK: frozenset({
-        OnionLayer.INTEREST, OnionLayer.SURFACE,
-    }),
+    SignalType.RECOMMENDATION_CLICK: frozenset(
+        {
+            OnionLayer.INTEREST,
+            OnionLayer.SURFACE,
+        }
+    ),
     SignalType.DIALOGUE_INSIGHT: frozenset(),  # Dynamic, see classify_signal
 }
 
@@ -249,19 +297,29 @@ def classify_signal(signal_type: SignalType, payload: dict[str, object]) -> froz
 
 DEFAULT_THRESHOLDS: dict[OnionLayer, LayerThreshold] = {
     OnionLayer.SURFACE: LayerThreshold(
-        min_signals=3, min_interval_seconds=300, max_buffer_size=200,
+        min_signals=3,
+        min_interval_seconds=300,
+        max_buffer_size=200,
     ),
     OnionLayer.INTEREST: LayerThreshold(
-        min_signals=3, min_interval_seconds=600, max_buffer_size=200,
+        min_signals=3,
+        min_interval_seconds=600,
+        max_buffer_size=200,
     ),
     OnionLayer.ROLE: LayerThreshold(
-        min_signals=5, min_interval_seconds=86400, max_buffer_size=50,
+        min_signals=5,
+        min_interval_seconds=86400,
+        max_buffer_size=50,
     ),
     OnionLayer.VALUES: LayerThreshold(
-        min_signals=5, min_interval_seconds=86400, max_buffer_size=50,
+        min_signals=5,
+        min_interval_seconds=86400,
+        max_buffer_size=50,
     ),
     OnionLayer.CORE: LayerThreshold(
-        min_signals=8, min_interval_seconds=172800, max_buffer_size=30,
+        min_signals=8,
+        min_interval_seconds=172800,
+        max_buffer_size=30,
     ),
 }
 
@@ -269,19 +327,26 @@ DEFAULT_THRESHOLDS: dict[OnionLayer, LayerThreshold] = {
 _PORTRAIT_TRIGGER_LAYERS = frozenset({OnionLayer.CORE, OnionLayer.VALUES})
 
 # Layers that participate in buffering (PORTRAIT is conditional, not buffered)
-_BUFFERED_LAYERS = frozenset({
-    OnionLayer.SURFACE, OnionLayer.INTEREST, OnionLayer.ROLE,
-    OnionLayer.VALUES, OnionLayer.CORE,
-})
+_BUFFERED_LAYERS = frozenset(
+    {
+        OnionLayer.SURFACE,
+        OnionLayer.INTEREST,
+        OnionLayer.ROLE,
+        OnionLayer.VALUES,
+        OnionLayer.CORE,
+    }
+)
 
 # Signal types that carry explicit user intent.
 # For these, the min_signals gate is reduced to 1 so the profile updates immediately.
-_STRONG_SIGNAL_TYPES: frozenset[SignalType] = frozenset({
-    SignalType.FEEDBACK,
-    SignalType.DIALOGUE_TURN,
-    SignalType.DIALOGUE_INSIGHT,
-    SignalType.RECOMMENDATION_CLICK,
-})
+_STRONG_SIGNAL_TYPES: frozenset[SignalType] = frozenset(
+    {
+        SignalType.FEEDBACK,
+        SignalType.DIALOGUE_TURN,
+        SignalType.DIALOGUE_INSIGHT,
+        SignalType.RECOMMENDATION_CLICK,
+    }
+)
 _STRONG_TYPE_VALUES: frozenset[str] = frozenset(st.value for st in _STRONG_SIGNAL_TYPES)
 
 
@@ -322,7 +387,9 @@ def signals_from_events(events: list[dict[str, Any]]) -> list[ProfileSignal]:
 
 
 def signal_from_feedback(
-    feedback_type: str, title: str, note: str = "",
+    feedback_type: str,
+    title: str,
+    note: str = "",
 ) -> ProfileSignal:
     """Convert a recommendation feedback action into a ProfileSignal."""
     return _make_signal(
@@ -342,18 +409,21 @@ def signals_from_dialogue(
     """
     result: list[ProfileSignal] = []
     for candidate in candidates:
-        confidence = float(candidate.get("confidence", 0.0) or 0.0)
-        result.append(_make_signal(
-            SignalType.DIALOGUE_INSIGHT,
-            "dialogue",
-            dict(candidate),
-            confidence=confidence,
-        ))
+        confidence = _coerce_float(candidate.get("confidence", 0.0) or 0.0)
+        result.append(
+            _make_signal(
+                SignalType.DIALOGUE_INSIGHT,
+                "dialogue",
+                dict(candidate),
+                confidence=confidence,
+            )
+        )
     return result
 
 
 def signal_from_dialogue_turn(
-    user_message: str, assistant_reply: str,
+    user_message: str,
+    assistant_reply: str,
 ) -> ProfileSignal:
     """Convert a raw dialogue turn into a Surface-layer signal."""
     return _make_signal(
@@ -498,10 +568,21 @@ class ProfileUpdatePipeline:
         self._embedding_service = embedding_service
         self._cognition_cycle = cognition_cycle
         data_dir = getattr(memory, "_data_dir", None)
-        self._buffers = load_pipeline_state(data_dir) if data_dir else {
-            layer.value: LayerBuffer(layer=layer) for layer in _BUFFERED_LAYERS
-        }
+        self._buffers = (
+            load_pipeline_state(data_dir)
+            if data_dir
+            else {layer.value: LayerBuffer(layer=layer) for layer in _BUFFERED_LAYERS}
+        )
         self._total_ingested = 0
+        # Track when we last ran the speculator tick so we can throttle
+        # idle ticks while still letting layer-updates trigger fresh
+        # speculator passes.  See `tick()` body for usage.
+        self._last_speculator_tick_at: datetime | None = None
+        # Minimum interval between speculator ticks when no layer was
+        # updated.  Pipeline.tick itself runs every minute, but the
+        # speculator only needs periodic expire/promote checks; idle
+        # cadence at 30 minutes is plenty.
+        self._speculator_idle_min_interval = timedelta(minutes=30)
 
     def set_embedding_service(self, embedding_service: Any) -> None:
         """Attach or replace the embedding service for semantic operations."""
@@ -581,9 +662,24 @@ class ProfileUpdatePipeline:
                 if update_result:
                     result.layers_updated.append(update_result)
 
-        # Speculator tick: expire → promote → generate
+        # Speculator tick: expire → promote → generate.
+        # Pipeline.tick runs every minute, but the speculator doesn't
+        # need that cadence in steady state — once active is full and
+        # nothing has changed, ticking only burns I/O and prints log
+        # noise.  Only run when:
+        #   (a) a layer was actually flushed in this pipeline pass — the
+        #       profile materially changed, so probes might be stale
+        #   (b) idle interval (30 min) has elapsed since the last tick —
+        #       safety net so expire/promote still happens for users
+        #       whose profile is stable but who interact with probes
         if self._speculator:
-            await self._run_speculator_tick(result)
+            should_tick_speculator = bool(result.layers_updated) or (
+                self._last_speculator_tick_at is None
+                or now - self._last_speculator_tick_at >= self._speculator_idle_min_interval
+            )
+            if should_tick_speculator:
+                await self._run_speculator_tick(result)
+                self._last_speculator_tick_at = now
 
         # Cognition cycle: throttled awareness + insight regeneration.
         # Runs at most once per configured interval (default 12h).
@@ -630,7 +726,9 @@ class ProfileUpdatePipeline:
     # -- Internal -------------------------------------------------------------
 
     async def _update_layer(
-        self, layer: OnionLayer, buf: LayerBuffer,
+        self,
+        layer: OnionLayer,
+        buf: LayerBuffer,
     ) -> LayerUpdateResult | None:
         """Execute the layer-specific update and record results."""
         from openbiliclaw.soul.layer_updaters import update_layer
@@ -725,13 +823,15 @@ class ProfileUpdatePipeline:
         # Promote confirmed speculations into the interest layer
         if tick_result.promoted:
             for spec in tick_result.promoted:
-                profile.interest.likes.append(InterestDomain(
-                    domain=spec.domain,
-                    weight=0.3,
-                    source="speculated",
-                    first_seen=spec.created_at,
-                    last_seen=datetime.now().isoformat(),
-                ))
+                profile.interest.likes.append(
+                    InterestDomain(
+                        domain=spec.domain,
+                        weight=0.3,
+                        source="speculated",
+                        first_seen=spec.created_at,
+                        last_seen=datetime.now().isoformat(),
+                    )
+                )
 
             self._save_profile(profile)
             changes = [f"猜测兴趣转正: {s.domain}" for s in tick_result.promoted]
@@ -742,8 +842,7 @@ class ProfileUpdatePipeline:
                 signals_consumed=0,
                 trigger="猜测兴趣确认",
                 evidence=", ".join(
-                    f"{s.domain}({s.confirmation_count}次确认)"
-                    for s in tick_result.promoted
+                    f"{s.domain}({s.confirmation_count}次确认)" for s in tick_result.promoted
                 ),
                 timestamp=datetime.now().isoformat(),
             )

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 from openbiliclaw.llm.base import LLMProviderError, LLMResponse
 from openbiliclaw.llm.json_utils import (
@@ -55,6 +58,8 @@ class ProfileBuilder:
         awareness_notes: list[dict[str, Any]],
         active_insights: list[dict[str, Any]],
     ) -> SoulProfile:
+        raw_mix = preference.get("source_platform_mix") if isinstance(preference, dict) else None
+        source_mix = raw_mix if isinstance(raw_mix, dict) and raw_mix else None
         messages = build_soul_profile_prompt(
             history_summary=self._summarize_history(history),
             preference_summary=preference,
@@ -65,6 +70,7 @@ class ProfileBuilder:
                 preference_summary=preference,
                 recent_feedback=[],
             ),
+            source_platform_mix=source_mix,
         )
         try:
             response = await self.registry.complete_structured_task(
@@ -103,13 +109,14 @@ class ProfileBuilder:
             raise SoulProfileBuildError(
                 f"LLM returned invalid JSON for soul profile "
                 f"(raw_len={len(content.strip())})"
-            )
+        )
         if not isinstance(parsed, dict):
             raise SoulProfileBuildError("LLM soul profile response must be a JSON object.")
-        self._validate_payload(parsed)
-        return parsed
+        payload: dict[str, object] = {key: value for key, value in parsed.items()}
+        self._validate_payload(payload)
+        return payload
 
-    def _validate_payload(self, payload: dict[str, object]) -> None:
+    def _validate_payload(self, payload: Mapping[str, object]) -> None:
         required_fields = (
             "personality_portrait",
             "core_traits",
@@ -128,9 +135,11 @@ class ProfileBuilder:
             )
 
         portrait = str(payload.get("personality_portrait", "")).strip()
-        if len(portrait) < 200:
+        portrait_len = len(portrait)
+        if portrait_len < 120 or portrait_len > 320:
             raise SoulProfileBuildError(
-                "LLM soul profile portrait must be at least 200 characters long."
+                f"LLM soul profile portrait length out of range "
+                f"(got {portrait_len}, expected 120-320 chars)."
             )
 
         if not str(payload.get("current_phase", "")).strip():
@@ -199,7 +208,9 @@ class ProfileBuilder:
         }
         if recent_titles:
             summary["recent_titles"] = recent_titles[:50]
-            summary["recent_hint"] = f"最近观看的 {len(recent_titles)} 个视频（前30%）代表当前活跃兴趣"
+            summary["recent_hint"] = (
+                f"最近观看的 {len(recent_titles)} 个视频（前30%）代表当前活跃兴趣"
+            )
         if older_titles:
             summary["older_titles"] = older_titles[:50]
         if favorites_summary:

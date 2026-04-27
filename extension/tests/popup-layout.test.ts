@@ -69,6 +69,27 @@ test("recommendation header keeps its compact inline layout until very narrow wi
   assert.doesNotMatch(mediumHeaderQuery, /\.recommendation-status-chip\s*\{/);
 });
 
+test("recommend tab reserves a dedicated delight slot above the recommendation list", () => {
+  const popupHtml = readFileSync(resolve("popup", "popup.html"), "utf8");
+  const popupJs = readFileSync(resolve("popup", "popup.js"), "utf8");
+  const delightSlotBlock = popupHtml.match(/#delightSlot[\s\S]*?\{[\s\S]*?\}/)?.[0] ?? "";
+  const delightCardBlock = popupHtml.match(/\.delight-card\s*\{[\s\S]*?\}/)?.[0] ?? "";
+  const delightActionsBlock = popupHtml.match(/\.delight-actions\s*\{[\s\S]*?\}/)?.[0] ?? "";
+  const delightMarkup =
+    popupHtml.match(/<section id="viewRecommend"[\s\S]*?<div id="recommendationList" class="recommendation-list"><\/div>/)?.[0] ?? "";
+
+  assert.match(delightSlotBlock, /display:\s*grid;/);
+  assert.match(delightCardBlock, /border-radius:\s*20px;/);
+  assert.match(delightActionsBlock, /display:\s*flex;/);
+  assert.match(delightMarkup, /id="delightSlot"/);
+  assert.match(delightMarkup, /id="recommendationList"/);
+  assert.match(delightMarkup, /id="delightSlot"[\s\S]*id="emptyState"[\s\S]*id="recommendationList"/);
+  assert.match(popupJs, /"看看"/);
+  assert.match(popupJs, /"不感兴趣"/);
+  assert.match(popupJs, /"聊一聊"/);
+  assert.match(popupJs, /"稍后看"/);
+});
+
 test("recommendation cards use explicit editorial content sections", () => {
   const popupHtml = readFileSync(resolve("popup", "popup.html"), "utf8");
   const popupJs = readFileSync(resolve("popup", "popup.js"), "utf8");
@@ -78,7 +99,8 @@ test("recommendation cards use explicit editorial content sections", () => {
   const metaLineBlock = popupHtml.match(/\.recommendation-meta-line\s*\{[\s\S]*?\}/)?.[0] ?? "";
   const actionsBlock = popupHtml.match(/\.recommendation-actions\s*\{[\s\S]*?\}/)?.[0] ?? "";
 
-  assert.match(previewBlock, /grid-template-columns:\s*116px\s+minmax\(0,\s*1fr\);/);
+  assert.match(previewBlock, /display:\s*flex;/);
+  assert.match(previewBlock, /flex-direction:\s*column;/);
   assert.match(contentBlock, /justify-content:\s*space-between;/);
   assert.match(copyBlock, /display:\s*flex;/);
   assert.match(copyBlock, /flex-direction:\s*column;/);
@@ -116,8 +138,9 @@ test("recommendation card layout reserves a media cover slot", () => {
   const coverBlock = popupHtml.match(/\.recommendation-cover\s*\{[\s\S]*?\}/)?.[0] ?? "";
   const coverImageBlock = popupHtml.match(/\.recommendation-cover img\s*\{[\s\S]*?\}/)?.[0] ?? "";
 
-  assert.match(previewBlock, /grid-template-columns:\s*116px\s+minmax\(0,\s*1fr\);/);
-  assert.match(coverBlock, /aspect-ratio:\s*16\s*\/\s*10;/);
+  assert.match(previewBlock, /flex-direction:\s*column;/);
+  assert.match(coverBlock, /aspect-ratio:\s*16\s*\/\s*9;/);
+  assert.match(coverBlock, /width:\s*100%;/);
   assert.match(coverImageBlock, /object-fit:\s*cover;/);
 });
 

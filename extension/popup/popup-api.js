@@ -54,12 +54,37 @@ export async function fetchRuntimeStatus() {
   return requestJson("/runtime-status", { method: "GET" });
 }
 
-export async function fetchActivityFeed() {
-  return requestJson("/activity-feed", { method: "GET" });
+export async function fetchActivityFeed({ limit, before } = {}) {
+  const params = new URLSearchParams();
+  if (typeof limit === "number") params.set("limit", String(limit));
+  if (before) params.set("before", before);
+  const qs = params.toString();
+  return requestJson(`/activity-feed${qs ? `?${qs}` : ""}`, { method: "GET" });
 }
 
 export async function fetchPendingNotification() {
   return requestJson("/notifications/pending", { method: "GET" });
+}
+
+export async function fetchPendingDelight() {
+  const payload = await requestJson("/delight/pending", { method: "GET" });
+  return payload?.item ?? null;
+}
+
+export async function fetchPendingDelightBatch(limit = 20) {
+  const payload = await requestJson(
+    `/delight/pending-batch?limit=${limit}`,
+    { method: "GET" },
+  );
+  return Array.isArray(payload?.items) ? payload.items : [];
+}
+
+export async function markDelightSent(bvid) {
+  return requestJson("/delight/sent", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bvid }),
+  });
 }
 
 export async function acknowledgeNotificationSent(bvid) {
@@ -124,13 +149,51 @@ export async function reportRecommendationClick(payload) {
 }
 
 export async function sendChatMessage(message) {
-  return requestJson("/chat", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ message }),
-  });
+  const controller = new AbortController();
+  // Bumped from 35s to 150s. Backend's chat dialogue can take ~120s under
+  // deepseek reasoning_effort=max; we give a small headroom for HTTP
+  // round-trip + serialization beyond the backend's own 120s wait_for.
+  const timeout = setTimeout(() => controller.abort(), 150_000);
+  try {
+    return await requestJson("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function respondToInterestProbe(domain, responseType, message = "") {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 35_000);
+  try {
+    return await requestJson("/interest-probes/respond", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ domain, response: responseType, message }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function respondToDelight(bvid, responseType, title = "", message = "") {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 35_000);
+  try {
+    return await requestJson("/delight/respond", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bvid, response: responseType, title, message }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function fetchConfig() {

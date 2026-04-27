@@ -19,12 +19,12 @@ import pytest
 from openbiliclaw.llm.base import LLMResponse
 from openbiliclaw.memory.manager import MemoryManager
 from openbiliclaw.soul.pipeline import (
+    _BUFFERED_LAYERS,
+    _STRONG_SIGNAL_TYPES,
     LayerThreshold,
     OnionLayer,
     ProfileUpdatePipeline,
     SignalType,
-    _BUFFERED_LAYERS,
-    _STRONG_SIGNAL_TYPES,
     signal_from_dialogue_turn,
     signal_from_feedback,
     signal_from_recommendation_click,
@@ -34,7 +34,6 @@ from openbiliclaw.soul.pipeline import (
 )
 from openbiliclaw.soul.preference_analyzer import PreferenceAnalyzer
 from openbiliclaw.soul.profile_builder import ProfileBuilder
-
 
 # ---------------------------------------------------------------------------
 # SmartFakeService — routes LLM calls by system_instruction content
@@ -100,7 +99,10 @@ _CORE_RESP = json.dumps(
 
 _PORTRAIT_RESP = json.dumps(
     {
-        "personality_portrait": "这是一个热爱技术探索的用户，对知识有深度渴望，习惯系统化地理解新领域。",
+        "personality_portrait": (
+            "这是一个热爱技术探索的用户，"
+            "对知识有深度渴望，习惯系统化地理解新领域。"
+        ),
         "core_traits": ["好奇心强", "逻辑严谨"],
         "cognitive_style": ["系统化思考，偏好结构化信息"],
         "motivational_drivers": ["技术精进驱动"],
@@ -678,7 +680,7 @@ async def test_channel_eval_report(tmp_path: object, capsys: object) -> None:
     """
     from pathlib import Path
 
-    _CHANNEL_SPECS = [
+    channel_specs = [
         {
             "name": "BEHAVIOR_EVENT",
             "signals": lambda: signals_from_events(_view_events(10)),
@@ -730,7 +732,7 @@ async def test_channel_eval_report(tmp_path: object, capsys: object) -> None:
     print("─" * len(header))
 
     all_passed = True
-    for i, spec in enumerate(_CHANNEL_SPECS):
+    for i, spec in enumerate(channel_specs):
         pipeline = _make_pipeline(Path(str(tmp_path)) / f"ch{i}")
         signals = spec["signals"]()
         result = await pipeline.ingest_batch(signals)

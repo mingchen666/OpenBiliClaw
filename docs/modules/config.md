@@ -95,13 +95,50 @@ cp config.example.toml config.toml
 > 如果 `bilibili.cookie` 留空，CLI 命令和本地 API 服务会自动回退到 `auth login` 保存的 `data/bilibili_cookie.json`。
 > 只有在你想显式覆盖本地登录态时，才需要把 cookie 直接写进 `config.toml`。
 
+### `[sources.browser]`
+
+多源内容适配器（小红书、知乎、V2EX 等非 B 站源）使用的浏览器配置。与 `bilibili.browser` 独立 —— 后者控制 B 站登录 / 扫码用的 agent-browser CLI。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `cdp_url` | string | `""` | 预启动 Chrome 的 CDP 端点，例如 `"http://localhost:9222"`。设置后优先走 Playwright `connect_over_cdp` 复用你手动登录的会话；留空则回退到 agent-browser（无登录态） |
+| `headed` | bool | `false` | agent-browser 回退路径是否显示窗口 |
+
+> **推荐用 CDP 模式。** 小红书等站点对匿名请求限流严格，只有复用真实登录态才稳定工作。
+>
+> 启动步骤：
+> 1. 安装 Playwright：`pip install 'openbiliclaw[browser]'`
+> 2. 启一个独立 profile 的 Chrome：
+>    ```bash
+>    open -na "Google Chrome" --args \
+>      --remote-debugging-port=9222 \
+>      --user-data-dir="$HOME/.openbiliclaw-chrome"
+>    ```
+> 3. 在这个 Chrome 里手动登录目标站点（小红书等），profile 会记住，后续复用
+> 4. 在 `config.toml` 里填 `cdp_url = "http://localhost:9222"`
+>
+> `127.0.0.1` 与 `localhost` 并非总是等价：macOS 上 Chrome 常只绑定 IPv6 `::1:9222`，而 Python urllib 默认走 IPv4。用 `localhost` 最稳妥（`getaddrinfo` 会同时尝试两边）。
+
+### `[sources.xiaohongshu]`
+
+小红书专用配置。详情富化通过 GPL 隔离的 xhs-downloader sidecar 容器完成（`POST /xhs/detail`），主后端不导入任何 xhs 代码。内容发现交给扩展在真实登录态的浏览器中完成，后端不做主动爬取。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `sidecar_url` | string | `""` | xhs-downloader sidecar 的 HTTP 地址。留空禁用小红书源。Docker compose 自动注入 `OPENBILICLAW_XHS_SIDECAR_URL` 环境变量 |
+| `daily_search_budget` | int | `30` | 每天后端允许入队的 Soul 驱动搜索任务数上限。由 `XhsTaskProducer`（`runtime/xhs_producer.py`）在持续刷新循环里使用，搭配内部 4h 最小间隔避免反复抢配额 |
+| `daily_creator_budget` | int | `10` | 每天每位订阅创作者的抓取任务上限 |
+| `task_interval_seconds` | int | `45` | 扩展分发器两次任务之间的最小间隔（秒） |
+
+> **安全设计要点：** 后端从不直接调用小红书搜索 / Feed API。所有"主动发现"（关键词搜索、创作者主页浏览）都在用户自己的浏览器中以后台标签页形式执行，由扩展代理完成。被动发现则利用用户正常浏览时已经加载的卡片 URL，零额外请求。
+
 ### `[scheduler]`
 
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
 | `enabled` | bool | `true` | 是否启用定时发现 |
 | `discovery_cron` | string | `"0 */4 * * *"` | 发现任务 cron 表达式 |
-| `pool_target_count` | int | `300` | discovery pool 期望保有的可换候选数量；允许范围 `1..300`。运行时会持续补货直到接近该目标，给 popup 连续“换一批”和自动续页留出更充足余量 |
+| `pool_target_count` | int | `600` | discovery pool 的硬上限，同时作为期望保有的可换候选数量；允许范围 `1..600`。pool < 目标时会持续补货；pool ≥ 目标时任何 refresh（含 `force_refresh`）都直接返回 `pool_at_cap` 不再 discover；pool > 目标时会先按 `relevance_score` / 时间 / `explore` 优先顺序把溢出部分降为 `suppressed` |
 | `account_sync_interval_hours` | int | `6` | 账户侧长期信号同步间隔；运行时会低频拉取 history / favorites / following |
 | `speculation_interval_minutes` | int | `10` | 猜测兴趣推测的运行间隔（分钟） |
 | `speculation_ttl_days` | int | `3` | 猜测兴趣的默认存活天数 |
@@ -128,6 +165,10 @@ cp config.example.toml config.toml
 | `file_level` | string | `"DEBUG"` | 文件日志级别 |
 | `directory` | string | `"logs"` | 日志目录 |
 | `filename` | string | `"openbiliclaw.log"` | 日志文件名 |
+| `max_file_size_mb` | int | `1024` | 单个日志文件上限（MB），超过即轮转；`0` 禁用轮转 |
+| `backup_count` | int | `1` | 保留的历史日志份数；设为 `1` 时总占用封顶 `max_file_size_mb * 2` MB |
+
+启动时如果现有日志文件已经超过 `max_file_size_mb`，会被重命名为 `<filename>.1`（覆盖旧的 `.1`）并重新开始写入——这样意外堆积的大日志不会在下次启动时继续增长。运行时到达上限则由 `RotatingFileHandler` 正常轮转：`app.log` → `app.log.1` → `app.log.2` → …，超出 `backup_count` 的旧份自动丢弃。
 
 ## 环境变量
 

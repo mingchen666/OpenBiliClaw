@@ -21,18 +21,17 @@ from openbiliclaw.llm.base import LLMResponse
 from openbiliclaw.memory.manager import MemoryManager
 from openbiliclaw.soul.layer_updaters import _update_surface
 from openbiliclaw.soul.pipeline import (
+    _BUFFERED_LAYERS,
     DEFAULT_THRESHOLDS,
     LayerBuffer,
     LayerThreshold,
     OnionLayer,
     ProfileUpdatePipeline,
     SignalType,
-    _BUFFERED_LAYERS,
     _serialize_signal,
     classify_signal,
     load_pipeline_state,
     save_pipeline_state,
-    signal_from_dialogue_turn,
     signal_from_feedback,
     signals_from_dialogue,
     signals_from_events,
@@ -40,7 +39,6 @@ from openbiliclaw.soul.pipeline import (
 from openbiliclaw.soul.preference_analyzer import PreferenceAnalyzer
 from openbiliclaw.soul.profile import OnionProfile
 from openbiliclaw.soul.profile_builder import ProfileBuilder
-
 
 # ---------------------------------------------------------------------------
 # Mock LLM service — returns rich responses for every layer
@@ -609,7 +607,9 @@ async def test_portrait_regenerated_when_values_change(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_portrait_NOT_regenerated_for_interest_only_change(tmp_path: Path) -> None:
+async def test_portrait_not_regenerated_for_interest_only_change(
+    tmp_path: Path,
+) -> None:
     """Interest changes alone (no Core/Values) must NOT regenerate portrait."""
     pipeline, svc, _ = _make_low_threshold_pipeline(tmp_path)
 
@@ -1807,7 +1807,15 @@ async def test_semantic_purge_candidate_with_all_empty_fields_is_skipped(
     # Insert a minimal row with all the text fields empty
     db.conn.execute(
         """
-        INSERT INTO content_cache (bvid, title, topic_key, topic_group, pool_topic_label, pool_status, source)
+        INSERT INTO content_cache (
+            bvid,
+            title,
+            topic_key,
+            topic_group,
+            pool_topic_label,
+            pool_status,
+            source
+        )
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         ("BVempty", "", "", "", "", "fresh", "test"),
@@ -1922,7 +1930,11 @@ class _CognitionFakeService:
         if "awareness" in system_instruction.lower() or "观察" in system_instruction:
             self.awareness_calls += 1
             return LLMResponse(content=_AWARENESS_RESP, provider="fake")
-        if "insight" in system_instruction.lower() or "洞察" in system_instruction or "假设" in system_instruction:
+        if (
+            "insight" in system_instruction.lower()
+            or "洞察" in system_instruction
+            or "假设" in system_instruction
+        ):
             self.insight_calls += 1
             return LLMResponse(content=_INSIGHT_RESP, provider="fake")
         # Fallback
@@ -2002,7 +2014,6 @@ async def test_cognition_cycle_stale_state_retriggers(tmp_path: Path) -> None:
     memory.get_layer("soul").save()
 
     # First run at T0
-    from datetime import timedelta
 
     t0 = datetime(2026, 4, 9, 8, 0, 0)
     first = await cycle.run_if_due(now=t0)
@@ -2121,9 +2132,9 @@ async def test_cognition_cycle_skips_profile_sync_when_soul_layer_empty(
 async def test_pipeline_tick_invokes_cognition_cycle(tmp_path: Path) -> None:
     """ProfileUpdatePipeline.tick() should call cognition_cycle.run_if_due()."""
     from openbiliclaw.soul.pipeline import (
+        _BUFFERED_LAYERS,
         LayerThreshold,
         ProfileUpdatePipeline,
-        _BUFFERED_LAYERS,
     )
 
     class _SpyCycle:
@@ -2177,9 +2188,9 @@ async def test_pipeline_tick_cognition_throttled_does_not_produce_update(
 ) -> None:
     """When cognition cycle is throttled (ran=False), no layer update is appended."""
     from openbiliclaw.soul.pipeline import (
+        _BUFFERED_LAYERS,
         LayerThreshold,
         ProfileUpdatePipeline,
-        _BUFFERED_LAYERS,
     )
 
     class _ThrottledCycle:
@@ -2216,9 +2227,9 @@ async def test_pipeline_tick_cognition_exception_is_swallowed(
 ) -> None:
     """A broken cognition cycle must not break pipeline.tick()."""
     from openbiliclaw.soul.pipeline import (
+        _BUFFERED_LAYERS,
         LayerThreshold,
         ProfileUpdatePipeline,
-        _BUFFERED_LAYERS,
     )
 
     class _BrokenCycle:
@@ -2329,7 +2340,6 @@ async def test_cognition_cycle_sync_exception_does_not_propagate(
     tmp_path: Path,
 ) -> None:
     """If _sync_to_profile raises mid-flow, the cycle must still finish cleanly."""
-    from openbiliclaw.soul.cognition_cycle import CognitionCycle
 
     cycle, svc, memory = _make_cognition_cycle(tmp_path)
     memory.get_layer("soul").data.update(OnionProfile().to_dict())
@@ -2366,9 +2376,18 @@ async def test_cognition_cycle_empty_insight_response_returns_zero(
     memory.get_layer("soul").data.update(OnionProfile().to_dict())
     memory.get_layer("soul").save()
     # Pre-seed awareness so the insight pass has input
-    memory.get_layer("awareness").data.update({
-        "notes": [{"date": "2026-04-08", "observation": "seeded", "trend": "", "emotion_guess": ""}],
-    })
+    memory.get_layer("awareness").data.update(
+        {
+            "notes": [
+                {
+                    "date": "2026-04-08",
+                    "observation": "seeded",
+                    "trend": "",
+                    "emotion_guess": "",
+                }
+            ],
+        }
+    )
     memory.get_layer("awareness").save()
 
     class _EmptyInsightSvc:
@@ -2638,8 +2657,8 @@ async def test_update_values_records_removed_values_and_drivers(tmp_path: Path) 
 @pytest.mark.asyncio
 async def test_speculator_seed_ingestion_exception_is_swallowed(tmp_path: Path) -> None:
     """If speculator seed ingestion raises, _update_interest must continue gracefully."""
-    from openbiliclaw.soul.layer_updaters import _update_interest
     from openbiliclaw.soul import speculator as spec_mod
+    from openbiliclaw.soul.layer_updaters import _update_interest
 
     memory = MemoryManager(Path(tmp_path))
     memory.initialize()

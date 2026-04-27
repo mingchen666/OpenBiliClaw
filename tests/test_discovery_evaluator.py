@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-from dataclasses import dataclass, field
-
 import pytest
 
 from openbiliclaw.discovery.engine import DiscoveredContent
@@ -12,7 +9,6 @@ from openbiliclaw.eval.discovery_evaluator import (
     DISCOVERY_FIELD_TO_PARAM,
     DiscoveryEvalReport,
     DiscoveryEvaluator,
-    DimensionScore,
     StrategyEvalReport,
     _score_diversity,
     _score_explanation_quality,
@@ -136,7 +132,11 @@ def test_explanation_quality_empty() -> None:
 def test_explanation_quality_all_good() -> None:
     items = _make_items(
         ["a", "b", "c"],
-        reasons=["这个视频深度讲解了原理，适合深度学习者", "摄影构图入门非常实用，值得一看", "游戏攻略详细清晰，条理分明"],
+        reasons=[
+            "这个视频深度讲解了原理，适合深度学习者",
+            "摄影构图入门非常实用，值得一看",
+            "游戏攻略详细清晰，条理分明",
+        ],
     )
     assert _score_explanation_quality(items) == 1.0
 

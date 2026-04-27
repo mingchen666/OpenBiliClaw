@@ -196,3 +196,69 @@ def test_preference_analyzer_requires_core_memory_task_service() -> None:
 
     with pytest.raises(TypeError, match="complete_structured_task"):
         PreferenceAnalyzer(FakeRegistry())
+
+
+def test_compute_source_platform_mix_counts_events_per_source() -> None:
+    from openbiliclaw.soul.preference_analyzer import PreferenceAnalyzer
+
+    analyzer = PreferenceAnalyzer(FakeStructuredService())
+    mix = analyzer.compute_source_platform_mix(
+        [
+            {"metadata": {"source_platform": "bilibili"}},
+            {"metadata": {"source_platform": "bilibili"}},
+            {"metadata": {"source_platform": "xiaohongshu"}},
+            # Events missing source_platform are attributed to bilibili for
+            # back-compat with records written before multi-source support.
+            {"metadata": {}},
+        ]
+    )
+    assert mix == {"bilibili": 0.75, "xiaohongshu": 0.25}
+
+
+def test_compute_source_platform_mix_returns_empty_when_no_events() -> None:
+    from openbiliclaw.soul.preference_analyzer import PreferenceAnalyzer
+
+    analyzer = PreferenceAnalyzer(FakeStructuredService())
+    assert analyzer.compute_source_platform_mix([]) == {}
+
+
+def test_merge_source_mix_ema_blends_prior_and_batch() -> None:
+    from openbiliclaw.soul.preference_analyzer import PreferenceAnalyzer
+
+    analyzer = PreferenceAnalyzer(FakeStructuredService())
+    blended = analyzer._merge_source_mix(
+        {"bilibili": 1.0},
+        {"xiaohongshu": 1.0},
+    )
+    # alpha=0.3 by default → prior bilibili keeps 0.7 weight, new xhs gets 0.3.
+    assert blended == {"bilibili": 0.7, "xiaohongshu": 0.3}
+
+
+def test_merge_source_mix_keeps_prior_when_batch_empty() -> None:
+    from openbiliclaw.soul.preference_analyzer import PreferenceAnalyzer
+
+    analyzer = PreferenceAnalyzer(FakeStructuredService())
+    assert analyzer._merge_source_mix(
+        {"bilibili": 0.6, "xiaohongshu": 0.4},
+        {},
+    ) == {"bilibili": 0.6, "xiaohongshu": 0.4}
+
+
+@pytest.mark.asyncio
+async def test_analyze_events_populates_source_platform_mix() -> None:
+    from openbiliclaw.soul.preference_analyzer import PreferenceAnalyzer
+
+    service = FakeStructuredService(
+        LLMResponse(
+            content='{"interests": [{"name": "科技", "category": "知识", "weight": 0.7}]}',
+            provider="openai",
+        )
+    )
+    preference = await PreferenceAnalyzer(service).analyze_events(
+        events=[
+            {"event_type": "view", "title": "A", "metadata": {"source_platform": "bilibili"}},
+            {"event_type": "view", "title": "B", "metadata": {"source_platform": "xiaohongshu"}},
+        ],
+        existing_preference={},
+    )
+    assert preference["source_platform_mix"] == {"bilibili": 0.5, "xiaohongshu": 0.5}

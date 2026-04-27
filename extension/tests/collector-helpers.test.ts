@@ -2,10 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  detectPageType,
+  detectBilibiliPageType,
   extractBvid,
-  inferActionType,
-} from "../src/shared/behavior.ts";
+  inferBilibiliActionType,
+  bilibiliAdapter,
+} from "../src/shared/platforms/bilibili.ts";
+import {
+  detectXiaohongshuPageType,
+  extractNoteId,
+  xiaohongshuAdapter,
+} from "../src/shared/platforms/xiaohongshu.ts";
 import {
   buildDedupeKey,
   enqueueBufferedEvent,
@@ -21,6 +27,7 @@ function makeEvent(
     url: "https://www.bilibili.com/video/BV1AB411c7mD",
     title: "示例视频",
     timestamp: 1_710_000_000_000,
+    source_platform: "bilibili",
     context: {
       pageType: "video",
       viewport: { width: 1440, height: 900 },
@@ -31,18 +38,18 @@ function makeEvent(
   };
 }
 
-test("detectPageType classifies common bilibili pages", () => {
+test("detectBilibiliPageType classifies common bilibili pages", () => {
   assert.equal(
-    detectPageType("https://www.bilibili.com/video/BV1AB411c7mD"),
+    detectBilibiliPageType("https://www.bilibili.com/video/BV1AB411c7mD"),
     "video",
   );
   assert.equal(
-    detectPageType("https://search.bilibili.com/all?keyword=test"),
+    detectBilibiliPageType("https://search.bilibili.com/all?keyword=test"),
     "search",
   );
-  assert.equal(detectPageType("https://space.bilibili.com/12345"), "user");
-  assert.equal(detectPageType("https://www.bilibili.com/v/knowledge/"), "category");
-  assert.equal(detectPageType("https://www.bilibili.com/"), "home");
+  assert.equal(detectBilibiliPageType("https://space.bilibili.com/12345"), "user");
+  assert.equal(detectBilibiliPageType("https://www.bilibili.com/v/knowledge/"), "category");
+  assert.equal(detectBilibiliPageType("https://www.bilibili.com/"), "home");
 });
 
 test("extractBvid returns BV id from video url", () => {
@@ -53,18 +60,98 @@ test("extractBvid returns BV id from video url", () => {
   assert.equal(extractBvid("https://www.bilibili.com/"), null);
 });
 
-test("inferActionType recognizes common bilibili action buttons", () => {
-  assert.equal(inferActionType({ text: "点赞", ariaLabel: null, className: "" }), "like");
-  assert.equal(inferActionType({ text: "", ariaLabel: "投币", className: "" }), "coin");
+test("inferBilibiliActionType recognizes common bilibili action buttons", () => {
   assert.equal(
-    inferActionType({ text: "收藏", ariaLabel: null, className: "collect-btn" }),
+    inferBilibiliActionType({ text: "点赞", ariaLabel: null, className: "" }),
+    "like",
+  );
+  assert.equal(
+    inferBilibiliActionType({ text: "", ariaLabel: "投币", className: "" }),
+    "coin",
+  );
+  assert.equal(
+    inferBilibiliActionType({ text: "收藏", ariaLabel: null, className: "collect-btn" }),
     "favorite",
   );
   assert.equal(
-    inferActionType({ text: "发表评论", ariaLabel: null, className: "comment-submit" }),
+    inferBilibiliActionType({ text: "发表评论", ariaLabel: null, className: "comment-submit" }),
     "comment",
   );
-  assert.equal(inferActionType({ text: "分享", ariaLabel: null, className: "" }), null);
+  assert.equal(
+    inferBilibiliActionType({ text: "分享", ariaLabel: null, className: "" }),
+    null,
+  );
+});
+
+test("bilibiliAdapter wires content-id and source platform", () => {
+  assert.equal(bilibiliAdapter.sourcePlatform, "bilibili");
+  assert.equal(
+    bilibiliAdapter.extractContentId("https://www.bilibili.com/video/BV1AB411c7mD"),
+    "BV1AB411c7mD",
+  );
+  assert.equal(bilibiliAdapter.videoSelector, "video");
+});
+
+test("detectXiaohongshuPageType classifies common xhs pages", () => {
+  assert.equal(
+    detectXiaohongshuPageType(
+      "https://www.xiaohongshu.com/explore/69dea966000000001a0280ad",
+    ),
+    "note",
+  );
+  assert.equal(
+    detectXiaohongshuPageType("https://www.xiaohongshu.com/search_result?keyword=cat"),
+    "search",
+  );
+  assert.equal(
+    detectXiaohongshuPageType("https://www.xiaohongshu.com/user/profile/abc123"),
+    "user",
+  );
+  assert.equal(detectXiaohongshuPageType("https://www.xiaohongshu.com/explore"), "home");
+});
+
+test("extractNoteId pulls 24-char hex id from xhs urls", () => {
+  assert.equal(
+    extractNoteId("https://www.xiaohongshu.com/explore/69dea966000000001a0280ad"),
+    "69dea966000000001a0280ad",
+  );
+  assert.equal(
+    extractNoteId(
+      "https://www.xiaohongshu.com/search_result/69dea966000000001a0280ad?xsec_token=abc",
+    ),
+    "69dea966000000001a0280ad",
+  );
+  assert.equal(extractNoteId("https://www.xiaohongshu.com/explore"), null);
+  assert.equal(extractNoteId("https://www.bilibili.com/video/BV1AB411c7mD"), null);
+});
+
+test("xiaohongshuAdapter wires source platform and skips video observation", () => {
+  assert.equal(xiaohongshuAdapter.sourcePlatform, "xiaohongshu");
+  assert.equal(xiaohongshuAdapter.videoSelector, null);
+});
+
+test("xiaohongshuAdapter.inferActionType recognizes like/favorite/comment", () => {
+  assert.equal(
+    xiaohongshuAdapter.inferActionType({ text: "点赞", ariaLabel: null, className: "" }),
+    "like",
+  );
+  assert.equal(
+    xiaohongshuAdapter.inferActionType({ text: "", ariaLabel: "收藏", className: "" }),
+    "favorite",
+  );
+  assert.equal(
+    xiaohongshuAdapter.inferActionType({ text: "评论", ariaLabel: null, className: "" }),
+    "comment",
+  );
+  // xhs has no coin button — text should not trigger a match.
+  assert.equal(
+    xiaohongshuAdapter.inferActionType({ text: "投币", ariaLabel: null, className: "" }),
+    null,
+  );
+  assert.equal(
+    xiaohongshuAdapter.inferActionType({ text: "分享", ariaLabel: null, className: "" }),
+    null,
+  );
 });
 
 test("buildDedupeKey collapses high-frequency page events", () => {

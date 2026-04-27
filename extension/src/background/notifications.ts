@@ -100,8 +100,15 @@ export function buildProfileNotificationUrl(): string {
   return buildExtensionUiUrl("profile");
 }
 
-export function buildExtensionUiUrl(tab: ExtensionUiTab = "recommend"): string {
-  const path = `popup/popup.html?tab=${tab}`;
+export function buildExtensionUiUrl(
+  tab: ExtensionUiTab = "recommend",
+  { delightBvid = "" }: { delightBvid?: string } = {},
+): string {
+  const params = new URLSearchParams({ tab });
+  if (delightBvid) {
+    params.set("delight", delightBvid);
+  }
+  const path = `popup/popup.html?${params.toString()}`;
   if (
     typeof chrome !== "undefined" &&
     chrome.runtime &&
@@ -117,12 +124,13 @@ export async function openExtensionUi(
   {
     windowId,
     tab = "recommend",
-  }: { windowId?: number; tab?: ExtensionUiTab } = {},
+    delightBvid = "",
+  }: { windowId?: number; tab?: ExtensionUiTab; delightBvid?: string } = {},
 ): Promise<"sidePanel" | "tab"> {
   if (typeof windowId === "number" && chromeApi.sidePanel?.open) {
     await chromeApi.sidePanel.open({ windowId });
     return "sidePanel";
   }
-  await chromeApi.tabs?.create({ url: buildExtensionUiUrl(tab) });
+  await chromeApi.tabs?.create({ url: buildExtensionUiUrl(tab, { delightBvid }) });
   return "tab";
 }

@@ -43,6 +43,7 @@ class LLMResponse:
     provider: str = ""
     usage: dict[str, int] | None = None  # token counts
     raw: Any = None  # Raw provider response
+    tool_calls: list[dict[str, Any]] | None = None  # Phase 4: function calling
 
 
 @dataclass

@@ -115,7 +115,14 @@ class TestBackendAPI:
                 captured["llm_evaluation_concurrency"] = llm_evaluation_concurrency
 
         class FakeContentDiscoveryEngine:
-            def __init__(self, *, llm_service: object, database: object, concurrency=None, embedding_service=None) -> None:
+            def __init__(
+                self,
+                *,
+                llm_service: object,
+                database: object,
+                concurrency=None,
+                embedding_service=None,
+            ) -> None:
                 captured["engine_concurrency"] = concurrency
 
             def register_strategy(self, strategy: object) -> None:
@@ -158,7 +165,14 @@ class TestBackendAPI:
                 self.memory = memory
 
         class FakeRecommendationEngine:
-            def __init__(self, *, llm: object, database: object, curator: object = None, embedding_service: object = None) -> None:
+            def __init__(
+                self,
+                *,
+                llm: object,
+                database: object,
+                curator: object = None,
+                embedding_service: object = None,
+            ) -> None:
                 self.llm = llm
                 self.database = database
 
@@ -181,6 +195,8 @@ class TestBackendAPI:
                 soul_engine: object,
                 llm_service: object | None = None,
                 session: str,
+                tools: object | None = None,
+                tool_dispatcher: object | None = None,
             ) -> None:
                 self.llm = llm
                 self.soul_engine = soul_engine
@@ -189,7 +205,16 @@ class TestBackendAPI:
 
         fake_config = SimpleNamespace(
             data_path=Path("/tmp/openbiliclaw-test-data"),
-            bilibili=SimpleNamespace(cookie=""),
+            bilibili=SimpleNamespace(cookie="", browser_executable="", browser_headed=False),
+            sources=SimpleNamespace(
+                browser_cdp_url="",
+                browser_headed=False,
+                xiaohongshu=SimpleNamespace(
+                    daily_search_budget=20,
+                    daily_creator_budget=10,
+                    task_interval_seconds=45,
+                ),
+            ),
             scheduler=SimpleNamespace(pool_target_count=300, account_sync_interval_hours=24),
         )
 
@@ -274,6 +299,56 @@ class TestBackendAPI:
         assert memory.events[0]["event_type"] == "click"
         assert memory.events[0]["url"] == "https://www.bilibili.com/video/BV1TEST"
         assert memory.events[0]["metadata"]["timestamp"] == 1710000000000
+        # Legacy payload without source_platform defaults to bilibili so the
+        # existing extension build keeps working across the upgrade.
+        assert memory.events[0]["metadata"]["source_platform"] == "bilibili"
+
+    def test_events_endpoint_preserves_source_platform(self) -> None:
+        from fastapi.testclient import TestClient
+
+        class FakeMemoryManager:
+            def __init__(self) -> None:
+                self.events: list[dict[str, object]] = []
+
+            async def propagate_event(self, event: dict[str, object]) -> None:
+                self.events.append(event)
+
+        memory = FakeMemoryManager()
+        app = create_app(memory_manager=memory)
+        client = TestClient(app)
+
+        response = client.post(
+            "/api/events",
+            json={
+                "events": [
+                    {
+                        "type": "click",
+                        "url": "https://www.xiaohongshu.com/explore/69dea966000000001a0280ad",
+                        "title": "测试笔记",
+                        "timestamp": 1710000000000,
+                        "source_platform": "xiaohongshu",
+                        "context": {"pageType": "note"},
+                        "metadata": {"note_id": "69dea966000000001a0280ad"},
+                    },
+                    {
+                        "type": "scroll",
+                        "url": "https://www.xiaohongshu.com/explore",
+                        "title": "",
+                        "timestamp": 1710000000001,
+                        "source_platform": "   ",
+                        "context": {"pageType": "home"},
+                        "metadata": {},
+                    },
+                ]
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["accepted"] == 2
+        assert memory.events[0]["metadata"]["source_platform"] == "xiaohongshu"
+        assert memory.events[0]["metadata"]["note_id"] == "69dea966000000001a0280ad"
+        # Blank source_platform (whitespace only) falls back to bilibili.
+        assert memory.events[1]["metadata"]["source_platform"] == "bilibili"
 
     def test_events_endpoint_handles_extension_cors_preflight(self) -> None:
         from fastapi.testclient import TestClient
@@ -1065,7 +1140,12 @@ class TestBackendAPI:
         assert data["motivational_drivers"] == [
             "建立判断确定性", "持续扩展理解边界", "在复杂信息里找到秩序感",
         ]
-        assert data["cognitive_style"] == ["会先看结构", "对证据比较敏感", "偏好把问题讲透", "不太吃空话"]
+        assert data["cognitive_style"] == [
+            "会先看结构",
+            "对证据比较敏感",
+            "偏好把问题讲透",
+            "不太吃空话",
+        ]
         assert data["current_phase"] == "最近更像在一边吸收高密度信息，一边整理自己的判断框架。"
         assert data["life_stage"] == "职业上升期，开始关注更宏观的议题。"
         assert data["favorite_up_users"] == ["经济观察", "构图实验室"]
@@ -1670,7 +1750,6 @@ class TestBackendAPI:
             EmbeddingConfig,
             LLMConfig,
             LLMProviderConfig,
-            load_config,
             save_config,
         )
 

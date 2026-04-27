@@ -4,7 +4,7 @@
 
 `extension/` 是 Chrome 插件子项目，负责：
 
-- 在 B 站页面采集行为事件
+- 在 B 站 / 小红书等支持的站点采集行为事件（平台无关内核 + 平台适配器）
 - 通过 background service worker 缓冲并上报到本地后端
 - 在 side panel 中展示连接状态、推荐结果、画像和聊天入口
 
@@ -20,6 +20,8 @@
 | 认知变化历史分页 | ✅ | 画像 tab 的认知卡片支持展开详情，并可下拉或点击按钮继续查看更早的变化记录 |
 | 认知卡片上下文澄清 | ✅ | 画像 tab 的认知卡片默认态现在固定展示“结论 + 上下文 + 状态提示”，用户可直接看出这是对哪条内容/哪轮聊天/哪组聚合信号形成的判断，以及这张卡片是否还能展开 |
 | 画像多层认知展示 | ✅ | 画像 tab 现已把“你怎么处理信息 / 你在内容里长期在找什么 / 这阵子更像在经历什么”单独拆开，不再只显示一段画像 prose 加兴趣 chips |
+| 多源行为采集（MVP） | ✅ | content script 拆成「平台无关 kernel + 平台适配器」，新增小红书适配器。manifest 覆盖 `*.xiaohongshu.com`，事件携带 `source_platform` 字段；MVP 仅采 snapshot / click / scroll / search，like/collect 延后 |
+| xhs token 嗅探（MAIN world） | ✅ | `src/main/xhs-token-sniffer.ts` 以 `world: "MAIN"`、`run_at: "document_start"` 注入 xhs 页面，劫持 `window.fetch` / `XMLHttpRequest` 扫描 xhs 自家 API 响应里的 `(note_id, xsec_token)` 对子，通过 `postMessage` 桥接到 isolated world 再 `/api/sources/xhs/tokens` 回填——解决搜索页永不带 token 导致点击命中 300031 登录墙的问题 |
 
 ## 目录结构
 
@@ -36,10 +38,17 @@ extension/
 │   │   ├── buffer.ts
 │   │   └── service-worker.ts
 │   ├── content/
-│   │   └── collector.ts
+│   │   ├── kernel.ts          # 平台无关的 DOM 观察 + 事件派发
+│   │   ├── bilibili.ts        # B 站 entry point，挂载 bilibiliAdapter
+│   │   └── xiaohongshu.ts     # 小红书 entry point，挂载 xiaohongshuAdapter
+│   ├── main/
+│   │   └── xhs-token-sniffer.ts  # MAIN-world fetch/XHR sniffer，捞 xsec_token
 │   └── shared/
-│       ├── behavior.ts
-│       └── types.ts
+│       ├── behavior.ts        # createBehaviorEvent / DOM snapshot kernel
+│       ├── types.ts           # BehaviorEvent + PlatformAdapter 接口
+│       └── platforms/
+│           ├── bilibili.ts    # bvid 提取、卡片选择器、动作关键字
+│           └── xiaohongshu.ts # note_id 提取、卡片选择器
 └── tests/
     ├── collector-helpers.test.ts
     ├── dist-module-specifiers.test.ts
@@ -77,6 +86,7 @@ extension/
 - 点击扩展图标时优先打开 side panel
 - 通知和认知提醒也会优先把用户带回插件 side panel 上下文
 - 在推荐通知之外，认知变化通知会打开带 `?tab=profile` 的插件页面，直接落到画像视图
+- 惊喜推荐通知现在会打开带 `?tab=recommend&delight=<bvid>` 的插件页面，落到对应的首屏惊喜卡，而不是只把人丢回通用推荐页
 
 ### `popup/`
 
@@ -106,6 +116,7 @@ extension/
 - 后台补货继续异步进行，不会阻塞 popup 立刻换片
 - pool 状态摘要现在会区分“正在补货”“这轮找到了内容但可换库存没变”“刚补进 N 条”，不再把 refresh 进行中和上一轮净新增为 0 混成同一句
 - 推荐 tab 头部现已进一步压缩成双层内容型入口：第一层只保留 `For You`、标题和 `换一批`，第二层把池子状态收成三枚紧凑 chips，让第一张推荐卡更早进入首屏
+- 推荐 tab 现在还会在头部下方展示独立的“惊喜推荐”首屏卡位：popup 启动时会主动读取 `/api/delight/pending`，runtime stream 收到新的 `delight.candidate` 也会立刻刷新这张卡
 - 推荐 tab 会展示候选池摘要：
   - `当前可换`
   - `最近补进`
@@ -114,6 +125,8 @@ extension/
   - refresh 还在跑时，状态 chip 会优先显示 `正在补货`，不再先落成 `这轮还没补进`
   - 点击 `换一批` 时，进行中的文案会直接进入“现在在忙” chip，而不是再额外挤出一条独立状态行
 - 推荐卡片现已进一步改成更偏编辑式的内容流：封面、标题、推荐理由和操作区的层级被重新拉开，头部信息不会再和首张内容卡抢视觉主角
+- 惊喜推荐卡会直接展示封面、hook、标题和惊喜理由，并提供 `看看 / 不感兴趣 / 聊一聊 / 稍后看` 四个动作
+- `看看` 会打开对应内容并把这次点击保留成稳定的本地已处理态；`聊一聊` 会在卡内直接发送一条带上下文的聊天消息，不再强制把用户切去聊天 tab
 - 画像 tab：调用 `/api/profile-summary` 展示轻量人格画像、核心特质、深层需求、更完整的近期兴趣关键词，以及单独的“最近明显会避开”分组
 - 画像 tab 现在还会单独展示 `cognitive_style / motivational_drivers / current_phase` 三层认知摘要，让“这会儿的你”更像对用户的理解，而不是兴趣标签润色
 - 画像 tab 会额外展示“阿B 最近新记住了什么”，让用户能看到最近几次高置信度认知变化
@@ -155,6 +168,16 @@ npm run build
 - 缓冲去重与强信号 flush
 - manifest 图标资源存在性
 - `dist/` 运行时脚本可被 Chrome 直接加载
+
+## Release 分发
+
+插件现在走独立 release 通道：
+
+- 发布 tag：`extension-vX.Y.Z`
+- Release 资产：`openbiliclaw-extension-vX.Y.Z.zip`
+- 下载入口：GitHub Releases 页面中查找最新的 `extension-v*` release
+
+后端桌面包不再和插件共用同一个 release 语义；后端改由 `backend-v*` 通道单独发布。
 
 ## 手动联调
 
@@ -199,6 +222,7 @@ npm run build
 - inline comment 采用轻量输入，不支持复杂反馈历史浏览
 - side panel 视觉验证当前以静态快照 + extension 构建回归为主，仍建议结合真实后端做一次手动联调
 - 浏览器通知当前只推送一条最高分未通知内容，不做通知中心或多条队列
+- 惊喜推荐当前只维护一个首屏候选位，不做多条轮播或历史收件箱；`稍后看` 只在当前 popup 会话里隐藏，不做长期持久化
 - 认知变化通知当前只提示最重要的一条，不支持用户确认/反驳，也不会在插件里维护完整通知历史
 - 聚合型认知卡片如果后端暂时拿不到可信标题，会保守显示为“基于最近几条相关内容”，不会伪造具体视频名
 - “换一批”依赖 discovery pool 当前已有候选；如果候选池本身供给不足，仍可能提示“池子里这会儿还没刷出新的”

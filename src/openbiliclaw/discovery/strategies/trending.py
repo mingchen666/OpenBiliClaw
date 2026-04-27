@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -88,7 +87,7 @@ class TrendingStrategy(DiscoveryStrategy):
             [self.bilibili_client.get_ranking(rid) for rid in rids],
             runner=runner,
         )
-        candidates: list[DiscoveredContent] = []
+        per_rid: list[list[DiscoveredContent]] = []
         seen_bvids: set[str] = set()
 
         for rid, outcome in zip(rids, ranking_outcomes, strict=True):
@@ -97,17 +96,36 @@ class TrendingStrategy(DiscoveryStrategy):
                     "Trending ranking request failed: rid=%s",
                     rid,
                     exc_info=outcome,
-                    extra={"strategy": "trending", "rid": rid, "error_type": type(outcome).__name__},
+                    extra={
+                        "strategy": "trending",
+                        "rid": rid,
+                        "error_type": type(outcome).__name__,
+                    },
                 )
+                per_rid.append([])
                 continue
             if not isinstance(outcome, list):
+                per_rid.append([])
                 continue
+            bucket: list[DiscoveredContent] = []
             for item in outcome:
                 content = self._map_ranking_item(item, rid=rid)
                 if content is None or content.bvid in seen_bvids:
                     continue
                 seen_bvids.add(content.bvid)
-                candidates.append(content)
+                bucket.append(content)
+            per_rid.append(bucket)
+
+        # Round-robin interleave so the downstream eval hard-cap (30) gives
+        # each rid roughly equal representation. Without this, the rid=0
+        # bucket (always first) consumes the entire eval window when it has
+        # 100+ ranking entries, leaving the other 4 rids unevaluated.
+        candidates: list[DiscoveredContent] = []
+        max_depth = max((len(bucket) for bucket in per_rid), default=0)
+        for depth in range(max_depth):
+            for bucket in per_rid:
+                if depth < len(bucket):
+                    candidates.append(bucket[depth])
 
         scores = await evaluator.evaluate_content_batch(candidates, profile)
         results: list[DiscoveredContent] = []
@@ -144,7 +162,12 @@ class TrendingStrategy(DiscoveryStrategy):
             logger.exception("Trending rid selection failed; using defaults.")
         return [0, *list(self.default_rids[: self.max_related_rids])]
 
-    def _map_ranking_item(self, item: dict[str, object], *, rid: int = 0) -> DiscoveredContent | None:
+    def _map_ranking_item(
+        self,
+        item: dict[str, object],
+        *,
+        rid: int = 0,
+    ) -> DiscoveredContent | None:
         bvid = str(item.get("bvid", "")).strip()
         if not bvid:
             return None

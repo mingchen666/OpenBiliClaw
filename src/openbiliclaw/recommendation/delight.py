@@ -17,18 +17,25 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from openbiliclaw.discovery.engine import DiscoveredContent
-    from openbiliclaw.storage.database import Database
+    from openbiliclaw.llm.embedding import SupportsEmbeddingService
 
 logger = logging.getLogger(__name__)
 
 
-class SupportsEmbedding(Protocol):
-    """Protocol for embedding service used by the delight scorer."""
+class SupportsDelightCandidate(Protocol):
+    bvid: str
+    title: str
+    description: str
+    view_count: int
+    like_count: int
+    topic_key: str
+    topic_group: str
+    source_strategy: str
+    relevance_score: float
 
-    similarity_threshold: float
 
-    async def embed(self, text: str) -> list[float]: ...
+class SupportsRecommendationSignalStore(Protocol):
+    def get_recent_recommendation_signals(self, *, limit: int = ...) -> list[dict[str, Any]]: ...
 
 
 @dataclass(frozen=True)
@@ -37,29 +44,61 @@ class DelightSignals:
 
     deep_need_alignment: float = 0.0
     insight_resonance: float = 0.0
+    # Embedding match against the user's actual top likes — this is the
+    # signal that carries entertainment / playful axes that deep_needs
+    # alone misses (deep_needs leans analytical for many users).
+    likes_alignment: float = 0.0
     novelty_factor: float = 0.0
     quality_indicator: float = 0.0
     exploration_match: float = 0.0
+    # Embedding match against the user's disliked_topics. Higher means
+    # the content semantically resembles something they explicitly
+    # rejected → subtracts from final score.
+    dislike_penalty: float = 0.0
 
 
 @dataclass(frozen=True)
 class DelightWeights:
     """Tuneable weights for the composite delight score."""
 
-    deep_need: float = 0.30
-    insight: float = 0.25
-    novelty: float = 0.20
+    deep_need: float = 0.20
+    insight: float = 0.15
+    likes: float = 0.30
+    novelty: float = 0.15
     quality: float = 0.10
-    exploration: float = 0.15
+    exploration: float = 0.10
+    # Multiplier applied to dislike_penalty before it's subtracted from
+    # the positive sum.  0.50 means a strongly disliked match (penalty=1.0)
+    # subtracts 0.50 from the score, typically pushing it below threshold.
+    dislike_penalty: float = 0.50
 
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-_DEFAULT_THRESHOLD: float = 0.80
-_CONSERVATIVE_THRESHOLD: float = 0.90
+# Delight threshold:
+# After v2 of the scorer (added likes_alignment + dislike_penalty,
+# Delight is meant to be exceptional — "this one really resonates"
+# picks pulled out of the regular recommendation pool. Lowering the
+# bar dilutes the signal: at 0.35 most "delights" become just
+# "above-average recommendations", which kills the surprise value
+# the feature is built around.
+#
+# Keep the bar at 0.65 even though the v2 scorer (with likes_alignment
+# + dislike_penalty redistributing weights across 6 signals) makes
+# this score harder to reach. Rarity is a feature here, not a bug:
+# - Typical pool of 2000+ scored items yields ~30-50 candidates
+#   above 0.65, which at the 4h push cooldown is enough supply for
+#   ~5-7 days of "really pick of the litter" surfacing
+# - As discovery refreshes the pool, new exceptional matches join
+#   the queue
+# - Below 0.65 content still surfaces via the normal recommendation
+#   feed; users see those without the "delight" framing
+DEFAULT_DELIGHT_THRESHOLD: float = 0.65
+CONSERVATIVE_DELIGHT_THRESHOLD: float = 0.75
 _LOW_EXPLORATION_OPENNESS: float = 0.3
+_DEFAULT_WEIGHTS = DelightWeights()
 
 
 class DelightScorer:
@@ -71,15 +110,15 @@ class DelightScorer:
 
     def __init__(
         self,
-        embedding_service: SupportsEmbedding | None,
-        database: Database,
+        embedding_service: SupportsEmbeddingService | None,
+        database: SupportsRecommendationSignalStore,
         *,
-        weights: DelightWeights = DelightWeights(),
-        threshold: float = _DEFAULT_THRESHOLD,
+        weights: DelightWeights | None = None,
+        threshold: float = DEFAULT_DELIGHT_THRESHOLD,
     ) -> None:
         self._embedding = embedding_service
         self._database = database
-        self._weights = weights
+        self._weights = weights or DelightWeights()
         self._threshold = threshold
 
     @property
@@ -89,12 +128,12 @@ class DelightScorer:
     def effective_threshold(self, exploration_openness: float) -> float:
         """Return a possibly raised threshold for conservative users."""
         if exploration_openness < _LOW_EXPLORATION_OPENNESS:
-            return max(self._threshold, _CONSERVATIVE_THRESHOLD)
+            return max(self._threshold, CONSERVATIVE_DELIGHT_THRESHOLD)
         return self._threshold
 
     async def score(
         self,
-        candidate: DiscoveredContent,
+        candidate: SupportsDelightCandidate,
         profile: Any,
     ) -> tuple[float, DelightSignals, str]:
         """Compute a delight score for a candidate given the soul profile.
@@ -107,20 +146,23 @@ class DelightScorer:
         w = self._weights
         signals = await self._compute_signals(candidate, profile)
 
-        score = (
+        positive = (
             signals.deep_need_alignment * w.deep_need
             + signals.insight_resonance * w.insight
+            + signals.likes_alignment * w.likes
             + signals.novelty_factor * w.novelty
             + signals.quality_indicator * w.quality
             + signals.exploration_match * w.exploration
         )
+        penalty = signals.dislike_penalty * w.dislike_penalty
+        score = positive - penalty
 
         reason_stub = self._build_reason_stub(signals, candidate, profile)
         return (min(1.0, max(0.0, score)), signals, reason_stub)
 
     async def _compute_signals(
         self,
-        candidate: DiscoveredContent,
+        candidate: SupportsDelightCandidate,
         profile: Any,
     ) -> DelightSignals:
         """Compute individual delight signal components."""
@@ -128,16 +170,20 @@ class DelightScorer:
 
         deep_need = await self._deep_need_alignment(content_text, profile)
         insight = await self._insight_resonance(content_text, profile)
+        likes = await self._likes_alignment(content_text, profile)
         novelty = self._novelty_factor(candidate)
         quality = self._quality_indicator(candidate)
         exploration = self._exploration_match(candidate, profile, novelty)
+        dislike = await self._dislike_penalty(content_text, profile)
 
         return DelightSignals(
             deep_need_alignment=deep_need,
             insight_resonance=insight,
+            likes_alignment=likes,
             novelty_factor=novelty,
             quality_indicator=quality,
             exploration_match=exploration,
+            dislike_penalty=dislike,
         )
 
     async def _deep_need_alignment(
@@ -208,7 +254,130 @@ class DelightScorer:
 
         return max(0.0, min(1.0, (max_sim - 0.4) * 2.5))
 
-    def _novelty_factor(self, candidate: DiscoveredContent) -> float:
+    async def _likes_alignment(
+        self,
+        content_text: str,
+        profile: Any,
+    ) -> float:
+        """Score embedding similarity with the user's actual top likes.
+
+        Uses the onion ``interest.likes`` tree directly so each like's
+        text input combines the domain name with its specifics — short
+        category words like "游戏" alone produce weak embedding signal
+        against B站 titles, but "游戏 / 自走棋 王者荣耀 金铲铲" is
+        rich enough to actually correlate with content.
+        """
+        if self._embedding is None:
+            return 0.0
+
+        # Prefer the onion ``interest.likes`` tree (carries specifics).
+        # Fall back to flat preferences.interests if the onion shape
+        # isn't present.
+        like_texts: list[tuple[str, float]] = []  # (text, weight)
+        interest_layer = getattr(profile, "interest", None)
+        likes = getattr(interest_layer, "likes", []) if interest_layer is not None else []
+        for dom in likes[:8]:
+            domain = str(getattr(dom, "domain", "")).strip()
+            if not domain:
+                continue
+            spec_names = [
+                str(getattr(s, "name", "")).strip()
+                for s in getattr(dom, "specifics", [])[:5]
+                if str(getattr(s, "name", "")).strip()
+            ]
+            if spec_names:
+                text = f"{domain}：{' '.join(spec_names)}"
+            else:
+                text = domain
+            weight = float(getattr(dom, "weight", 0.0) or 0.0)
+            like_texts.append((text, weight))
+
+        if not like_texts:
+            prefs = getattr(profile, "preferences", None)
+            interests = getattr(prefs, "interests", []) if prefs is not None else []
+            seen: set[str] = set()
+            for tag in interests:
+                name = str(getattr(tag, "name", "")).strip()
+                weight = float(getattr(tag, "weight", 0.0) or 0.0)
+                if not name or name in seen or weight <= 0:
+                    continue
+                seen.add(name)
+                like_texts.append((name, weight))
+            like_texts.sort(key=lambda x: x[1], reverse=True)
+            like_texts = like_texts[:8]
+
+        if not like_texts:
+            return 0.0
+
+        from openbiliclaw.llm.embedding import cosine_similarity
+
+        content_vec = await self._embedding.embed(content_text)
+        if not content_vec:
+            return 0.0
+
+        max_score = 0.0
+        for text, weight in like_texts:
+            tag_vec = await self._embedding.embed(text)
+            if not tag_vec:
+                continue
+            sim = cosine_similarity(content_vec, tag_vec)
+            # Down-weight low-weight likes — a 0.4-weight tag matters less
+            # than a 0.95-weight one.
+            score = sim * (0.6 + 0.4 * min(1.0, weight))
+            max_score = max(max_score, score)
+
+        # Normalize same as deep_need_alignment: similarity 0.5 → 0.0,
+        # 1.0 → 1.0.  Avoids the over-aggressive 2.857 multiplier we
+        # tried first which drove typical scores too low.
+        return max(0.0, min(1.0, (max_score - 0.5) * 2.0))
+
+    async def _dislike_penalty(
+        self,
+        content_text: str,
+        profile: Any,
+    ) -> float:
+        """Embedding-based negative signal: how much the content resembles a
+        topic the user explicitly disliked.
+
+        Replaces the brittle substring filter at push time — embedding
+        similarity catches near-synonyms (e.g. ``手工木工`` matching a
+        video about woodworking even when the literal phrase isn't in
+        the title) without false-positive collisions on common stems.
+        """
+        if self._embedding is None:
+            return 0.0
+
+        prefs = getattr(profile, "preferences", None)
+        disliked = getattr(prefs, "disliked_topics", []) if prefs is not None else []
+        # Filter out generic phrases that don't carry a topical signal.
+        skip_terms = {"低质内容", "虚假信息", "标题党", "低质", "虚假"}
+        topical = [
+            str(t).strip()
+            for t in disliked
+            if str(t).strip() and str(t).strip() not in skip_terms
+        ]
+        if not topical:
+            return 0.0
+
+        from openbiliclaw.llm.embedding import cosine_similarity
+
+        content_vec = await self._embedding.embed(content_text)
+        if not content_vec:
+            return 0.0
+
+        max_sim = 0.0
+        for term in topical[:5]:
+            term_vec = await self._embedding.embed(term)
+            if not term_vec:
+                continue
+            sim = cosine_similarity(content_vec, term_vec)
+            max_sim = max(max_sim, sim)
+
+        # Sharper threshold than positive signals: only similarity > 0.55
+        # contributes; below that, treat as no concern.
+        return max(0.0, min(1.0, (max_sim - 0.55) * 2.5))
+
+    def _novelty_factor(self, candidate: SupportsDelightCandidate) -> float:
         """Score novelty based on discovery strategy and topic freshness."""
         # Explore strategy inherently carries more novelty
         strategy_novelty = {
@@ -224,8 +393,7 @@ class DelightScorer:
         topic = (candidate.topic_group or candidate.topic_key).strip().lower()
         if topic and signals:
             topic_count = sum(
-                1 for s in signals
-                if str(s.get("topic_key", "")).strip().lower() == topic
+                1 for s in signals if str(s.get("topic_key", "")).strip().lower() == topic
             )
             # Penalize if topic has been seen often
             repetition_penalty = min(1.0, topic_count / 5.0)
@@ -234,7 +402,7 @@ class DelightScorer:
         return max(0.0, min(1.0, base_novelty))
 
     @staticmethod
-    def _quality_indicator(candidate: DiscoveredContent) -> float:
+    def _quality_indicator(candidate: SupportsDelightCandidate) -> float:
         """Score content quality from engagement signals."""
         view_count = max(1, candidate.view_count)
         like_count = candidate.like_count
@@ -251,7 +419,7 @@ class DelightScorer:
 
     @staticmethod
     def _exploration_match(
-        candidate: DiscoveredContent,
+        candidate: SupportsDelightCandidate,
         profile: Any,
         novelty: float,
     ) -> float:
@@ -271,11 +439,21 @@ class DelightScorer:
     @staticmethod
     def _build_reason_stub(
         signals: DelightSignals,
-        candidate: DiscoveredContent,
+        candidate: SupportsDelightCandidate,
         profile: Any,
     ) -> str:
         """Build a structured reason stub for LLM expansion."""
         parts: list[str] = []
+
+        if signals.likes_alignment >= 0.6:
+            prefs = getattr(profile, "preferences", None)
+            interests = getattr(prefs, "interests", []) if prefs is not None else []
+            top_like = next(
+                (str(getattr(t, "name", "")).strip() for t in interests if str(getattr(t, "name", "")).strip()),
+                "",
+            )
+            if top_like:
+                parts.append(f"likes:{top_like}")
 
         if signals.deep_need_alignment >= 0.6:
             deep_needs = getattr(profile, "deep_needs", [])

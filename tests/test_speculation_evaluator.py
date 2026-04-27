@@ -18,7 +18,6 @@ from openbiliclaw.eval.speculation_evaluator import (
 )
 from openbiliclaw.soul.speculator import SpeculativeInterest
 
-
 # ---------------------------------------------------------------------------
 # _score_diversity
 # ---------------------------------------------------------------------------

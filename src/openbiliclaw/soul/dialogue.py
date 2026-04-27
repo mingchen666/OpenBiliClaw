@@ -52,12 +52,16 @@ class SocraticDialogue:
         soul_engine: SoulEngine,
         llm_service: LLMService | None = None,
         session: str = "cli",
+        tools: list[dict[str, Any]] | None = None,
+        tool_dispatcher: Any | None = None,
     ) -> None:
         self._llm = llm
         self._soul_engine = soul_engine
         self._llm_service = llm_service
         self._session = session
         self._history: list[DialogueTurn] = []
+        self._tools = tools or []
+        self._tool_dispatcher = tool_dispatcher
 
     async def respond(self, user_message: str) -> str:
         """Generate a Socratic response to a user message.
@@ -81,11 +85,16 @@ class SocraticDialogue:
 
         try:
             service = self._llm_service or self._build_service()
-            response = await service.complete_socratic_dialogue(
-                user_message=user_message,
-                history=self._history_to_messages(),
-            )
-            reply = response.content
+
+            # If tools are configured, try tool-calling path first
+            if self._tools and self._tool_dispatcher:
+                reply = await self._respond_with_tools(service, user_message)
+            else:
+                response = await service.complete_socratic_dialogue(
+                    user_message=user_message,
+                    history=self._history_to_messages(),
+                )
+                reply = response.content
         except (LLMServiceError, RuntimeError):
             logger.exception("Failed to generate Socratic dialogue response.")
             reply = "我刚刚思路断了一下，你可以换个说法再告诉我一次吗？"
@@ -102,6 +111,60 @@ class SocraticDialogue:
             except Exception:
                 logger.exception("Failed to learn from dialogue turn.")
         return reply
+
+    async def _respond_with_tools(self, service: Any, user_message: str) -> str:
+        """Attempt a tool-calling response, falling back to normal dialogue.
+
+        The flow:
+        1. Ask LLM with tool definitions — it may return a tool_call or text.
+        2. If tool_call: execute via dispatcher, feed result back, get final reply.
+        3. If text: return as-is.
+        """
+        from openbiliclaw.llm.prompts import build_socratic_dialogue_prompt
+
+        core_memory = ""
+        build_block = getattr(service, "_build_core_memory_block", None)
+        if callable(build_block):
+            core_memory = build_block()
+        tone_profile = None
+        build_tone = getattr(service, "_build_dialogue_tone_profile", None)
+        if callable(build_tone):
+            tone_profile = build_tone()
+        prompt_messages = build_socratic_dialogue_prompt(
+            user_message=user_message,
+            history=self._history_to_messages(),
+            core_memory_text=core_memory,
+            tone_profile=tone_profile,
+        )
+        system = prompt_messages[0]["content"] if prompt_messages else ""
+
+        response = await service.complete_with_tools(
+            system_instruction=system,
+            user_input=user_message,
+            tools=self._tools,
+            history=self._history_to_messages(),
+        )
+
+        # If the LLM returned a tool call, execute and continue
+        if response.tool_calls:
+            tool_call = response.tool_calls[0]
+            logger.info("Dialogue tool call: %s", tool_call.get("name"))
+            if self._tool_dispatcher is None:
+                return str(response.content)
+            tool_result = self._tool_dispatcher.dispatch(tool_call)
+
+            # Feed tool result back to get a natural reply
+            followup = await service.complete_socratic_dialogue(
+                user_message=f"[工具执行结果] {tool_result}",
+                history=self._history_to_messages()
+                + [
+                    {"role": "user", "content": user_message},
+                    {"role": "assistant", "content": f"（调用了工具 {tool_call.get('name')}）"},
+                ],
+            )
+            return str(followup.content)
+
+        return str(response.content)
 
     async def extract_insights(self, turns: list[DialogueTurn]) -> list[dict[str, Any]]:
         """Extract insights about the user from dialogue turns.
