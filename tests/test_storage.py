@@ -988,46 +988,60 @@ class TestDatabase:
 
             db.close()
 
-    def test_get_pool_candidates_balances_sources_in_candidate_window(self) -> None:
+    def test_get_pool_candidates_balances_topics_in_candidate_window(self) -> None:
+        """Candidate window is balanced by topic_group, not source.
+
+        Without rebalancing, a single dominant topic at the relevance head
+        would crowd out the rest. The pool sampler bucket-sorts by
+        ``topic_group`` (with ``topic_key`` fallback) and round-robins so
+        that no single topic monopolises the candidate window.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             db = Database(Path(tmpdir) / "test.db")
             db.initialize()
 
             for index in range(5):
                 db.cache_content(
-                    f"BVEXP{index}",
-                    title=f"探索候选 {index}",
-                    up_name="探索频道",
-                    source="explore",
+                    f"BVAI{index}",
+                    title=f"AI 候选 {index}",
+                    up_name="科技频道",
+                    source="search",
+                    topic_group="人工智能",
                     relevance_score=0.99 - index * 0.01,
                 )
             db.cache_content(
-                "BVSEARCH",
-                title="搜索候选",
-                up_name="搜索频道",
-                source="search",
+                "BVGAME",
+                title="游戏候选",
+                up_name="游戏频道",
+                source="trending",
+                topic_group="自走棋",
                 relevance_score=0.8,
             )
             db.cache_content(
-                "BVTREND",
-                title="热榜候选",
-                up_name="热榜频道",
-                source="trending",
+                "BVDOC",
+                title="纪录片候选",
+                up_name="纪录片频道",
+                source="explore",
+                topic_group="纪录片",
                 relevance_score=0.79,
             )
             db.cache_content(
-                "BVREL",
-                title="相关推荐候选",
-                up_name="相关频道",
+                "BVHIST",
+                title="历史候选",
+                up_name="历史频道",
                 source="related_chain",
+                topic_group="人文历史",
                 relevance_score=0.78,
             )
 
             items = db.get_pool_candidates(limit=6)
-            sources = [item["source"] for item in items]
+            topics = [item.get("topic_group", "") for item in items]
 
-            assert sources[:4] == ["search", "trending", "related_chain", "explore"]
-            assert sources.count("explore") == 3
+            # Top 4 slots cover all four distinct topic groups
+            assert set(topics[:4]) == {"人工智能", "自走棋", "纪录片", "人文历史"}
+            # AI cluster cannot monopolise — at most 3 of 6 even though it
+            # owns 5 of 9 source rows by raw relevance
+            assert topics.count("人工智能") == 3
 
             db.close()
 

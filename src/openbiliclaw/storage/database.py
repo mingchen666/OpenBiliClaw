@@ -782,26 +782,33 @@ class Database:
 
     @staticmethod
     def _balance_pool_rows(rows: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+        """Round-robin sample from a relevance-ordered pool, balanced by content topic.
+
+        Buckets by ``topic_group`` (with fallback to ``topic_key`` then a
+        sentinel) so that one dominant topic in the relevance head can't
+        crowd out the candidate window. Source/platform are intentionally
+        ignored — content-side features drive richness, not provenance.
+        """
         if limit <= 0 or len(rows) <= limit:
             return rows[:limit]
 
         buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        source_order: list[str] = []
+        topic_order: list[str] = []
         for row in rows:
-            source = str(row.get("source", "") or "").strip() or "unknown"
-            if source not in buckets:
-                source_order.append(source)
-            buckets[source].append(row)
-
-        preferred = ["search", "trending", "related_chain", "explore"]
-        ordered_sources = [source for source in preferred if source in buckets]
-        ordered_sources.extend(source for source in source_order if source not in ordered_sources)
+            key = str(row.get("topic_group", "") or "").strip().lower()
+            if not key:
+                key = str(row.get("topic_key", "") or "").strip().lower()
+            if not key:
+                key = "unknown"
+            if key not in buckets:
+                topic_order.append(key)
+            buckets[key].append(row)
 
         balanced: list[dict[str, Any]] = []
         while len(balanced) < limit:
             progressed = False
-            for source in ordered_sources:
-                bucket = buckets[source]
+            for key in topic_order:
+                bucket = buckets[key]
                 if not bucket:
                     continue
                 balanced.append(bucket.pop(0))
