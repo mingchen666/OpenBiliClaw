@@ -787,7 +787,14 @@ async function handleSpecResponse(domain, responseType, rowEl) {
     state.messages = state.messages.filter((m) => m.domain !== domain);
     if (state.pendingProbe?.domain === domain) state.pendingProbe = null;
     updateMessageBadge();
-    void loadProfileSummary({ force: true });
+    // Delay the profile re-fetch so the "好，记住了" message stays
+    // visible long enough to be perceived. Without this delay,
+    // renderSpeculativeInterests' container.replaceChildren() clobbers
+    // the success UI within ~10ms (both endpoints respond in ~5ms),
+    // making clicks look like no-ops.
+    setTimeout(() => {
+      void loadProfileSummary({ force: true });
+    }, 2200);
   } catch (err) {
     console.error("spec response failed:", err);
     if (rowEl instanceof HTMLElement) {
@@ -888,8 +895,12 @@ async function handleProbeResponse(responseType) {
     state.messages = state.messages.filter((m) => m.domain !== domain);
     updateMessageBadge();
 
-    // Refresh profile to show updated speculations
-    void loadProfileSummary({ force: true });
+    // Delay the profile re-fetch so the success message stays visible.
+    // Re-rendering speculative-list immediately would clobber the probe
+    // card's "好，记住了" text within ~10ms (see handleSpecResponse).
+    setTimeout(() => {
+      void loadProfileSummary({ force: true });
+    }, 2700);
   } catch (err) {
     console.error("Failed to respond to probe:", err);
   }
@@ -1353,7 +1364,13 @@ async function handleMessageResponse(domain, responseType) {
     }
 
     removeMessageFromState(domain);
-    void loadProfileSummary({ force: true });
+    // Delay the profile re-fetch so the inbox card's success message stays
+    // visible. The speculative-list re-render that loadProfileSummary
+    // triggers doesn't touch the messages container, but it can still
+    // visibly thrash if it lands during the user's reading window.
+    setTimeout(() => {
+      void loadProfileSummary({ force: true });
+    }, 1800);
   } catch (err) {
     console.error("Failed to respond to message:", err);
   }
