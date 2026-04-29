@@ -7,17 +7,25 @@
 
 ## The only thing you actually need to do
 
-Run this command via Bash:
+Pick the command for the user's shell — **detect the platform from the user's environment, do not let them choose if you can tell**:
+
+**macOS / Linux / WSL2 (Bash):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/scripts/install.sh | bash
 ```
 
-That single command:
+**Native Windows (PowerShell, no Docker / WSL2 required, since v0.3.4):**
 
-1. Clones the OpenBiliClaw repo (default `~/OpenBiliClaw`, override with `INSTALL_DIR=/path`)
-2. Auto-detects any existing OpenBiliClaw install under `~/workspace/OpenBiliClaw`, `~/OpenBiliClaw`, `~/projects/OpenBiliClaw`, or `~/code/OpenBiliClaw` and **reuses** its LLM API keys and Bilibili cookie so the user never has to retype them
-3. Installs Python dependencies (`uv sync` or `pip install -e .`)
+```powershell
+iwr https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/scripts/install.ps1 -UseBasicParsing | iex
+```
+
+Either command:
+
+1. Clones the OpenBiliClaw repo (default `~/OpenBiliClaw` on Unix, `%USERPROFILE%\OpenBiliClaw` on Windows; override with the `INSTALL_DIR` env var)
+2. Auto-detects any existing OpenBiliClaw install under the standard candidate paths (`~/workspace/OpenBiliClaw`, `~/OpenBiliClaw`, `~/projects/OpenBiliClaw`, `~/code/OpenBiliClaw` — same set on both platforms, rooted at `$HOME` / `%USERPROFILE%`) and **reuses** its LLM API keys and Bilibili cookie so the user never has to retype them
+3. Installs Python dependencies (`uv sync` preferred, `pip install -e .` fallback)
 4. Starts the backend and runs a health check against `/api/health`
 5. Prints a self-contained **status block** at the very end of stdout:
 

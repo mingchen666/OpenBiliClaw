@@ -559,11 +559,48 @@ def _probe_is_openbiliclaw(host: str, port: int) -> bool:
 
 
 def _find_pids_on_port(port: int) -> list[int]:
-    """Return PIDs of TCP listeners on the given port via lsof.
+    """Return PIDs of TCP listeners on the given port.
 
-    No-op on systems without lsof (mainly native Windows — the script
-    rejects that platform earlier; WSL2 has lsof).
+    On macOS/Linux/WSL2: uses ``lsof -tiTCP:<port> -sTCP:LISTEN``.
+    On native Windows: parses ``netstat -ano`` for LISTEN entries on
+    the port (lsof is not part of Windows). Returns ``[]`` when no
+    suitable tool is available — callers fall back to socket-only
+    detection.
     """
+    if os.name == "nt":
+        netstat = which("netstat")
+        if netstat is None:
+            return []
+        try:
+            proc = subprocess.run(
+                [netstat, "-ano", "-p", "tcp"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return []
+        pids: list[int] = []
+        # Format on Windows: "Proto  Local Address  Foreign Address  State  PID"
+        # e.g.  "  TCP    127.0.0.1:8420         0.0.0.0:0    LISTENING       12345"
+        for line in proc.stdout.splitlines():
+            tokens = line.split()
+            if len(tokens) < 5:
+                continue
+            if tokens[0].upper() != "TCP":
+                continue
+            local = tokens[1]
+            state = tokens[3] if len(tokens) >= 4 else ""
+            if not local.endswith(f":{port}"):
+                continue
+            if state.upper() != "LISTENING":
+                continue
+            try:
+                pids.append(int(tokens[-1]))
+            except ValueError:
+                continue
+        return pids
+
     lsof = which("lsof")
     if lsof is None:
         return []
@@ -576,7 +613,7 @@ def _find_pids_on_port(port: int) -> list[int]:
         )
     except (subprocess.TimeoutExpired, OSError):
         return []
-    pids: list[int] = []
+    pids = []
     for line in proc.stdout.splitlines():
         line = line.strip()
         if not line:
@@ -606,14 +643,7 @@ def _stop_existing_obc_backend(host: str, port: int) -> bool:
         return True
 
     info(f"existing OpenBiliClaw backend on port {port}: pids={pids} — stopping to replace")
-    for pid in pids:
-        try:
-            os.kill(pid, 15)  # SIGTERM
-        except ProcessLookupError:
-            continue
-        except PermissionError:
-            info(f"  cannot signal pid {pid} (permission) — aborting")
-            return False
+    _terminate_pids(pids, force=False)
 
     # Wait for the port to actually free up
     for _ in range(20):
@@ -621,14 +651,40 @@ def _stop_existing_obc_backend(host: str, port: int) -> bool:
             return True
         time.sleep(0.3)
 
-    # Last resort: SIGKILL stragglers
-    for pid in pids:
-        try:
-            os.kill(pid, 9)
-        except ProcessLookupError:
-            continue
+    # Last resort: force-kill stragglers
+    _terminate_pids(pids, force=True)
     time.sleep(0.5)
     return not _probe_port_open(host, port, timeout=0.2)
+
+
+def _terminate_pids(pids: list[int], *, force: bool) -> None:
+    """Stop the listed PIDs cross-platform.
+
+    On Unix, send SIGTERM (or SIGKILL when ``force`` is True). On
+    Windows, where ``os.kill`` semantics differ and SIGTERM doesn't
+    map cleanly, shell out to ``taskkill`` (``/T`` walks the process
+    tree, ``/F`` is force).
+    """
+    if os.name == "nt":
+        taskkill = which("taskkill") or "taskkill"
+        for pid in pids:
+            args = [taskkill, "/PID", str(pid), "/T"]
+            if force:
+                args.append("/F")
+            try:
+                subprocess.run(args, capture_output=True, timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+        return
+
+    sig = 9 if force else 15
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            info(f"  cannot signal pid {pid} (permission)")
 
 
 def start_local_backend(project_dir: Path, host: str, port: int) -> subprocess.Popen[bytes]:
@@ -652,6 +708,18 @@ def start_local_backend(project_dir: Path, host: str, port: int) -> subprocess.P
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = (log_dir / "agent-bootstrap.log").open("ab")
     info(f"Starting local backend: {shlex.join(cmd)} (logs -> {log_dir / 'agent-bootstrap.log'})")
+    # Detach the backend so the installer can exit cleanly. The two
+    # platforms need different mechanisms: POSIX ``start_new_session``
+    # vs Windows ``creationflags=DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP``
+    # (0x00000008 | 0x00000200).
+    if os.name == "nt":
+        return subprocess.Popen(
+            cmd,
+            cwd=str(project_dir),
+            stdout=log_file,
+            stderr=log_file,
+            creationflags=0x00000008 | 0x00000200,
+        )
     return subprocess.Popen(
         cmd,
         cwd=str(project_dir),

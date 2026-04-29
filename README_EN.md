@@ -95,13 +95,21 @@ Please follow https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/do
 
 **One terminal command:**
 
+macOS / Linux / WSL2 (Bash):
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/scripts/install.sh | bash
 ```
 
-The desktop package is the easiest path for macOS and Windows users. `install.sh` remains the recommended path for macOS / Linux / WSL2 users who want a source-based setup. The only prerequisites for the script are `git` and `python3` (3.11+). It auto-clones the repo, installs dependencies, starts the backend, runs a health check, and prompts you to choose an LLM provider (OpenAI / Gemini / DeepSeek / Claude etc.) and fill in the corresponding API key and Bilibili cookie. Once credentials are set, it automatically runs first-time init (fetches history, builds your soul profile, fills the recommendation pool) so you're ready to go immediately.
+Native Windows (PowerShell — no Docker, no WSL2 required):
 
-> 💡 **On Windows?** If you already have Docker Desktop, use the Docker method above — it works out of the box. Otherwise, install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) first, then use the terminal command.
+```powershell
+iwr https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/scripts/install.ps1 -UseBasicParsing | iex
+```
+
+The desktop package is the easiest path for macOS / Windows users who want a click-and-go binary. The installer scripts (`install.sh` / `install.ps1`) are for developers and users who want a source-based setup. Prerequisites: `git` and `python3` (3.11+; on Windows the `py` launcher works). The scripts auto-clone the repo, install dependencies, start the backend, run a health check, and prompt you to choose an LLM provider (OpenAI / Gemini / DeepSeek / Claude etc.) and fill in the corresponding API key and Bilibili cookie. Once credentials are set, first-time init runs automatically (fetches history, builds your soul profile, fills the recommendation pool) so you're ready immediately.
+
+> 💡 **On Windows?** Since v0.3.4 the PowerShell installer fully supports native Windows — no Docker / WSL2 needed. You can still use the Docker path above if you already have Docker Desktop installed.
 
 > 🧠 **Optional: local embedding fallback (no API key required)** — install Ollama once:
 > Mac `brew install ollama && ollama serve &`, Windows from [ollama.com/download](https://ollama.com/download), Linux `curl -fsSL https://ollama.com/install.sh \| sh && ollama serve &`.

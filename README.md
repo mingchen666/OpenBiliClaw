@@ -152,13 +152,21 @@
 
 **终端一条命令：**
 
+macOS / Linux / WSL2（Bash）：
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/scripts/install.sh | bash
 ```
 
-桌面包适合 macOS / Windows 用户直接下载即用；`install.sh` 仍推荐给 macOS / Linux / WSL2 用户和喜欢可控环境的开发者。脚本依赖只有 `git` 和 `python3`（3.11+）。它会自动克隆仓库、安装依赖、启动后端、做健康检查，然后提示你选择 LLM 提供商（OpenAI / Gemini / DeepSeek / Claude 等）并填写对应的 API Key 和 B 站 Cookie。凭据就绪后自动完成首次初始化（拉取历史、生成画像、填充推荐池），直接达到可用状态。
+Windows 原生（PowerShell，不需要 Docker / WSL2）：
 
-> 💡 **Windows 用户？** 如果你已经装了 Docker Desktop，推荐直接用上面的 Docker 方式部署，开箱即用。否则请先安装 [WSL2](https://learn.microsoft.com/zh-cn/windows/wsl/install) 再用终端命令安装。
+```powershell
+iwr https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/scripts/install.ps1 -UseBasicParsing | iex
+```
+
+桌面包适合 macOS / Windows 用户直接下载即用；`install.sh` / `install.ps1` 推荐给开发者和喜欢可控环境的用户。脚本依赖只有 `git` 和 `python3`（3.11+，Windows 上推荐 `py launcher`）。它会自动克隆仓库、安装依赖、启动后端、做健康检查，然后提示你选择 LLM 提供商（OpenAI / Gemini / DeepSeek / Claude 等）并填写对应的 API Key 和 B 站 Cookie。凭据就绪后自动完成首次初始化（拉取历史、生成画像、填充推荐池），直接达到可用状态。
+
+> 💡 **Windows 用户**：v0.3.4 起 `install.ps1` 完全适配原生 Windows，无需安装 Docker 或 WSL2。已有 Docker Desktop 也可以用上面的 Docker 一键部署。
 
 > 🧠 **可选：本地 embedding 兜底（无需 API Key）** —— 装一次 Ollama 就能跑：
 > Mac `brew install ollama && ollama serve &`，Windows 从 [ollama.com/download](https://ollama.com/download) 下载，Linux `curl -fsSL https://ollama.com/install.sh \| sh && ollama serve &`。

@@ -4,6 +4,33 @@
 
 ---
 
+## v0.3.4: 原生 Windows 一句话装机（2026-04-29）
+
+### Windows 原生支持，无需 Docker / WSL2
+
+- 新增 `scripts/install.ps1`，行为对齐 `install.sh`：克隆 / 自动升级现有 checkout / 检测 Python 3.11+ / 调用 `agent_bootstrap.py` / 输出对齐 sprintf 格式的状态块
+- 用户一句话装机：
+  ```powershell
+  iwr https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/scripts/install.ps1 -UseBasicParsing | iex
+  ```
+- 之前 `install.sh` 第 107 行直接拒绝 `MINGW*/MSYS*/CYGWIN*` 让 Windows 用户去装 WSL2 —— 现在 PowerShell 用户走 `install.ps1` 即可
+
+### `agent_bootstrap.py` Windows 适配
+
+- `start_local_backend`：POSIX 用 `start_new_session=True`，Windows 用 `creationflags=DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP`，让 backend 真正脱离父 console 跑
+- `_find_pids_on_port`：Linux/Mac 走 `lsof`；Windows 解析 `netstat -ano` 找 LISTENING PID
+- `_terminate_pids`：Linux/Mac 用 `os.kill(SIGTERM/SIGKILL)`；Windows shell out 到 `taskkill /PID /T [/F]`，正确处理 Windows 进程组停止语义
+
+### 文档
+
+- `README.md` / `README_EN.md` 一键命令分双平台展示，加 v0.3.4 提示"无需 Docker / WSL2"
+- `docs/agent-install.md` 给 AI agent 加平台检测指引：能从用户环境推断就别问
+- `docs/changelog.md` 新条目（本节）
+
+> 仅后端发版（backend-v0.3.4）。Extension 自 v0.3.1 零改动，沿用 extension-v0.3.1。
+
+---
+
 ## v0.3.3: 修复本地 Ollama embedding 兜底实际不生效（2026-04-29）
 
 ### 关键 bug 修复
