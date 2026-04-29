@@ -269,46 +269,67 @@ $ openbiliclaw init
   发现内容数: 94
 ```
 
-如果当前终端是交互式，且缺少 provider API Key 或 B 站 Cookie，`init` 会直接进入 4 阶段引导（v0.3.5+）：
+如果当前终端是交互式，且缺少 provider API Key 或 B 站 Cookie，`init` 会直接进入用户友好的引导（v0.3.5+）：
 
 ```bash
 $ docker exec -it openbiliclaw-backend openbiliclaw init
-初始化前配置引导 · 补齐 LLM 运行时配置
+初始化前配置引导 · 选 LLM、配 Embedding、填 B 站 Cookie
 
-支持的 provider 协议族
-  名称        覆盖范围 / 说明                                              默认 base_url
-  openai      OpenAI 官方 / Azure / vLLM / LMStudio / OneAPI / 任意 OpenAI 兼容服务   https://api.openai.com/v1
-  claude      Anthropic Claude 官方                                       —
-  gemini      Google Gemini 官方                                          —
-  deepseek    DeepSeek 官方（OpenAI 兼容协议）                             https://api.deepseek.com
-  ollama      本地 Ollama（无需 Key）                                       http://localhost:11434/v1
-  openrouter  OpenRouter 聚合                                              https://openrouter.ai/api/v1
-提示：「openai」是协议家族而非厂商。任何兼容 OpenAI Chat Completions 的服务都填这一项，再改 base_url / model。
+OpenBiliClaw 需要一个语言模型来理解你的兴趣、写推荐文案。
+请选一个 LLM 服务：
 
-Phase 1 — 请选择默认 LLM provider [openai]:
-Phase 2 — 配置 openai
-Base URL（OpenAI 兼容服务必填，留空则用默认） [https://api.openai.com/v1]:
-openai API Key:
-模型名称（chat / generation 模型） [gpt-4o-mini]:
+ #   名称                                  说明
+ 1   本地 Ollama                           免费 / 离线 / 无需 API Key（推荐新手）
+ 2   OpenAI 官方                           api.openai.com，需要 sk- 开头的 Key
+ 3   Claude 官方                           Anthropic console，按 token 付费
+ 4   Gemini 官方                           Google AI Studio 申请 Key，部分免费额度
+ 5   DeepSeek 官方                         OpenAI 兼容协议 + 国内可直连
+ 6   OpenRouter 聚合                       一个 Key 跑多家模型，按调用计费
+ 7   OpenAI 协议兼容（自建网关 / 第三方）   Azure / vLLM / LMStudio / OneAPI / 团队 LLM 网关。需自填 Base URL
 
-Phase 3 — Embedding
-  1) 跟随主 provider（默认）
-  2) 本地 Ollama + bge-m3（推荐离线/省 Key）
+Tip：如果你刚接触本项目、又不想花钱，直接选 1（Ollama）。
+
+请输入序号或名称（默认 1=Ollama） [1]:
+
+# (随后只问被选中那一项实际需要的字段——
+#  例如选 1: 只问模型名；选 2/3/4/5/6: 只问 API Key + 模型名；
+#  选 7: 问 Base URL + API Key + 模型名)
+
+接下来配 Embedding
+Embedding 是和聊天模型分开的：把视频标题/简介变成向量，
+用于跨视频去重和相似度判定。频次很高，所以单独拎出来配。
+  1) 跟随你刚才选的 LLM（最省事，默认）
+  2) 本地 Ollama + bge-m3（推荐：免费 + 离线 + 省 Key）
   3) 自定义 OpenAI 兼容服务（vLLM / OneAPI / 自建网关）
   4) 指定其他 provider（claude / gemini / deepseek / openrouter）
-  5) 跳过（暂不配置）
+  5) 跳过（暂不配置，等同于选 1）
 请选择 embedding 方案 [1]:
 
-Phase 4 — Per-module 覆盖（可选）
+最后是 Per-module 覆盖（高级，默认可跳过）
 （高级，可跳过）是否为单个模块单独指定 provider/model？[y/N]:
 
-初始化前认证引导
-请输入 B 站 Cookie:
+初始化前认证引导 · 补齐 B 站认证
+为什么需要 B 站 Cookie？
+OpenBiliClaw 需要你的 B 站登录态来：
+  • 拉你的观看历史（用来训练画像）
+  • 以你的身份调 B 站 API 拿视频详情
+Cookie 只存在你本机 data/bilibili_cookie.json，不会上传任何地方。
+
+怎么获取：
+  1. 用 Chrome / Edge / Firefox 登录 https://www.bilibili.com
+  2. 按 F12 打开开发者工具 → 切到 Network（网络）标签
+  3. 刷新一下 B 站页面 → 在请求列表点任意一条 bilibili.com 的请求
+  4. 右侧 Headers（请求头）区域，找到 cookie: 这一行，右键复制整行的 value
+  5. 把那一长串（包含 SESSDATA=...; bili_jct=...; DedeUserID=... 等）粘进来
+
+请粘贴 B 站 Cookie:
 ```
 
 引导完成后会继续当前初始化流程，不需要再单独执行 `auth login` 或手动改配置。
 
-> **「openai」是协议家族**：v0.3.5 起向导明确告诉用户 `openai` provider 等价于「任意 OpenAI 兼容服务」。Azure OpenAI、vLLM、LMStudio、OneAPI、自建 LLM 网关都选这一项，然后在 base_url 里填自己的入口；模型名也跟着对应服务上 deploy 的实际模型走，不再被 `gpt-4o-mini` 默认值限制。
+> **「OpenAI 官方」≠「OpenAI 协议兼容自建网关」**：v0.3.5 起向导把这俩拆成两个独立菜单项。选 2 时只问 API Key，base_url 走 `https://api.openai.com/v1`；选 7 时强制问 Base URL（指向你的 Azure / vLLM / LMStudio / OneAPI / 自建网关），写到 `[llm.openai]` 段。两者底层走的是同一个 OpenAI 协议家族，但用户视角分得很清楚。
+>
+> **Ollama 排第一**是有意为之：它是唯一不需要 API Key、不需要花钱的选项，对刚接触本项目的用户最友好。Tip 也明确告诉用户「不想花钱直接选 1」。
 
 首次 `init` 的 discover 阶段可能持续几分钟，因为它会真实访问 B 站接口并调用当前 provider 进行候选打分与表达生成。
 当前实现已经对首轮 discover 做了保守受控并发优化，但默认并发上限仍偏保守，优先减少 B 站和 LLM 限流风险。

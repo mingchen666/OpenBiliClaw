@@ -610,7 +610,7 @@ _PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
 
 
 _PROVIDER_HINTS: dict[str, str] = {
-    "openai": "OpenAI 官方 / Azure / vLLM / LMStudio / OneAPI / 任意 OpenAI 兼容服务",
+    "openai": "OpenAI 官方（api.openai.com）",
     "claude": "Anthropic Claude 官方",
     "gemini": "Google Gemini 官方",
     "deepseek": "DeepSeek 官方（OpenAI 兼容协议）",
@@ -754,62 +754,136 @@ _SUPPORTED_PROVIDERS: tuple[str, ...] = (
 )
 
 
+# Numbered menu shown in Phase 1. Order matters: Ollama first because it's
+# the only zero-friction option (free, local, no API Key); the official
+# vendors come next; and "OpenAI 协议兼容自建网关" is split into its own
+# entry so the user doesn't conflate `[llm.openai]` "the company" with
+# `[llm.openai]` "the protocol family".
+_LLM_MENU: tuple[tuple[str, str, str], ...] = (
+    ("ollama", "本地 Ollama", "免费 / 离线 / 无需 API Key（推荐新手）"),
+    ("openai", "OpenAI 官方", "api.openai.com，需要 sk- 开头的 Key"),
+    ("claude", "Claude 官方", "Anthropic console，按 token 付费"),
+    ("gemini", "Gemini 官方", "Google AI Studio 申请 Key，部分免费额度"),
+    ("deepseek", "DeepSeek 官方", "OpenAI 兼容协议 + 国内可直连"),
+    ("openrouter", "OpenRouter 聚合", "一个 Key 跑多家模型，按调用计费"),
+    (
+        "openai-compat",
+        "OpenAI 协议兼容（自建网关 / 第三方）",
+        "Azure / vLLM / LMStudio / OneAPI / 团队 LLM 网关。需自填 Base URL",
+    ),
+)
+
+
 def _print_provider_table() -> None:
-    """Render the provider hint table so users see what each name covers."""
-    table = Table(
-        title="支持的 provider 协议族",
-        show_lines=False,
-        title_style="bold",
+    """Render the provider menu — Ollama-first, with OpenAI-compat split out."""
+    console.print(
+        "[bold]OpenBiliClaw 需要一个语言模型来理解你的兴趣、写推荐文案。[/bold]"
     )
-    table.add_column("名称", style="cyan", no_wrap=True)
-    table.add_column("覆盖范围 / 说明")
-    table.add_column("默认 base_url", style="dim")
-    for name in _SUPPORTED_PROVIDERS:
-        defaults = _PROVIDER_DEFAULTS.get(name, {})
-        table.add_row(
-            name,
-            _PROVIDER_HINTS.get(name, ""),
-            defaults.get("base_url") or "—",
-        )
+    console.print("请选一个 LLM 服务：\n")
+    table = Table(show_lines=False, show_header=True)
+    table.add_column("#", style="cyan", no_wrap=True)
+    table.add_column("名称", no_wrap=True)
+    table.add_column("说明")
+    for index, (_, label, hint) in enumerate(_LLM_MENU, start=1):
+        table.add_row(str(index), label, hint)
     console.print(table)
     console.print(
-        "[dim]提示：「openai」是协议家族而非厂商。任何兼容 OpenAI Chat Completions 的服务"
-        "（Azure、vLLM、LMStudio、OneAPI、自建网关等）都填这一项，再改 base_url / model。[/dim]"
+        "[dim]Tip：如果你刚接触本项目、又不想花钱，直接选 1（Ollama）。"
+        "Mac 装 Ollama: brew install ollama && ollama serve，"
+        "Windows: https://ollama.com/download。[/dim]"
     )
 
 
-def _prompt_provider_triplet(provider: str) -> tuple[str, str, str]:
-    """Phase 2 — collect (base_url, api_key, model) for the chosen provider."""
-    defaults = _PROVIDER_DEFAULTS.get(provider, {})
-    default_base_url = defaults.get("base_url", "")
-    default_model = defaults.get("model", "")
+def _resolve_menu_choice(raw: str) -> str | None:
+    """Map a Phase 1 menu input to the canonical choice key.
 
-    base_url_prompt = "Base URL（OpenAI 兼容服务必填，留空则用默认）"
-    base_url = typer.prompt(
-        base_url_prompt,
-        default=default_base_url,
-        show_default=bool(default_base_url),
-    ).strip()
+    Accepts either the index (1..N) or the canonical name typed directly,
+    e.g. "ollama" or "openai-compat". Returns None on unknown input.
+    """
+    raw = raw.strip().lower()
+    if raw.isdigit():
+        index = int(raw)
+        if 1 <= index <= len(_LLM_MENU):
+            return _LLM_MENU[index - 1][0]
+        return None
+    aliases = {
+        "openai-compat": "openai-compat",
+        "compat": "openai-compat",
+        "openai兼容": "openai-compat",
+    }
+    if raw in aliases:
+        return aliases[raw]
+    if raw in {key for key, *_ in _LLM_MENU}:
+        return raw
+    return None
 
-    api_key = ""
-    if provider == "ollama":
-        console.print("[dim]Ollama 本地服务无需 API Key，跳过该项。[/dim]")
-    else:
+
+def _prompt_provider_triplet(menu_choice: str) -> tuple[str, str, str, str]:
+    """Phase 2 — collect (provider, base_url, api_key, model) for the choice.
+
+    ``menu_choice`` is the value from ``_LLM_MENU`` (e.g. ``"ollama"`` or
+    ``"openai-compat"``). For ``openai-compat`` we still write to the
+    ``[llm.openai]`` section but force the user to give us a Base URL —
+    that's the single field that distinguishes "I'll use OpenAI the
+    company" from "I have my own gateway that speaks the OpenAI API."
+    """
+    if menu_choice == "openai-compat":
+        console.print(
+            "\n[bold]配置 OpenAI 协议兼容服务[/bold]\n"
+            r"[dim]这一项写到 config.toml 的 \[llm.openai] 段——后端会按 OpenAI "
+            "协议去打你给的 Base URL。如果你后来想切回 OpenAI 官方，把 base_url "
+            "改回 https://api.openai.com/v1 就行。[/dim]"
+        )
+        base_url = typer.prompt(
+            "你的网关 Base URL（必填，例 http://localhost:8000/v1）"
+        ).strip()
+        if not base_url:
+            base_url = "https://api.openai.com/v1"
         api_key = typer.prompt(
-            f"{provider} API Key",
-            prompt_suffix=": ",
+            "API Key（如果网关不鉴权可留空）",
             hide_input=True,
             default="",
             show_default=False,
         ).strip()
+        model = typer.prompt(
+            "网关上实际部署的模型名（例 meta-llama/Llama-3.1-70B）",
+            default="gpt-4o-mini",
+        ).strip()
+        return "openai", base_url, api_key, model
 
+    provider = menu_choice
+    defaults = _PROVIDER_DEFAULTS.get(provider, {})
+    default_base_url = defaults.get("base_url", "")
+    default_model = defaults.get("model", "")
+
+    if provider == "ollama":
+        console.print(
+            "\n[bold]配置本地 Ollama[/bold]\n"
+            "[dim]需要 Ollama 服务在跑（`ollama serve` 或 Mac 直接打开 Ollama.app），"
+            "并且至少拉了一个模型。建议: ollama pull llama3。"
+            "无需 API Key。[/dim]"
+        )
+        model = typer.prompt(
+            "Ollama 上的模型名（已经 pull 过的）",
+            default=default_model,
+        ).strip() or default_model
+        return provider, default_base_url, "", model
+
+    # Cloud providers: ask for key (mandatory), let model fall to default.
+    console.print(f"\n[bold]配置 {_PROVIDER_HINTS.get(provider, provider)}[/bold]")
+    api_key = typer.prompt(
+        "API Key",
+        prompt_suffix=": ",
+        hide_input=True,
+        default="",
+        show_default=False,
+    ).strip()
     model = typer.prompt(
-        "模型名称（chat / generation 模型）",
+        "模型名（默认即可，按回车跳过）",
         default=default_model,
         show_default=bool(default_model),
-    ).strip()
-
-    return base_url, api_key, model
+    ).strip() or default_model
+    return provider, default_base_url, api_key, model
 
 
 def _interactive_embedding_setup(default_provider: str) -> None:
@@ -820,21 +894,12 @@ def _interactive_embedding_setup(default_provider: str) -> None:
     3) 自定义 OpenAI 兼容服务（自填 base_url / api_key / model）
     4) 指定其他已知 provider（同样可改 base_url / api_key / model）
     """
-    _print_status_panel(
-        "info",
-        "Embedding 配置",
-        (
-            "Embedding 决定相似度搜索的质量。可以跟随主 provider，"
-            "也可以单独走 Ollama 或任意 OpenAI 兼容服务。"
-        ),
-    )
-
     options = (
-        ("1", "跟随主 provider（默认）"),
-        ("2", "本地 Ollama + bge-m3（推荐离线/省 Key）"),
+        ("1", "跟随你刚才选的 LLM（最省事，默认）"),
+        ("2", "本地 Ollama + bge-m3（推荐：免费 + 离线 + 省 Key）"),
         ("3", "自定义 OpenAI 兼容服务（vLLM / OneAPI / 自建网关）"),
         ("4", "指定其他 provider（claude / gemini / deepseek / openrouter）"),
-        ("5", "跳过（暂不配置）"),
+        ("5", "跳过（暂不配置，等同于选 1）"),
     )
     for label, desc in options:
         console.print(f"  [cyan]{label}[/cyan]) {desc}")
@@ -982,32 +1047,23 @@ def _interactive_runtime_config_setup() -> None:
     """Guide the user through missing LLM config before init.
 
     Four-phase flow:
-      1) Pick a chat provider (with a hint table — "openai" is a protocol
-         family, not a vendor).
-      2) Provide base_url / api_key / model for that provider.
-      3) Choose how embeddings are served (4-way branch).
-      4) Optional per-module overrides.
+      1) Pick LLM service (Ollama-first menu; OpenAI-compat is its own entry,
+         not buried inside ``openai``).
+      2) Provide the fields that option actually needs.
+      3) Choose how embeddings are served (separate question, not bundled).
+      4) Optional per-module overrides (advanced, default skip).
     """
-    _print_page_title("初始化前配置引导", "补齐 LLM 运行时配置")
+    _print_page_title("初始化前配置引导", "选 LLM、配 Embedding、填 B 站 Cookie")
     _print_provider_table()
 
     while True:
-        provider = (
-            typer.prompt(
-                "Phase 1 — 请选择默认 LLM provider",
-                default="openai",
-            )
-            .strip()
-            .lower()
-        )
-        if provider not in _SUPPORTED_PROVIDERS:
-            console.print("[bold red]不支持的 provider，请重新输入[/bold red]")
+        raw = typer.prompt("\n请输入序号或名称（默认 1=Ollama）", default="1")
+        choice = _resolve_menu_choice(raw)
+        if choice is None:
+            console.print("[bold red]看不懂这个输入，请重新输入序号或名称[/bold red]")
             continue
 
-        console.print(f"\n[bold]Phase 2 — 配置 {provider}[/bold]")
-        if provider in _PROVIDER_HINTS:
-            console.print(f"[dim]{_PROVIDER_HINTS[provider]}[/dim]")
-        base_url, api_key, model = _prompt_provider_triplet(provider)
+        provider, base_url, api_key, model = _prompt_provider_triplet(choice)
 
         _save_runtime_provider_config(
             provider,
@@ -1018,14 +1074,22 @@ def _interactive_runtime_config_setup() -> None:
 
         error = _load_runtime_config_error(render=False)
         if error is not None:
-            console.print("[bold yellow]刚写入的配置仍不完整，请重新输入。[/bold yellow]")
+            console.print("[bold yellow]刚写入的配置仍不完整，请重新选择。[/bold yellow]")
             _print_runtime_config_error(error)
             continue
 
-        console.print("\n[bold]Phase 3 — Embedding[/bold]")
+        console.print(
+            "\n[bold]接下来配 Embedding[/bold]"
+            "\n[dim]Embedding 是和聊天模型分开的：把视频标题/简介变成向量，"
+            "用于跨视频去重和相似度判定。频次很高，所以单独拎出来配。[/dim]"
+        )
         _interactive_embedding_setup(provider)
 
-        console.print("\n[bold]Phase 4 — Per-module 覆盖（可选）[/bold]")
+        console.print(
+            "\n[bold]最后是 Per-module 覆盖（高级，默认可跳过）[/bold]"
+            "\n[dim]给 soul / discovery / recommendation / evaluation 单独指定模型，"
+            "比如发现/评估走便宜模型，画像走高质量。大多数用户不需要。[/dim]"
+        )
         _interactive_module_overrides(provider)
         return
 
@@ -1033,8 +1097,24 @@ def _interactive_runtime_config_setup() -> None:
 def _interactive_auth_setup(auth_manager: Any) -> Any:
     """Guide the user through Bilibili auth before init."""
     _print_page_title("初始化前认证引导", "补齐 B 站认证")
+    console.print(
+        "[bold]为什么需要 B 站 Cookie？[/bold]\n"
+        "OpenBiliClaw 需要你的 B 站登录态来：\n"
+        "  • 拉你的观看历史（用来训练画像）\n"
+        "  • 以你的身份调 B 站 API 拿视频详情\n"
+        "[dim]Cookie 只存在你本机 data/bilibili_cookie.json，不会上传任何地方。[/dim]\n\n"
+        "[bold]怎么获取：[/bold]\n"
+        "  1. 用 Chrome / Edge / Firefox 登录 https://www.bilibili.com\n"
+        "  2. 按 F12 打开开发者工具 → 切到 Network（网络）标签\n"
+        "  3. 刷新一下 B 站页面 → 在请求列表点任意一条 bilibili.com 的请求\n"
+        "  4. 右侧 Headers（请求头）区域，找到 cookie: 这一行，"
+        "右键复制整行的 value\n"
+        "  5. 把那一长串（包含 SESSDATA=...; bili_jct=...; DedeUserID=... 等）粘进来\n"
+        "[dim]或者：装 OpenBiliClaw 浏览器扩展，自动复用登录态，零配置。"
+        "下载：https://github.com/whiteguo233/OpenBiliClaw/releases[/dim]\n"
+    )
     while True:
-        cookie_value = typer.prompt("请输入 B 站 Cookie", prompt_suffix=": ")
+        cookie_value = typer.prompt("请粘贴 B 站 Cookie", prompt_suffix=": ")
         status = asyncio.run(auth_manager.validate_cookie(cookie_value))
         if status.authenticated:
             auth_manager.set_cookie(cookie_value)
@@ -1042,9 +1122,9 @@ def _interactive_auth_setup(auth_manager: Any) -> Any:
             _print_auth_status(status)
             return status
 
-        console.print("[bold red]认证失败[/bold red]")
+        console.print("[bold red]认证失败 —— Cookie 看起来无效或过期了[/bold red]")
         _print_auth_status(status)
-        if not typer.confirm("Cookie 无效，是否重试？", default=True):
+        if not typer.confirm("是否重试？（重新走一遍上面的步骤）", default=True):
             raise typer.Exit(code=1)
 
 

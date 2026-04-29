@@ -345,7 +345,8 @@ OpenBiliClaw/
 
 | Version | Date | Key changes |
 |---|---|---|
-| **[v0.3.5](https://github.com/whiteguo233/OpenBiliClaw/releases/tag/backend-v0.3.5)** | 2026-04-29 | 4-phase install wizard (base_url / triplet / embedding 4-way / per-module override) · clears `openai = protocol family` ambiguity · `agent_bootstrap.py` gains 7 new flags |
+| **[v0.3.6](https://github.com/whiteguo233/OpenBiliClaw/releases/tag/backend-v0.3.6)** | 2026-04-30 | Install wizard rewritten end-to-end for normal users: Ollama is now the default first choice · "OpenAI official" and "OpenAI-compatible self-hosted gateway" are split into separate menu entries · embedding question is its own clearly-explained step · Bilibili cookie prompt now teaches the F12 → Network steps |
+| [v0.3.5](https://github.com/whiteguo233/OpenBiliClaw/releases/tag/backend-v0.3.5) | 2026-04-29 | 4-phase install wizard (base_url / triplet / embedding 4-way / per-module override) · clears `openai = protocol family` ambiguity · `agent_bootstrap.py` gains 7 new flags |
 | [v0.3.4](https://github.com/whiteguo233/OpenBiliClaw/releases/tag/backend-v0.3.4) | 2026-04-29 | Native-Windows one-liner installer (PowerShell `install.ps1`, no Docker/WSL2) · `agent_bootstrap.py` Windows adaptation (taskkill / netstat-ano) |
 | **[v0.3.0](https://github.com/whiteguo233/OpenBiliClaw/releases/tag/backend-v0.3.0)** | 2026-04-28 | General-purpose multi-source architecture (Xiaohongshu / Web adapters in production) · local Ollama embedding fallback · reshuffle 5x faster · cross-source topic quota |
 | [v0.2.1](https://github.com/whiteguo233/OpenBiliClaw/releases/tag/v0.2.1) | 2026-04-17 | OpenClaw integration (Socratic chat + interest probes) · Bilibili API resilience hardening |

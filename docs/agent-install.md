@@ -57,50 +57,154 @@ Next action (optional follow-ups):
 
 ## Handling missing credentials
 
-When `Missing` is non-empty, do exactly what `Next action` says:
+When `Missing` is non-empty, you (the AI agent) need to walk the user through
+**three things in order**: pick an LLM, decide on embedding, get a Bilibili
+cookie. Don't dump all questions at once — most users hit "I don't know what
+that means" if you do. Ask one block at a time, **explain what each thing
+does in plain language**, and offer the easy path first.
 
-1. Ask the user for the listed credentials (LLM API key and/or Bilibili cookie).
-2. Run the `python3 ... scripts/agent_bootstrap.py` command the block printed, substituting the user's values into `--llm-api-key` and `--bilibili-cookie`. Keep every other flag (`--port`, `--host`, etc.) exactly as printed.
-3. Curl the `Health URL` from the block to confirm the backend is still healthy (HTTP 200).
-4. Report the final state to the user.
+### Step 1 — Pick an LLM service
 
-### Asking the user the right questions (v0.3.5+)
+Tell the user, in plain Chinese (or the conversation's language):
 
-`openai` in this codebase is a **protocol family**, not a vendor. If the user
-mentions Azure OpenAI, vLLM, LMStudio, OneAPI, Cloudflare AI Gateway, or any
-self-hosted LLM that "speaks the OpenAI API", set `--provider openai` and
-override the URL with `--llm-base-url`. Same goes for embeddings.
+> 「OpenBiliClaw 需要一个语言模型来理解你的兴趣、写推荐文案。你可以选：」
 
-**Minimum question set** — ask all of these before calling `agent_bootstrap.py`,
-unless the user has already given the answer earlier in the chat:
+Then list options **in this order**, with this framing:
 
-| Question | Bootstrap flag | Skip when |
-|---|---|---|
-| Which LLM provider? (openai / claude / gemini / deepseek / ollama / openrouter) | `--provider` | Reuse-from succeeded for this provider |
-| Base URL? (only for openai-compat services) | `--llm-base-url` | Provider is the official vendor (Anthropic, Google, DeepSeek, OpenRouter) |
-| API key? | `--llm-api-key` | Provider is `ollama` (local, no key) |
-| Model name? | `--llm-model` | Default model is acceptable to the user |
-| Embedding strategy? (follow primary / Ollama bge-m3 / custom OpenAI-compat / other provider) | `--embedding-provider` + `--embedding-model` (+ `--embedding-base-url` / `--embedding-api-key` for option 3) | User wants to follow primary provider — pass `--embedding-provider ""` |
-| B 站 Cookie? | `--bilibili-cookie` | Reuse-from succeeded |
+| 选项 | 适合谁 | 是否需要 API Key | 是否要钱 |
+|---|---|---|---|
+| 1. **本地 Ollama**（推荐新手 / 想白嫖 / 想离线用） | 不想花钱、不想申请 API Key、电脑跑得动小模型 | ❌ 不需要 | ❌ 完全免费 |
+| 2. OpenAI 官方（GPT-4o 等） | 已有 OpenAI 账户和 Key | ✅ 需要 | 按 token 计费 |
+| 3. Claude / Gemini / DeepSeek / OpenRouter（其他官方厂商） | 已有对应账户 | ✅ 需要 | 按 token 计费 |
+| 4. **OpenAI 协议兼容的自建/第三方网关**（Azure / vLLM / LMStudio / OneAPI / Together / 自建反代…） | 自己有部署、或团队提供了内网 LLM 网关 | ✅ 通常需要 | 看部署 |
 
-**Per-module overrides** (advanced, ask only if the user wants it). Use
-`--module-override MODULE=PROVIDER:MODEL` (repeatable). Modules: `soul`,
-`discovery`, `recommendation`, `evaluation`. Common pattern: cheap model
-on `discovery` and `evaluation`, premium model on `soul`.
+**Why Ollama first**: it's the only zero-friction option. Users without any
+LLM API Key today can install Ollama in 30 seconds and have the project
+working end-to-end. Cloud providers are kept as the explicit "I have a key
+already" branch.
+
+**Critical: option 2 ≠ option 4.** They both write to `[llm.openai]` in
+config.toml because they share the OpenAI protocol, but the *user's* mental
+model is different — option 2 means "I'll use OpenAI the company"; option 4
+means "I have a self-hosted or third-party gateway that speaks the OpenAI
+API." If the user picks option 4, **always ask for `--llm-base-url`**. If
+the user picks option 2, leave `--llm-base-url` unset (defaults to
+`https://api.openai.com/v1`).
+
+### Step 2 — Configure the chosen LLM
+
+Once they've picked, only ask the **fields that option actually needs**.
+
+#### Option 1 (Ollama):
+
+> 「Ollama 是个本地运行的开源工具。请确认：
+>   - 你的电脑已经装了 Ollama（Mac: `brew install ollama` / Windows: 从 https://ollama.com/download 下载 / Linux: `curl -fsSL https://ollama.com/install.sh \| sh`）
+>   - Ollama 服务在跑（终端里 `ollama serve &`，或 Mac 直接打开 Ollama.app）
+>   - 拉了一个模型（建议 `ollama pull llama3` 或更小的 `ollama pull qwen2.5:3b`）」
+
+Then run with `--provider ollama` (no `--llm-api-key`, no `--llm-base-url`
+unless they need a non-default port).
+
+#### Option 2 (OpenAI 官方):
+
+> 「请给我你的 OpenAI API Key（以 sk- 开头）。可以从 https://platform.openai.com/api-keys 创建。」
+
+Run with `--provider openai --llm-api-key <KEY>`. Don't ask for Base URL.
+
+#### Option 3 (Claude / Gemini / DeepSeek / OpenRouter):
+
+Substitute the right vendor name and Key URL:
+
+- Claude: https://console.anthropic.com/ → Settings → API Keys
+- Gemini: https://aistudio.google.com/apikey
+- DeepSeek: https://platform.deepseek.com/api_keys
+- OpenRouter: https://openrouter.ai/keys
+
+Run with `--provider <name> --llm-api-key <KEY>`.
+
+#### Option 4 (OpenAI 协议兼容自建网关):
+
+Ask **all three**, with explanations:
+
+> 「你的网关需要给我三件套：
+>   - **Base URL**：网关的 `/v1` 端点（例：`http://localhost:8000/v1` 或 `https://your-gateway.example.com/v1`）。这是 OpenBiliClaw 实际去打的 HTTP 地址
+>   - **API Key**：网关要不要鉴权？要的话给我 Key；不要的话填 `none` 或留空
+>   - **模型名**：网关上具体部署的是哪个模型？（例：vLLM 上的 `meta-llama/Llama-3.1-70B`，Azure 上是你的 deployment 名）」
+
+Run with `--provider openai --llm-base-url <URL> --llm-api-key <KEY> --llm-model <MODEL>`.
+
+### Step 3 — Embedding（向量化服务，独立的一个问题）
+
+**Embedding 是和聊天模型分开的**。它负责把文本变成向量，用于：「这条视频和你之前喜欢的那条是不是同一个主题」「换一批的时候去重」等。它调用频次很高，所以单独拎出来配。
+
+Tell the user:
+
+> 「OpenBiliClaw 还需要一个 embedding（向量化）服务。它做的事：把视频标题/简介变成向量，跨视频做相似度对比，决定换一批时哪些是『重复的』。**你可以三选一：**
+>
+>   1. **跟随你刚才选的 LLM**（最省事）—— 如果你刚才选了 Ollama，embedding 也用 Ollama；如果选了 OpenAI/Gemini，embedding 也用同一家
+>   2. **本地 Ollama + bge-m3**（推荐：免费 + 离线 + 跨模型一致）—— 即使你聊天模型用 OpenAI/Claude，embedding 也单独走本地，省 quota
+>   3. **跳过，先不配**（默认跟随 LLM）」
+
+If the user picks option 2 (local Ollama embedding), use:
+`--embedding-provider ollama --embedding-model bge-m3`. Tell them to run
+`ollama pull bge-m3` (~568MB, CPU 即可) before next backend restart.
+
+If option 1 or 3, leave embedding flags off entirely (don't pass empty
+strings, just omit the flags).
+
+### Step 4 — B 站 Cookie
+
+Most users haven't done this before. **Don't just say "give me your
+Bilibili cookie."** Walk them through it:
+
+> 「OpenBiliClaw 需要你的 B 站登录态（Cookie），用来：拉你的观看历史 → 训练画像；以你的身份调 B 站 API 拿视频详情。**Cookie 只存在你本机，不会上传任何地方。**
+>
+> 怎么拿：
+>   1. 用 Chrome / Edge / Firefox **登录** https://www.bilibili.com
+>   2. 按 `F12` 打开开发者工具 → 切到 **Network（网络）** 标签
+>   3. 刷新一下 B 站页面 → 在请求列表点任意一条 `bilibili.com` 的请求
+>   4. 右侧 **Headers（请求头）** 区域，找到 `cookie:` 这一行，右键复制整行的 value
+>   5. 把那一长串（包含 `SESSDATA=...; bili_jct=...; DedeUserID=...` 等）粘给我
+>
+> （或者更简单：装我们的 Chrome 扩展，它会自动用你的登录态，零配置。下载：https://github.com/whiteguo233/OpenBiliClaw/releases）」
+
+Run with `--bilibili-cookie "<the full cookie string>"`.
+
+### Putting it all together — example commands
+
+**新手白嫖路径**（Ollama + 跟随 embedding + B 站 cookie）：
+
+```bash
+python3 scripts/agent_bootstrap.py \
+  --provider ollama \
+  --llm-model llama3 \
+  --bilibili-cookie "SESSDATA=...; bili_jct=...; DedeUserID=..." \
+  --skip-init
+```
+
+**自建网关 + Ollama embedding 兜底**（最常见的进阶路径）：
 
 ```bash
 python3 scripts/agent_bootstrap.py \
   --provider openai \
-  --llm-base-url https://api.together.xyz/v1 \
-  --llm-api-key $TOGETHER_KEY \
-  --llm-model meta-llama/Llama-3.1-70B-Instruct-Turbo \
+  --llm-base-url http://localhost:8000/v1 \
+  --llm-api-key sk-or-none \
+  --llm-model meta-llama/Llama-3.1-70B-Instruct \
   --embedding-provider ollama \
   --embedding-model bge-m3 \
-  --module-override discovery=deepseek:deepseek-chat \
-  --module-override soul=claude:claude-sonnet-4-5-20250929 \
-  --bilibili-cookie "$BILI_COOKIE" \
+  --bilibili-cookie "SESSDATA=...; ..." \
   --skip-init
 ```
+
+After running, **always** curl the `Health URL` from the status block to
+confirm `200 OK`, then report the final state to the user.
+
+### Per-module overrides（高级，默认不要问）
+
+`--module-override MODULE=PROVIDER:MODEL`（可重复）。模块：`soul` /
+`discovery` / `recommendation` / `evaluation`。**只有当用户主动说「我想给画像
+用更贵的模型，发现用便宜的」之类的话，才提这个**。否则跳过——大多数用户根本不
+关心，多问一项就多一份让人迷惑的可能。
 
 ## Optional: local Ollama as the embedding fallback
 

@@ -1242,13 +1242,18 @@ def test_init_guides_missing_runtime_config_interactively(
     #   Phase 2: base_url (accept default), api_key, model (accept default)
     #   Phase 3: embedding choice "1" (follow primary)
     #   Phase 4: "n" to skip module overrides
+    # New menu-driven wizard inputs:
+    #   1. menu choice: "gemini" (or its index 4)
+    #   2. API key
+    #   3. model (accept default by Enter)
+    #   4. embedding choice "1" (follow primary)
+    #   5. "n" — skip module overrides
     wizard_input = "\n".join(
         [
-            "gemini",
-            "",  # base_url default (gemini = "")
-            "gemini-key",
-            "",  # model default
-            "1",  # embedding follow primary
+            "gemini",  # menu — by canonical name
+            "gemini-key",  # API key
+            "",  # accept default model
+            "1",  # embedding: follow primary
             "n",  # skip module overrides
         ]
     ) + "\n"
@@ -1258,7 +1263,7 @@ def test_init_guides_missing_runtime_config_interactively(
     assert captured["provider"] == "gemini"
     assert captured["api_key"] == "gemini-key"
     assert "初始化前配置引导" in result.stdout
-    assert "Phase 1" in result.stdout
+    assert "本地 Ollama" in result.stdout  # menu now leads with Ollama
     assert "历史为空" in result.stdout
 
 

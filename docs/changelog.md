@@ -4,6 +4,65 @@
 
 ---
 
+## v0.3.6: 装机向导从普通用户视角彻底重写（2026-04-30）
+
+v0.3.5 的向导虽然问全了，但顺序、措辞和默认都不够友好。基于线上 AI agent 实际跑出来的提问被反馈「太差」，v0.3.6 整个人机界面重写：
+
+### 1 — Ollama 排第一，不再把 OpenAI 当默认
+
+之前 `default="openai"`，但 OpenAI 是收费的、要去申请 Key 才能用，对刚接触本项目的用户极不友好。v0.3.6：
+
+- 菜单第一项是 **本地 Ollama**（免费 / 离线 / 无需 API Key），明确标注「推荐新手」
+- Tip 直接告诉用户：「不想花钱、刚接触本项目，就选 1」
+- 默认值改成 `1=Ollama`，回车即用
+
+### 2 — 「OpenAI 官方」和「OpenAI 协议兼容自建网关」拆成两个菜单项
+
+之前 `openai` 一个项要覆盖「OpenAI 公司的服务」+「Azure / vLLM / LMStudio / OneAPI / 自建网关」，从用户心智模型看完全是两件事。AI agent 也分不清要不要追问 base_url。v0.3.6 把它们拆开：
+
+- **菜单 2 = OpenAI 官方**：只问 API Key，base_url 走 `https://api.openai.com/v1`
+- **菜单 7 = OpenAI 协议兼容自建网关**：强制问 Base URL（这是唯一区分两者的字段）+ API Key + 模型名
+
+底层都还是写到 `[llm.openai]` 段（共享 OpenAI 协议解析器），但用户和 AI agent 不再需要在心里做这个映射
+
+### 3 — Embedding 单独成一个清晰的问题，附带解释
+
+之前向导问完聊天模型直接接 embedding，没有明确的「这是另一件事」标识。v0.3.6 在 embedding 阶段先打印解释：
+
+> Embedding 是和聊天模型分开的：把视频标题/简介变成向量，用于跨视频去重和相似度判定。频次很高，所以单独拎出来配。
+
+然后才进入 4 选 1 菜单。文案也改了：选项 1 从「跟随主 provider」改成「跟随你刚才选的 LLM（最省事，默认）」
+
+### 4 — B 站 Cookie 教用户怎么拿，不是只丢一个 prompt
+
+之前 `_interactive_auth_setup` 只问「请输入 B 站 Cookie:」，用户看完一脸懵——Cookie 是什么？怎么拿？v0.3.6 在 prompt 之前先打印：
+
+- **为什么需要**：拉历史训画像 + 调 B 站 API 拿视频详情
+- **数据安全保证**：只存本机 `data/bilibili_cookie.json`，不上传任何地方
+- **怎么获取**：浏览器 F12 → Network → 复制 cookie 请求头的 5 步流程
+- **更简单的替代**：装浏览器扩展自动复用登录态
+
+### 5 — 每个字段都有「这是干嘛的」一句话说明
+
+例如菜单 7 选项配置时：
+
+> 你的网关 Base URL（必填，例 http://localhost:8000/v1）
+> API Key（如果网关不鉴权可留空）
+> 网关上实际部署的模型名（例 meta-llama/Llama-3.1-70B）
+
+而不是冷冰冰的 `Base URL:` / `API Key:` / `model:`
+
+### 6 — `docs/agent-install.md` 同步重写「Asking the user the right questions」段
+
+AI agent（Claude / Codex / Cursor / OpenClaw）跑一句话装机时会读这份 contract。新版给 agent 的指令是：
+
+- **不要一次性把所有问题倒给用户**，分 3 步走（LLM → Embedding → Cookie）
+- **解释每个东西在干嘛**（在用户语境下）
+- **按选项只问该选项需要的字段**（选 Ollama 就别问 API Key；选官方厂商就别问 base_url）
+- **Cookie 一定要附获取步骤**
+
+---
+
 ## v0.3.5: 装机向导问全所有问题，不再因「openai」歧义猜错（2026-04-29）
 
 ### 4 阶段安装向导（`init` / `setup-embedding`）
