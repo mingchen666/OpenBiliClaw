@@ -64,6 +64,44 @@ When `Missing` is non-empty, do exactly what `Next action` says:
 3. Curl the `Health URL` from the block to confirm the backend is still healthy (HTTP 200).
 4. Report the final state to the user.
 
+### Asking the user the right questions (v0.3.5+)
+
+`openai` in this codebase is a **protocol family**, not a vendor. If the user
+mentions Azure OpenAI, vLLM, LMStudio, OneAPI, Cloudflare AI Gateway, or any
+self-hosted LLM that "speaks the OpenAI API", set `--provider openai` and
+override the URL with `--llm-base-url`. Same goes for embeddings.
+
+**Minimum question set** — ask all of these before calling `agent_bootstrap.py`,
+unless the user has already given the answer earlier in the chat:
+
+| Question | Bootstrap flag | Skip when |
+|---|---|---|
+| Which LLM provider? (openai / claude / gemini / deepseek / ollama / openrouter) | `--provider` | Reuse-from succeeded for this provider |
+| Base URL? (only for openai-compat services) | `--llm-base-url` | Provider is the official vendor (Anthropic, Google, DeepSeek, OpenRouter) |
+| API key? | `--llm-api-key` | Provider is `ollama` (local, no key) |
+| Model name? | `--llm-model` | Default model is acceptable to the user |
+| Embedding strategy? (follow primary / Ollama bge-m3 / custom OpenAI-compat / other provider) | `--embedding-provider` + `--embedding-model` (+ `--embedding-base-url` / `--embedding-api-key` for option 3) | User wants to follow primary provider — pass `--embedding-provider ""` |
+| B 站 Cookie? | `--bilibili-cookie` | Reuse-from succeeded |
+
+**Per-module overrides** (advanced, ask only if the user wants it). Use
+`--module-override MODULE=PROVIDER:MODEL` (repeatable). Modules: `soul`,
+`discovery`, `recommendation`, `evaluation`. Common pattern: cheap model
+on `discovery` and `evaluation`, premium model on `soul`.
+
+```bash
+python3 scripts/agent_bootstrap.py \
+  --provider openai \
+  --llm-base-url https://api.together.xyz/v1 \
+  --llm-api-key $TOGETHER_KEY \
+  --llm-model meta-llama/Llama-3.1-70B-Instruct-Turbo \
+  --embedding-provider ollama \
+  --embedding-model bge-m3 \
+  --module-override discovery=deepseek:deepseek-chat \
+  --module-override soul=claude:claude-sonnet-4-5-20250929 \
+  --bilibili-cookie "$BILI_COOKIE" \
+  --skip-init
+```
+
 ## Optional: local Ollama as the embedding fallback
 
 This is a **post-install opt-in**, not part of the install contract. Mention

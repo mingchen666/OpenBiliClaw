@@ -28,9 +28,15 @@ cp config.example.toml config.toml
 
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
-| `api_key` | string | `""` | OpenAI API Key（default_provider=openai 时必填） |
-| `model` | string | `"gpt-4o"` | 模型名称 |
-| `base_url` | string | `""` | 留空使用官方 API，可设置兼容 API 地址 |
+| `api_key` | string | `""` | API Key（default_provider=openai 时必填，OpenAI 兼容服务也填这里） |
+| `model` | string | `"gpt-4o"` | 模型名称（按 `base_url` 后端实际部署的模型填，例如 vLLM 上是 `meta-llama/Llama-3.1-70B-Instruct`） |
+| `base_url` | string | `""` | 留空使用 OpenAI 官方 `https://api.openai.com/v1`；指向任何 OpenAI 兼容服务的 `/v1` 端点：Azure OpenAI / vLLM / LMStudio / OneAPI / Cloudflare AI Gateway / 自建 LLM 网关 |
+
+> **「openai」是协议家族，不是厂商。** v0.3.5 起 `init` 向导会显式说明这一点。任何兼容 `POST /v1/chat/completions` 的服务都填到这一段，区别只在 `base_url`。
+> 例如：
+> - Azure OpenAI → `base_url = "https://your-resource.openai.azure.com/openai/deployments/your-deployment"`
+> - 本地 vLLM → `base_url = "http://localhost:8000/v1"`，`api_key` 任填或留空
+> - OneAPI 网关 → `base_url = "https://your-oneapi.example.com/v1"`
 
 ### `[llm.claude]`
 
@@ -115,6 +121,48 @@ model = "bge-m3"
 ```
 
 CPU 即可跑（~100-200ms/次），跨 Mac / Win / Linux 一致。
+
+### `[llm.soul]` / `[llm.discovery]` / `[llm.recommendation]` / `[llm.evaluation]`
+
+可选的 **per-module** LLM 覆盖（v0.3.5 起 `init` 向导 Phase 4 会问；也可以手填或通过 `agent_bootstrap.py --module-override` 传入）。每段同结构，留空 = 跟随 `[llm].default_provider`：
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `provider` | string | `""` | 留空跟随 `default_provider`；填 `claude` / `gemini` / `deepseek` / `ollama` / `openrouter` / `openai` |
+| `model` | string | `""` | 留空跟随 `[llm.<provider>].model`；填具体模型名覆盖 |
+
+四个模块在管线里的位置：
+
+| 段 | 用途 | 典型选型 |
+|---|---|---|
+| `[llm.soul]` | 灵魂画像生成（5 层 Event → Soul），稳定性优先 | 高质量模型，例如 Claude Sonnet / GPT-4o / Gemini 2.5 Pro |
+| `[llm.discovery]` | 关键词生成、候选评估，调用频次最高 | 廉价模型，例如 DeepSeek Chat / GPT-4o-mini / Gemini Flash |
+| `[llm.recommendation]` | 朋友式解释生成，影响最终用户体感 | 平衡型，例如 Claude Haiku / GPT-4o-mini |
+| `[llm.evaluation]` | 池子打分、相关度评估，高频后台调用 | 廉价模型 |
+
+例：发现/评估走 DeepSeek，画像走 Claude：
+
+```toml
+[llm.soul]
+provider = "claude"
+model    = "claude-sonnet-4-5-20250929"
+
+[llm.discovery]
+provider = "deepseek"
+model    = "deepseek-chat"
+
+[llm.evaluation]
+provider = "deepseek"
+model    = "deepseek-chat"
+```
+
+> 通过 `agent_bootstrap.py` 的命令行写入：
+> ```bash
+> python3 scripts/agent_bootstrap.py \
+>   --module-override soul=claude:claude-sonnet-4-5-20250929 \
+>   --module-override discovery=deepseek:deepseek-chat \
+>   --module-override evaluation=deepseek:deepseek-chat
+> ```
 
 ### `[bilibili]`
 

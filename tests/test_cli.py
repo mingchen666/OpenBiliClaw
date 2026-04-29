@@ -1183,9 +1183,17 @@ def test_init_guides_missing_runtime_config_interactively(
     captured: dict[str, object] = {}
     config_errors = iter(["llm.openai.api_key", None])
 
-    def fake_save_runtime_config(provider: str, api_key: str) -> None:
+    def fake_save_runtime_config(
+        provider: str,
+        *,
+        api_key: str = "",
+        base_url: str = "",
+        model: str = "",
+    ) -> None:
         captured["provider"] = provider
         captured["api_key"] = api_key
+        captured["base_url"] = base_url
+        captured["model"] = model
 
     def fake_load_runtime_config_error(*, render: bool = True) -> str | None:
         return next(config_errors)
@@ -1195,6 +1203,18 @@ def test_init_guides_missing_runtime_config_interactively(
         cli_module,
         "_save_runtime_provider_config",
         fake_save_runtime_config,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_save_embedding_config",
+        lambda **_: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_save_module_overrides",
+        lambda *_: None,
         raising=False,
     )
     monkeypatch.setattr(
@@ -1217,11 +1237,28 @@ def test_init_guides_missing_runtime_config_interactively(
         raising=False,
     )
 
-    result = runner.invoke(app, ["init"], input="gemini\ngemini-key\n")
+    # 4-phase wizard inputs:
+    #   Phase 1: provider
+    #   Phase 2: base_url (accept default), api_key, model (accept default)
+    #   Phase 3: embedding choice "1" (follow primary)
+    #   Phase 4: "n" to skip module overrides
+    wizard_input = "\n".join(
+        [
+            "gemini",
+            "",  # base_url default (gemini = "")
+            "gemini-key",
+            "",  # model default
+            "1",  # embedding follow primary
+            "n",  # skip module overrides
+        ]
+    ) + "\n"
+    result = runner.invoke(app, ["init"], input=wizard_input)
 
     assert result.exit_code == 1
-    assert captured == {"provider": "gemini", "api_key": "gemini-key"}
+    assert captured["provider"] == "gemini"
+    assert captured["api_key"] == "gemini-key"
     assert "初始化前配置引导" in result.stdout
+    assert "Phase 1" in result.stdout
     assert "历史为空" in result.stdout
 
 
@@ -1844,7 +1881,7 @@ def test_ollama_has_model_matches_tagged_and_untagged(
     assert cli_module._ollama_has_model("nomic-embed-text") is False
 
 
-def test_save_embedding_provider_config_writes_to_toml(
+def test_save_embedding_config_writes_to_toml(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Verify the wizard's persistence helper writes both provider and model
@@ -1861,10 +1898,140 @@ def test_save_embedding_provider_config_writes_to_toml(
     initial = Config(llm=LLMConfig(default_provider="gemini"))
     save_config(initial, config_path)
 
-    monkeypatch.chdir(tmp_path)  # so load_config_with_diagnostics() finds it
+    # Redirect _project_root() to tmp_path. monkeypatch.chdir alone is
+    # NOT enough — _project_root() checks the package install dir first
+    # and would happily clobber the developer's real config.toml.
+    monkeypatch.setenv("OPENBILICLAW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
 
-    cli_module._save_embedding_provider_config(provider="ollama", model="bge-m3")
+    cli_module._save_embedding_config(provider="ollama", model="bge-m3")
 
     reloaded, _ = load_config_with_diagnostics()
     assert reloaded.llm.embedding.provider == "ollama"
     assert reloaded.llm.embedding.model == "bge-m3"
+    # And the side-effect: ollama base_url gets seeded so the registry
+    # actually wires up the Ollama provider for embedding.
+    assert reloaded.llm.ollama.base_url.strip() != ""
+
+
+def test_save_embedding_config_custom_openai_compat(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Phase 3 option 3: a vLLM-style OpenAI-compatible embedding gateway.
+
+    The wizard collects provider="openai" plus a custom base_url / api_key /
+    model, and the helper has to write all four into config.toml: the
+    embedding section gets provider+model, and the [llm.openai] block gets
+    base_url+api_key so the LLM registry can resolve the endpoint.
+    """
+    from openbiliclaw.config import (
+        Config,
+        LLMConfig,
+        load_config_with_diagnostics,
+        save_config,
+    )
+
+    config_path = tmp_path / "config.toml"
+    save_config(Config(llm=LLMConfig(default_provider="claude")), config_path)
+    monkeypatch.setenv("OPENBILICLAW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    cli_module._save_embedding_config(
+        provider="openai",
+        model="bge-m3",
+        base_url="http://localhost:8000/v1",
+        api_key="sk-local",
+    )
+
+    reloaded, _ = load_config_with_diagnostics()
+    assert reloaded.llm.embedding.provider == "openai"
+    assert reloaded.llm.embedding.model == "bge-m3"
+    assert reloaded.llm.openai.base_url == "http://localhost:8000/v1"
+    assert reloaded.llm.openai.api_key == "sk-local"
+
+
+def test_save_module_overrides_writes_per_module_blocks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Phase 4: per-module overrides round-trip through config.toml."""
+    from openbiliclaw.config import (
+        Config,
+        LLMConfig,
+        load_config_with_diagnostics,
+        save_config,
+    )
+
+    config_path = tmp_path / "config.toml"
+    save_config(Config(llm=LLMConfig(default_provider="openai")), config_path)
+    monkeypatch.setenv("OPENBILICLAW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    cli_module._save_module_overrides(
+        {
+            "discovery": {"provider": "deepseek", "model": "deepseek-chat"},
+            "soul": {"provider": "claude", "model": "claude-sonnet-4-5-20250929"},
+            "evaluation": {"provider": "", "model": ""},  # no-op leaves defaults
+        }
+    )
+
+    reloaded, _ = load_config_with_diagnostics()
+    assert reloaded.llm.discovery.provider == "deepseek"
+    assert reloaded.llm.discovery.model == "deepseek-chat"
+    assert reloaded.llm.soul.provider == "claude"
+    assert reloaded.llm.soul.model == "claude-sonnet-4-5-20250929"
+    assert reloaded.llm.evaluation.provider == ""
+    assert reloaded.llm.evaluation.model == ""
+
+
+def test_save_runtime_provider_config_persists_triplet(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Phase 2: full triplet (api_key, base_url, model) round-trips,
+    and empty values do not clobber existing config (so a user pressing
+    Enter at the prompt accepts the saved value rather than blanking it).
+    """
+    from openbiliclaw.config import (
+        Config,
+        LLMConfig,
+        LLMProviderConfig,
+        load_config_with_diagnostics,
+        save_config,
+    )
+
+    config_path = tmp_path / "config.toml"
+    save_config(
+        Config(
+            llm=LLMConfig(
+                default_provider="claude",
+                openai=LLMProviderConfig(
+                    api_key="sk-old",
+                    base_url="https://old.example.com/v1",
+                    model="gpt-old",
+                ),
+            )
+        ),
+        config_path,
+    )
+    monkeypatch.setenv("OPENBILICLAW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    # Write triplet — should switch default provider and overwrite all three.
+    cli_module._save_runtime_provider_config(
+        "openai",
+        api_key="sk-new",
+        base_url="https://new.example.com/v1",
+        model="gpt-4o-mini",
+    )
+    reloaded, _ = load_config_with_diagnostics()
+    assert reloaded.llm.default_provider == "openai"
+    assert reloaded.llm.openai.api_key == "sk-new"
+    assert reloaded.llm.openai.base_url == "https://new.example.com/v1"
+    assert reloaded.llm.openai.model == "gpt-4o-mini"
+
+    # Now an "accept defaults" follow-up: empty params must NOT blank the
+    # values written above.
+    cli_module._save_runtime_provider_config("openai", api_key="", base_url="", model="")
+    reloaded2, _ = load_config_with_diagnostics()
+    assert reloaded2.llm.openai.api_key == "sk-new"
+    assert reloaded2.llm.openai.base_url == "https://new.example.com/v1"
+    assert reloaded2.llm.openai.model == "gpt-4o-mini"

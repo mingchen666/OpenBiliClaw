@@ -565,16 +565,58 @@ def _is_interactive_terminal() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def _save_runtime_provider_config(provider: str, api_key: str) -> None:
-    """Persist the selected provider and API key to runtime config.toml."""
+def _save_runtime_provider_config(
+    provider: str,
+    *,
+    api_key: str = "",
+    base_url: str = "",
+    model: str = "",
+) -> None:
+    """Persist the selected provider's full config triple to ``config.toml``.
+
+    Writes ``default_provider`` plus the per-provider ``[llm.<name>]``
+    block. ``api_key`` / ``base_url`` / ``model`` are only written when
+    non-empty (so existing saved values aren't blown away when the
+    wizard's user accepts a default by leaving the prompt blank).
+    """
     from openbiliclaw.config import load_config_with_diagnostics, save_config
 
     config, diagnostics = load_config_with_diagnostics()
     config.llm.default_provider = provider
-    provider_config = getattr(config.llm, provider)
-    if hasattr(provider_config, "api_key"):
+    provider_config = getattr(config.llm, provider, None)
+    if provider_config is None:
+        save_config(config, diagnostics.config_path)
+        return
+    if api_key and hasattr(provider_config, "api_key"):
         provider_config.api_key = api_key.strip()
+    if base_url and hasattr(provider_config, "base_url"):
+        provider_config.base_url = base_url.strip()
+    if model and hasattr(provider_config, "model"):
+        provider_config.model = model.strip()
     save_config(config, diagnostics.config_path)
+
+
+# Default base_url + chat model per provider. The user can always override
+# both in the wizard; these are just the "I picked X, what should the
+# defaults look like?" answers.
+_PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
+    "openai": {"base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+    "claude": {"base_url": "", "model": "claude-sonnet-4-5-20250929"},
+    "gemini": {"base_url": "", "model": "gemini-2.0-flash-exp"},
+    "deepseek": {"base_url": "https://api.deepseek.com", "model": "deepseek-chat"},
+    "ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3"},
+    "openrouter": {"base_url": "https://openrouter.ai/api/v1", "model": "openai/gpt-4o-mini"},
+}
+
+
+_PROVIDER_HINTS: dict[str, str] = {
+    "openai": "OpenAI 官方 / Azure / vLLM / LMStudio / OneAPI / 任意 OpenAI 兼容服务",
+    "claude": "Anthropic Claude 官方",
+    "gemini": "Google Gemini 官方",
+    "deepseek": "DeepSeek 官方（OpenAI 兼容协议）",
+    "ollama": "本地 Ollama（无需 Key）",
+    "openrouter": "OpenRouter 聚合",
+}
 
 
 def _ollama_is_running(host: str = "http://localhost:11434") -> bool:
@@ -643,8 +685,19 @@ def _ollama_pull_model(model: str, host: str = "http://localhost:11434") -> bool
         return False
 
 
-def _save_embedding_provider_config(provider: str, model: str) -> None:
+def _save_embedding_config(
+    *,
+    provider: str,
+    model: str,
+    base_url: str = "",
+    api_key: str = "",
+) -> None:
     """Persist the embedding provider/model selection to config.toml.
+
+    For OpenAI-compatible providers the wizard may collect a custom
+    ``base_url`` / ``api_key`` (e.g. a self-hosted vLLM gateway running
+    bge-m3 over the OpenAI protocol). We write those into the matching
+    ``[llm.<provider>]`` block so the registry can resolve them at runtime.
 
     When ``provider="ollama"``, also fill ``[llm.ollama] base_url`` so the
     LLM registry's ``_maybe_ollama_provider`` actually registers Ollama
@@ -656,73 +709,325 @@ def _save_embedding_provider_config(provider: str, model: str) -> None:
     config, diagnostics = load_config_with_diagnostics()
     config.llm.embedding.provider = provider
     config.llm.embedding.model = model
+
+    provider_config = getattr(config.llm, provider, None)
+    if provider_config is not None:
+        if base_url and hasattr(provider_config, "base_url"):
+            provider_config.base_url = base_url.strip()
+        if api_key and hasattr(provider_config, "api_key"):
+            provider_config.api_key = api_key.strip()
+
     if provider == "ollama" and not config.llm.ollama.base_url.strip():
         config.llm.ollama.base_url = "http://localhost:11434/v1"
     save_config(config, diagnostics.config_path)
 
 
-def _interactive_embedding_setup(default_provider: str) -> None:
-    """Optional: configure local Ollama as the embedding provider.
+def _save_module_overrides(overrides: dict[str, dict[str, str]]) -> None:
+    """Persist per-module LLM overrides to config.toml.
 
-    Skipped silently when the chosen LLM provider is already ``ollama``
-    (in that case the embedding service falls through to the same provider
-    via the LLM-default-provider rule).
+    ``overrides`` maps module name (``soul`` / ``discovery`` /
+    ``recommendation`` / ``evaluation``) to a dict with optional
+    ``provider`` and ``model`` keys. Empty values are written as empty
+    strings, which the loader treats as "use global default".
     """
-    if default_provider == "ollama":
+    from openbiliclaw.config import load_config_with_diagnostics, save_config
+
+    config, diagnostics = load_config_with_diagnostics()
+    for module, payload in overrides.items():
+        module_config = getattr(config.llm, module, None)
+        if module_config is None:
+            continue
+        if "provider" in payload:
+            module_config.provider = payload["provider"].strip()
+        if "model" in payload:
+            module_config.model = payload["model"].strip()
+    save_config(config, diagnostics.config_path)
+
+
+_SUPPORTED_PROVIDERS: tuple[str, ...] = (
+    "openai",
+    "claude",
+    "gemini",
+    "deepseek",
+    "ollama",
+    "openrouter",
+)
+
+
+def _print_provider_table() -> None:
+    """Render the provider hint table so users see what each name covers."""
+    table = Table(
+        title="支持的 provider 协议族",
+        show_lines=False,
+        title_style="bold",
+    )
+    table.add_column("名称", style="cyan", no_wrap=True)
+    table.add_column("覆盖范围 / 说明")
+    table.add_column("默认 base_url", style="dim")
+    for name in _SUPPORTED_PROVIDERS:
+        defaults = _PROVIDER_DEFAULTS.get(name, {})
+        table.add_row(
+            name,
+            _PROVIDER_HINTS.get(name, ""),
+            defaults.get("base_url") or "—",
+        )
+    console.print(table)
+    console.print(
+        "[dim]提示：「openai」是协议家族而非厂商。任何兼容 OpenAI Chat Completions 的服务"
+        "（Azure、vLLM、LMStudio、OneAPI、自建网关等）都填这一项，再改 base_url / model。[/dim]"
+    )
+
+
+def _prompt_provider_triplet(provider: str) -> tuple[str, str, str]:
+    """Phase 2 — collect (base_url, api_key, model) for the chosen provider."""
+    defaults = _PROVIDER_DEFAULTS.get(provider, {})
+    default_base_url = defaults.get("base_url", "")
+    default_model = defaults.get("model", "")
+
+    base_url_prompt = "Base URL（OpenAI 兼容服务必填，留空则用默认）"
+    base_url = typer.prompt(
+        base_url_prompt,
+        default=default_base_url,
+        show_default=bool(default_base_url),
+    ).strip()
+
+    api_key = ""
+    if provider == "ollama":
+        console.print("[dim]Ollama 本地服务无需 API Key，跳过该项。[/dim]")
+    else:
+        api_key = typer.prompt(
+            f"{provider} API Key",
+            prompt_suffix=": ",
+            hide_input=True,
+            default="",
+            show_default=False,
+        ).strip()
+
+    model = typer.prompt(
+        "模型名称（chat / generation 模型）",
+        default=default_model,
+        show_default=bool(default_model),
+    ).strip()
+
+    return base_url, api_key, model
+
+
+def _interactive_embedding_setup(default_provider: str) -> None:
+    """Phase 3 — choose how embeddings are served (4-way branch).
+
+    1) 跟随主 provider（什么都不写，让 default_provider 兜底）
+    2) 本地 Ollama + bge-m3
+    3) 自定义 OpenAI 兼容服务（自填 base_url / api_key / model）
+    4) 指定其他已知 provider（同样可改 base_url / api_key / model）
+    """
+    _print_status_panel(
+        "info",
+        "Embedding 配置",
+        (
+            "Embedding 决定相似度搜索的质量。可以跟随主 provider，"
+            "也可以单独走 Ollama 或任意 OpenAI 兼容服务。"
+        ),
+    )
+
+    options = (
+        ("1", "跟随主 provider（默认）"),
+        ("2", "本地 Ollama + bge-m3（推荐离线/省 Key）"),
+        ("3", "自定义 OpenAI 兼容服务（vLLM / OneAPI / 自建网关）"),
+        ("4", "指定其他 provider（claude / gemini / deepseek / openrouter）"),
+        ("5", "跳过（暂不配置）"),
+    )
+    for label, desc in options:
+        console.print(f"  [cyan]{label}[/cyan]) {desc}")
+
+    choice = typer.prompt("请选择 embedding 方案", default="1").strip()
+
+    if choice in {"5", "skip", "跳过"}:
+        console.print("[dim]已跳过 embedding 配置，将沿用默认（跟随主 provider）。[/dim]")
         return
+
+    if choice in {"1", "follow", ""}:
+        _save_embedding_config(provider="", model="")
+        console.print("[green]已设置为跟随主 provider。[/green]")
+        return
+
+    if choice == "2":
+        if not _ollama_is_running():
+            console.print(
+                "[yellow]检测不到 Ollama 服务（localhost:11434）。[/yellow]\n"
+                "  Mac:     brew install ollama && ollama serve\n"
+                "  Windows: 从 https://ollama.com/download 下载安装包\n"
+                "  装好后重新运行 `openbiliclaw setup-embedding` 即可启用。"
+            )
+            return
+
+        model = typer.prompt("Ollama embedding 模型", default="bge-m3").strip() or "bge-m3"
+        if _ollama_has_model(model):
+            console.print(f"[green]已检测到本地模型 {model}[/green]")
+        else:
+            console.print(f"开始拉取 {model}（首次下载耗时几分钟）…")
+            if not _ollama_pull_model(model):
+                console.print(f"[red]{model} 拉取失败，未启用本地 embedding[/red]")
+                return
+        _save_embedding_config(provider="ollama", model=model)
+        console.print(f"[bold green]已启用本地 Ollama embedding（{model}）[/bold green]")
+        return
+
+    if choice == "3":
+        base_url = typer.prompt(
+            "Embedding Base URL（OpenAI 兼容，例如 http://localhost:8000/v1）"
+        ).strip()
+        api_key = typer.prompt(
+            "Embedding API Key（如服务无鉴权可留空）",
+            hide_input=True,
+            default="",
+            show_default=False,
+        ).strip()
+        model = typer.prompt("Embedding 模型名称", default="bge-m3").strip()
+        _save_embedding_config(
+            provider="openai",
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+        )
+        console.print(
+            "[bold green]已配置自定义 OpenAI 兼容 embedding 服务"
+            r"（写入 \[llm.openai] 段）。[/bold green]"
+        )
+        return
+
+    if choice == "4":
+        target = typer.prompt(
+            "选择 provider（claude / gemini / deepseek / openrouter / ollama）",
+            default="gemini",
+        ).strip().lower()
+        if target not in _SUPPORTED_PROVIDERS:
+            console.print("[red]未知 provider，跳过 embedding 配置。[/red]")
+            return
+        defaults = _PROVIDER_DEFAULTS.get(target, {})
+        base_url = typer.prompt(
+            f"{target} Base URL（留空走默认）",
+            default=defaults.get("base_url", ""),
+            show_default=bool(defaults.get("base_url")),
+        ).strip()
+        api_key = ""
+        if target != "ollama":
+            api_key = typer.prompt(
+                f"{target} API Key",
+                hide_input=True,
+                default="",
+                show_default=False,
+            ).strip()
+        model = typer.prompt(
+            "Embedding 模型名称",
+            default="text-embedding-3-small" if target == "openai" else "",
+            show_default=False,
+        ).strip()
+        if not model:
+            console.print("[red]模型名为空，跳过 embedding 配置。[/red]")
+            return
+        _save_embedding_config(
+            provider=target,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+        )
+        console.print(f"[bold green]已配置 {target} 作为 embedding provider。[/bold green]")
+        return
+
+    console.print("[red]未识别的选项，跳过 embedding 配置。[/red]")
+
+
+def _interactive_module_overrides(default_provider: str) -> None:
+    """Phase 4 — optional per-module LLM overrides (advanced, skippable)."""
     if not typer.confirm(
-        "是否启用本地 Ollama 作为 embedding 兜底服务？(可选, 需先安装 Ollama 并启动服务)",
+        "（高级，可跳过）是否为单个模块单独指定 provider/model？\n"
+        "  典型场景：发现/评估走便宜模型，灵魂画像走高质量模型。",
         default=False,
     ):
         return
 
-    if not _ollama_is_running():
-        console.print(
-            "[yellow]检测不到 Ollama 服务（localhost:11434）。[/yellow]\n"
-            "  Mac:     brew install ollama && ollama serve\n"
-            "  Windows: 从 https://ollama.com/download 下载安装包\n"
-            "  装好后重新运行本命令即可启用。"
-        )
-        return
+    overrides: dict[str, dict[str, str]] = {}
+    modules = (
+        ("soul", "灵魂画像（高质量模型，稳定性优先）"),
+        ("discovery", "内容发现（吞吐量大，建议廉价模型）"),
+        ("recommendation", "推荐文案（解释生成，平衡质量和成本）"),
+        ("evaluation", "内容评估（高频调用，建议廉价模型）"),
+    )
+    for module, desc in modules:
+        if not typer.confirm(f"为 [{module}] {desc} 配置覆盖？", default=False):
+            continue
+        provider = typer.prompt(
+            f"  {module} provider（留空 = 跟随默认 {default_provider}）",
+            default="",
+            show_default=False,
+        ).strip().lower()
+        if provider and provider not in _SUPPORTED_PROVIDERS:
+            console.print(f"  [red]未知 provider「{provider}」，跳过该模块。[/red]")
+            continue
+        model = typer.prompt(
+            f"  {module} 模型（留空 = 跟随 provider 默认）",
+            default="",
+            show_default=False,
+        ).strip()
+        overrides[module] = {"provider": provider, "model": model}
 
-    model = "bge-m3"
-    if _ollama_has_model(model):
-        console.print(f"[green]已检测到本地模型 {model}[/green]")
+    if overrides:
+        _save_module_overrides(overrides)
+        console.print(f"[green]已写入 {len(overrides)} 个模块的 LLM 覆盖配置。[/green]")
     else:
-        console.print(f"开始拉取 {model}（约 568MB，首次下载需几分钟）…")
-        if not _ollama_pull_model(model):
-            console.print(f"[red]{model} 拉取失败，未启用本地 embedding[/red]")
-            return
-
-    _save_embedding_provider_config(provider="ollama", model=model)
-    console.print(f"[bold green]已启用本地 Ollama embedding（{model}）[/bold green]")
+        console.print("[dim]未配置任何模块覆盖。[/dim]")
 
 
 def _interactive_runtime_config_setup() -> None:
-    """Guide the user through missing LLM config before init."""
-    supported_providers = ["openai", "claude", "gemini", "deepseek", "ollama", "openrouter"]
+    """Guide the user through missing LLM config before init.
+
+    Four-phase flow:
+      1) Pick a chat provider (with a hint table — "openai" is a protocol
+         family, not a vendor).
+      2) Provide base_url / api_key / model for that provider.
+      3) Choose how embeddings are served (4-way branch).
+      4) Optional per-module overrides.
+    """
     _print_page_title("初始化前配置引导", "补齐 LLM 运行时配置")
-    console.print("支持的默认 provider: " + ", ".join(supported_providers))
+    _print_provider_table()
 
     while True:
-        provider = typer.prompt("请选择默认 LLM provider", default="gemini").strip().lower()
-        if provider not in supported_providers:
-            console.print("[bold red]不支持的 provider[/bold red]")
+        provider = (
+            typer.prompt(
+                "Phase 1 — 请选择默认 LLM provider",
+                default="openai",
+            )
+            .strip()
+            .lower()
+        )
+        if provider not in _SUPPORTED_PROVIDERS:
+            console.print("[bold red]不支持的 provider，请重新输入[/bold red]")
             continue
 
-        api_key = ""
-        if provider != "ollama":
-            api_key = typer.prompt(
-                f"请输入 {provider} API Key",
-                prompt_suffix=": ",
-                hide_input=True,
-            )
-        _save_runtime_provider_config(provider, api_key)
-        error = _load_runtime_config_error()
-        if error is None:
-            _interactive_embedding_setup(provider)
-            return
-        console.print("[bold yellow]刚写入的配置仍不完整，请重新输入。[/bold yellow]")
+        console.print(f"\n[bold]Phase 2 — 配置 {provider}[/bold]")
+        if provider in _PROVIDER_HINTS:
+            console.print(f"[dim]{_PROVIDER_HINTS[provider]}[/dim]")
+        base_url, api_key, model = _prompt_provider_triplet(provider)
+
+        _save_runtime_provider_config(
+            provider,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+        )
+
+        error = _load_runtime_config_error(render=False)
+        if error is not None:
+            console.print("[bold yellow]刚写入的配置仍不完整，请重新输入。[/bold yellow]")
+            _print_runtime_config_error(error)
+            continue
+
+        console.print("\n[bold]Phase 3 — Embedding[/bold]")
+        _interactive_embedding_setup(provider)
+
+        console.print("\n[bold]Phase 4 — Per-module 覆盖（可选）[/bold]")
+        _interactive_module_overrides(provider)
+        return
 
 
 def _interactive_auth_setup(auth_manager: Any) -> Any:

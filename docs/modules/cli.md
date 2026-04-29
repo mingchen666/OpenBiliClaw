@@ -269,18 +269,46 @@ $ openbiliclaw init
   发现内容数: 94
 ```
 
-如果当前终端是交互式，且缺少 provider API Key 或 B 站 Cookie，`init` 会直接进入引导：
+如果当前终端是交互式，且缺少 provider API Key 或 B 站 Cookie，`init` 会直接进入 4 阶段引导（v0.3.5+）：
 
 ```bash
 $ docker exec -it openbiliclaw-backend openbiliclaw init
-初始化前配置引导
-请选择默认 LLM provider [gemini]:
-请输入 gemini API Key:
+初始化前配置引导 · 补齐 LLM 运行时配置
+
+支持的 provider 协议族
+  名称        覆盖范围 / 说明                                              默认 base_url
+  openai      OpenAI 官方 / Azure / vLLM / LMStudio / OneAPI / 任意 OpenAI 兼容服务   https://api.openai.com/v1
+  claude      Anthropic Claude 官方                                       —
+  gemini      Google Gemini 官方                                          —
+  deepseek    DeepSeek 官方（OpenAI 兼容协议）                             https://api.deepseek.com
+  ollama      本地 Ollama（无需 Key）                                       http://localhost:11434/v1
+  openrouter  OpenRouter 聚合                                              https://openrouter.ai/api/v1
+提示：「openai」是协议家族而非厂商。任何兼容 OpenAI Chat Completions 的服务都填这一项，再改 base_url / model。
+
+Phase 1 — 请选择默认 LLM provider [openai]:
+Phase 2 — 配置 openai
+Base URL（OpenAI 兼容服务必填，留空则用默认） [https://api.openai.com/v1]:
+openai API Key:
+模型名称（chat / generation 模型） [gpt-4o-mini]:
+
+Phase 3 — Embedding
+  1) 跟随主 provider（默认）
+  2) 本地 Ollama + bge-m3（推荐离线/省 Key）
+  3) 自定义 OpenAI 兼容服务（vLLM / OneAPI / 自建网关）
+  4) 指定其他 provider（claude / gemini / deepseek / openrouter）
+  5) 跳过（暂不配置）
+请选择 embedding 方案 [1]:
+
+Phase 4 — Per-module 覆盖（可选）
+（高级，可跳过）是否为单个模块单独指定 provider/model？[y/N]:
+
 初始化前认证引导
 请输入 B 站 Cookie:
 ```
 
 引导完成后会继续当前初始化流程，不需要再单独执行 `auth login` 或手动改配置。
+
+> **「openai」是协议家族**：v0.3.5 起向导明确告诉用户 `openai` provider 等价于「任意 OpenAI 兼容服务」。Azure OpenAI、vLLM、LMStudio、OneAPI、自建 LLM 网关都选这一项，然后在 base_url 里填自己的入口；模型名也跟着对应服务上 deploy 的实际模型走，不再被 `gpt-4o-mini` 默认值限制。
 
 首次 `init` 的 discover 阶段可能持续几分钟，因为它会真实访问 B 站接口并调用当前 provider 进行候选打分与表达生成。
 当前实现已经对首轮 discover 做了保守受控并发优化，但默认并发上限仍偏保守，优先减少 B 站和 LLM 限流风险。
@@ -298,26 +326,35 @@ openbiliclaw discover
 
 ### `openbiliclaw setup-embedding`
 
-配置本地 Ollama 作为 embedding 兜底服务（**可选**）。`init` 阶段会自动询问；只有当时跳过、之后想启用时才需要主动跑这条命令。
+重新进入 embedding 选择向导（v0.3.5 起 4 选 1）。`init` 阶段会自动问；只有当时跳过、或要切换方案时才需要主动跑：
 
 ```bash
 $ openbiliclaw setup-embedding
 配置本地 embedding · Ollama + bge-m3
-是否启用本地 Ollama 作为 embedding 兜底服务？(可选, 需先安装 Ollama 并启动服务) [y/N]: y
-开始拉取 bge-m3（约 568MB，首次下载需几分钟）…
-  pulling manifest
-  downloading 5e9... 100%
-  verifying sha256 digest
-  writing manifest
-已启用本地 Ollama embedding（bge-m3）
+
+  1) 跟随主 provider（默认）
+  2) 本地 Ollama + bge-m3（推荐离线/省 Key）
+  3) 自定义 OpenAI 兼容服务（vLLM / OneAPI / 自建网关）
+  4) 指定其他 provider（claude / gemini / deepseek / openrouter）
+  5) 跳过（暂不配置）
+请选择 embedding 方案 [1]:
 ```
 
-向导会按顺序：
+每个选项对应的写入路径：
+
+| 选项 | 行为 | 写入字段 |
+|---|---|---|
+| 1 | 跟随主 provider，embedding 复用 chat provider | `[llm.embedding] provider=""` |
+| 2 | 本地 Ollama，自动探测 + 拉取 `bge-m3` | `[llm.embedding] provider="ollama" model="bge-m3"` 并 seed `[llm.ollama] base_url` |
+| 3 | 自填 base_url + api_key + model | `[llm.embedding] provider="openai" model="..."` + `[llm.openai] base_url/api_key`（用 openai 协议族指向你的网关） |
+| 4 | 选另一个已知 provider 走 embedding | `[llm.embedding] provider="<target>" model="..."` + 对应 `[llm.<target>]` base_url/api_key |
+
+选项 2 时向导会按顺序：
 
 1. 探测 `localhost:11434/api/version`，确认 Ollama 服务在跑
 2. 通过 `/api/tags` 检查 `bge-m3` 是否已 pull
 3. 没拉就流式 `POST /api/pull`，进度直接打到终端
-4. 把 `[llm.embedding] provider="ollama" model="bge-m3"` 写入 `config.toml`
+4. 把 `[llm.embedding] provider="ollama" model="bge-m3"` 写入 `config.toml`，并自动 seed `[llm.ollama] base_url="http://localhost:11434/v1"`（v0.3.3+ 修复：以前不写这一项 registry 不会注册 Ollama）
 
 适合：
 

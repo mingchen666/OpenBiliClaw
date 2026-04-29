@@ -144,6 +144,57 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="LLM API key for the (current or overridden) provider. Stored in config.toml.",
     )
     parser.add_argument(
+        "--llm-base-url",
+        default=None,
+        help=(
+            "Override the chosen provider's base_url. Required for OpenAI-"
+            "compatible gateways (Azure / vLLM / LMStudio / OneAPI / 任意 "
+            "OpenAI 兼容服务). The 'openai' provider is a protocol family, "
+            "not a vendor — point it anywhere that speaks /v1/chat/completions."
+        ),
+    )
+    parser.add_argument(
+        "--llm-model",
+        default=None,
+        help="Override the chosen provider's chat/generation model.",
+    )
+    parser.add_argument(
+        "--embedding-provider",
+        default=None,
+        choices=("", *SUPPORTED_PROVIDERS),
+        help=(
+            "Embedding provider override. Empty string = follow primary LLM "
+            "provider. Use 'ollama' for local bge-m3 fallback, or pick any "
+            "supported provider for a dedicated embedding endpoint."
+        ),
+    )
+    parser.add_argument(
+        "--embedding-model",
+        default=None,
+        help="Embedding model name (e.g. bge-m3, text-embedding-3-small).",
+    )
+    parser.add_argument(
+        "--embedding-base-url",
+        default=None,
+        help="Custom base_url for the embedding provider (writes into the matching [llm.<provider>] block).",
+    )
+    parser.add_argument(
+        "--embedding-api-key",
+        default=None,
+        help="Custom API key for the embedding provider (writes into the matching [llm.<provider>] block).",
+    )
+    parser.add_argument(
+        "--module-override",
+        action="append",
+        default=None,
+        metavar="MODULE=PROVIDER:MODEL",
+        help=(
+            "Per-module LLM override. Repeatable. MODULE ∈ {soul, "
+            "discovery, recommendation, evaluation}. Example: "
+            "--module-override discovery=deepseek:deepseek-chat"
+        ),
+    )
+    parser.add_argument(
         "--bilibili-cookie",
         default=None,
         help="Bilibili cookie string. Stored in config.toml and data/bilibili_cookie.json.",
@@ -458,6 +509,99 @@ def apply_provider_override(project_dir: Path, provider: str) -> None:
 
 def apply_llm_api_key(project_dir: Path, provider: str, api_key: str) -> None:
     update_config_secret(project_dir / "config.toml", f"llm.{provider}", "api_key", api_key)
+
+
+def apply_llm_base_url(project_dir: Path, provider: str, base_url: str) -> None:
+    update_config_secret(project_dir / "config.toml", f"llm.{provider}", "base_url", base_url)
+
+
+def apply_llm_model(project_dir: Path, provider: str, model: str) -> None:
+    update_config_secret(project_dir / "config.toml", f"llm.{provider}", "model", model)
+
+
+def apply_embedding_config(
+    project_dir: Path,
+    *,
+    provider: str | None,
+    model: str | None,
+    base_url: str | None,
+    api_key: str | None,
+) -> dict[str, Any]:
+    """Write [llm.embedding] + (optionally) provider creds.
+
+    Returns a structured summary so the bootstrap can emit a single event
+    listing exactly what was changed. Empty-string provider means "follow
+    primary"; missing fields are left untouched.
+    """
+
+    config_path = project_dir / "config.toml"
+    written: list[str] = []
+    if provider is not None:
+        update_config_secret(config_path, "llm.embedding", "provider", provider)
+        written.append("llm.embedding.provider")
+    if model is not None:
+        update_config_secret(config_path, "llm.embedding", "model", model)
+        written.append("llm.embedding.model")
+
+    target_provider = (provider or "").strip()
+    if target_provider and (base_url is not None or api_key is not None):
+        if base_url is not None:
+            update_config_secret(config_path, f"llm.{target_provider}", "base_url", base_url)
+            written.append(f"llm.{target_provider}.base_url")
+        if api_key is not None:
+            update_config_secret(config_path, f"llm.{target_provider}", "api_key", api_key)
+            written.append(f"llm.{target_provider}.api_key")
+
+    # Mirror the wizard's side-effect: when embedding is ollama, seed
+    # llm.ollama.base_url so the registry actually wires the provider.
+    if target_provider == "ollama":
+        existing = read_simple_toml(config_path).get("llm", {}).get("ollama", {})
+        if not str(existing.get("base_url", "")).strip():
+            update_config_secret(
+                config_path, "llm.ollama", "base_url", "http://localhost:11434/v1"
+            )
+            written.append("llm.ollama.base_url(seeded)")
+
+    return {"written": written, "provider": target_provider}
+
+
+def parse_module_override(spec: str) -> tuple[str, str, str]:
+    """Parse --module-override values shaped like ``module=provider:model``.
+
+    ``provider`` may be empty (= keep global), and ``model`` may be empty
+    (= keep provider default). Raises ValueError on malformed input so
+    argparse-style failures bubble up cleanly.
+    """
+
+    if "=" not in spec:
+        raise ValueError(f"--module-override requires MODULE=PROVIDER:MODEL form, got: {spec!r}")
+    module, _, rhs = spec.partition("=")
+    module = module.strip().lower()
+    if module not in {"soul", "discovery", "recommendation", "evaluation"}:
+        raise ValueError(
+            f"unknown module {module!r}; expected one of soul / discovery / recommendation / evaluation"
+        )
+    if ":" in rhs:
+        provider, _, model = rhs.partition(":")
+    else:
+        provider, model = rhs, ""
+    provider = provider.strip().lower()
+    if provider and provider not in SUPPORTED_PROVIDERS:
+        raise ValueError(f"unknown provider {provider!r} in --module-override {spec!r}")
+    return module, provider, model.strip()
+
+
+def apply_module_overrides(project_dir: Path, specs: list[str]) -> dict[str, Any]:
+    """Write each --module-override into config.toml under [llm.<module>]."""
+
+    config_path = project_dir / "config.toml"
+    written: list[str] = []
+    for spec in specs:
+        module, provider, model = parse_module_override(spec)
+        update_config_secret(config_path, f"llm.{module}", "provider", provider)
+        update_config_secret(config_path, f"llm.{module}", "model", model)
+        written.append(f"llm.{module}={provider or 'default'}:{model or 'default'}")
+    return {"modules": written}
 
 
 def detect_missing_secrets(project_dir: Path) -> dict[str, Any]:
@@ -802,6 +946,52 @@ def run(args: argparse.Namespace) -> int:
         provider = args.provider or current_provider
         apply_llm_api_key(project_dir, provider, args.llm_api_key)
         emit(BootstrapResult("ok", "api_key_set", {"provider": provider}))
+
+    if args.llm_base_url is not None:
+        provider = args.provider or current_provider
+        apply_llm_base_url(project_dir, provider, args.llm_base_url)
+        emit(
+            BootstrapResult(
+                "ok",
+                "base_url_set",
+                {"provider": provider, "base_url": args.llm_base_url},
+            )
+        )
+
+    if args.llm_model is not None:
+        provider = args.provider or current_provider
+        apply_llm_model(project_dir, provider, args.llm_model)
+        emit(
+            BootstrapResult(
+                "ok",
+                "model_set",
+                {"provider": provider, "model": args.llm_model},
+            )
+        )
+
+    embedding_touched = (
+        args.embedding_provider is not None
+        or args.embedding_model is not None
+        or args.embedding_base_url is not None
+        or args.embedding_api_key is not None
+    )
+    if embedding_touched:
+        summary = apply_embedding_config(
+            project_dir,
+            provider=args.embedding_provider,
+            model=args.embedding_model,
+            base_url=args.embedding_base_url,
+            api_key=args.embedding_api_key,
+        )
+        emit(BootstrapResult("ok", "embedding_set", summary))
+
+    if args.module_override:
+        try:
+            mod_summary = apply_module_overrides(project_dir, args.module_override)
+        except ValueError as exc:
+            emit(BootstrapResult("error", str(exc), {"step": "module_override"}))
+            return 2
+        emit(BootstrapResult("ok", "module_overrides_set", mod_summary))
 
     if args.bilibili_cookie:
         update_config_secret(

@@ -4,6 +4,45 @@
 
 ---
 
+## v0.3.5: 装机向导问全所有问题，不再因「openai」歧义猜错（2026-04-29）
+
+### 4 阶段安装向导（`init` / `setup-embedding`）
+
+之前向导只问「provider + api_key」两件事，但 `openai` 在我们这里其实是**协议家族**——Azure / vLLM / LMStudio / OneAPI / 自建网关都走这一项，base_url 和 model 不一样答案就完全不同。少问的代价是用户配完后跑不通，再被引导回来手动改 `config.toml`。v0.3.5 把向导改成：
+
+- **Phase 1 — Provider 选择**：先打印一张 provider 协议族表，明确告诉用户 `openai` 是协议家族不是厂商
+- **Phase 2 — Provider 三件套**：base_url / api_key / model，每个 provider 都带合理默认；按回车接受，不强制重输
+- **Phase 3 — Embedding（4 选 1）**：跟随主 provider / 本地 Ollama bge-m3 / 自定义 OpenAI 兼容服务（vLLM / OneAPI 等）/ 指定其他已知 provider
+- **Phase 4 — Per-module 覆盖（可选）**：明显标注「高级，可跳过」。给 soul / discovery / recommendation / evaluation 单独设 provider/model（典型场景：发现 / 评估走便宜模型，画像走高质量模型）
+
+### `agent_bootstrap.py` 新增 7 个 flag，AI agent 也能问全
+
+之前 AI agent 只能传 `--llm-api-key` + `--bilibili-cookie`，不够覆盖向导新增的字段。v0.3.5 新增：
+
+| Flag | 用途 |
+|---|---|
+| `--llm-base-url` | OpenAI 兼容服务的入口 URL |
+| `--llm-model` | 主 provider 的 chat 模型名 |
+| `--embedding-provider` | embedding provider（空字符串 = 跟随主 provider） |
+| `--embedding-model` | embedding 模型名 |
+| `--embedding-base-url` | 自托管 embedding 网关的 base_url |
+| `--embedding-api-key` | 自托管 embedding 网关的 API Key |
+| `--module-override MODULE=PROVIDER:MODEL` | 可重复，per-module 覆盖 |
+
+`docs/agent-install.md` 同步加了一张「最小提问表」，明确告诉 AI agent 哪些问题在哪个 flag 上传——以后不会再因为 OpenAI 兼容服务被默认成官方 OpenAI 跑挂
+
+### 修复：测试污染开发者真实 `config.toml`
+
+之前 4 个 `_save_*` 单元测试只 `monkeypatch.chdir(tmp_path)`，但 `_project_root()` 优先读包安装路径，结果测试值（`sk-new` / `gemini-2.0-flash-exp` / 假 `claude` 覆盖等）会写进开发者的真实 `config.toml`。v0.3.5：4 个测试改用 `monkeypatch.setenv("OPENBILICLAW_PROJECT_ROOT", tmp_path)`，配合 chdir 双重保险
+
+### 文档
+
+- `docs/modules/cli.md`：补全 `init` 4 阶段交互式 transcript + `setup-embedding` 4 选 1 表格
+- `docs/modules/config.md`：`[llm.openai]` 强调协议家族 + 新增 `[llm.<module>]` 段说明
+- `docs/agent-install.md`：最小提问表 + 完整 flag 示例
+
+---
+
 ## v0.3.4: 原生 Windows 一句话装机（2026-04-29）
 
 ### Windows 原生支持，无需 Docker / WSL2
