@@ -492,7 +492,14 @@ def _run_db_repair() -> Any:
 
 
 def _history_item_to_event(item: dict[str, Any]) -> dict[str, Any]:
-    """Normalize a Bilibili history item into an event-layer payload."""
+    """Normalize a Bilibili history item into a unified event-layer payload.
+
+    Routes through ``build_event()`` (v0.3.22+) so the resulting dict
+    has the same shape as Xiaohongshu / future-source events, with a
+    natural-language ``context`` the LLM analyzer can consume directly.
+    """
+    from openbiliclaw.sources.event_format import SOURCE_BILIBILI, build_event
+
     history_meta = item.get("history", {})
     if not isinstance(history_meta, dict):
         history_meta = {}
@@ -500,16 +507,17 @@ def _history_item_to_event(item: dict[str, Any]) -> dict[str, Any]:
     title = str(item.get("title", "")).strip()
     author = str(item.get("author_name", item.get("author", ""))).strip()
     view_at = history_meta.get("view_at", item.get("view_at", ""))
-    return {
-        "event_type": "view",
-        "title": title,
-        "url": f"https://www.bilibili.com/video/{bvid}" if bvid else "",
-        "metadata": {
+    return build_event(
+        event_type="view",
+        source_platform=SOURCE_BILIBILI,
+        title=title,
+        url=f"https://www.bilibili.com/video/{bvid}" if bvid else "",
+        author=author,
+        metadata={
             "bvid": bvid,
-            "author": author,
             "view_at": view_at,
         },
-    }
+    )
 
 
 @app.callback()
@@ -1849,29 +1857,51 @@ def init() -> None:
     # status == "skipped" is silent (DB unavailable / budget exhausted —
     # already printed by _enqueue_xhs_bootstrap_task)
 
-    # Build events from all data sources
+    # Build events from all data sources via the unified event_format
+    # builder (v0.3.22+) so B站 / 小红书 / future-source events all carry
+    # the same shape — including a natural-language ``context`` the
+    # soul-pipeline LLM analyzers can read uniformly.
+    from openbiliclaw.sources.event_format import SOURCE_BILIBILI, build_event
+
     events = [_history_item_to_event(item) for item in history]
     for fav in favorites_data:
+        folder = str(fav.get("folder", "")).strip()
+        upper = str(fav.get("upper", "")).strip()
         events.append(
-            {
-                "event_type": "favorite",
-                "title": str(fav.get("title", "")),
-                "metadata": {
-                    "folder": str(fav.get("folder", "")),
-                    "upper": str(fav.get("upper", "")),
+            build_event(
+                event_type="favorite",
+                source_platform=SOURCE_BILIBILI,
+                title=str(fav.get("title", "")),
+                author=upper,
+                metadata={
+                    "folder": folder,
+                    # ``upper`` kept for backwards compatibility with
+                    # downstream consumers that still grep for it.
+                    "upper": upper,
                 },
-            }
+            )
         )
     for user in following_data:
+        sign = str(user.get("sign", "")).strip()
+        name = str(user.get("name", ""))
         events.append(
-            {
-                "event_type": "follow",
-                "title": str(user.get("name", "")),
-                "metadata": {
-                    "up_name": str(user.get("name", "")),
-                    "sign": str(user.get("sign", "")),
+            build_event(
+                event_type="follow",
+                source_platform=SOURCE_BILIBILI,
+                title=name,
+                author=name,
+                # ``follow`` rendering benefits from showing the user's
+                # signature line — that's where their stated identity
+                # lives. ``extra`` flows through to format_event_context
+                # only via custom override; pre-build the context here.
+                context=(
+                    f"在 B 站关注了《{name}》,签名:{sign}" if sign else f"在 B 站关注了《{name}》"
+                ),
+                metadata={
+                    "up_name": name,
+                    "sign": sign,
                 },
-            }
+            )
         )
     events_to_persist = list(events)
     events.extend(xhs_events)

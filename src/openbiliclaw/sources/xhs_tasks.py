@@ -124,7 +124,16 @@ def _merge_result_payload(
 
 
 def xhs_bootstrap_notes_to_events(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert extension-collected Xiaohongshu bootstrap notes into events."""
+    """Convert extension-collected Xiaohongshu bootstrap notes into events.
+
+    v0.3.22+ routes through ``event_format.build_event`` so the resulting
+    dict is shape-identical to B站 / future-source events. The scope-aware
+    natural-language ``context`` (preserving "小红书收藏" / "小红书点赞" /
+    "小红书浏览记录" wording) is built explicitly here because the scope
+    label carries more nuance than the generic event_type alone.
+    """
+    from openbiliclaw.sources.event_format import SOURCE_XIAOHONGSHU, build_event
+
     events: list[dict[str, Any]] = []
     for note in notes:
         if not isinstance(note, dict):
@@ -141,26 +150,30 @@ def xhs_bootstrap_notes_to_events(notes: list[dict[str, Any]]) -> list[dict[str,
 
         author = str(note.get("author", "")).strip()
         label = XHS_BOOTSTRAP_SCOPE_LABELS[scope]
+        # Custom context — scope label ("收藏" / "点赞" / "浏览记录") is
+        # more informative than the generic event_format default
+        # ("收藏了" / "点赞了" / "看了"), and the prior wording was
+        # already what tests / prompts grew up reading.
         context = f"小红书{label}：{title or url}"
         if author:
             context = f"{context} 作者：{author}"
 
         events.append(
-            {
-                "event_type": event_type,
-                "title": title,
-                "url": url,
-                "context": context,
-                "metadata": {
-                    "source_platform": "xiaohongshu",
+            build_event(
+                event_type=event_type,
+                source_platform=SOURCE_XIAOHONGSHU,
+                title=title,
+                url=url,
+                author=author,
+                context=context,
+                metadata={
                     "note_id": str(note.get("note_id", "")).strip(),
                     "xsec_token": str(note.get("xsec_token", "")).strip(),
-                    "author": author,
                     "cover_url": str(note.get("cover_url", "")).strip(),
                     "import_source": f"xhs_bootstrap_{scope}",
                     "signal_strength": XHS_BOOTSTRAP_SIGNAL_STRENGTH[scope],
                 },
-            }
+            )
         )
     return events
 
@@ -410,8 +423,7 @@ class XhsCreatorStore:
     def mark_fetched(self, sub_id: int) -> None:
         """Update last_fetched_at to now."""
         self._db.conn.execute(
-            "UPDATE xhs_creator_subscriptions "
-            "SET last_fetched_at = CURRENT_TIMESTAMP WHERE id = ?",
+            "UPDATE xhs_creator_subscriptions SET last_fetched_at = CURRENT_TIMESTAMP WHERE id = ?",
             (sub_id,),
         )
         self._db.conn.commit()
