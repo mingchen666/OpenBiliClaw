@@ -107,9 +107,8 @@ class ProfileBuilder:
                 format_parse_failure(content, exc, label="soul profile"),
             )
             raise SoulProfileBuildError(
-                f"LLM returned invalid JSON for soul profile "
-                f"(raw_len={len(content.strip())})"
-        )
+                f"LLM returned invalid JSON for soul profile (raw_len={len(content.strip())})"
+            )
         if not isinstance(parsed, dict):
             raise SoulProfileBuildError("LLM soul profile response must be a JSON object.")
         payload: dict[str, object] = {key: value for key, value in parsed.items()}
@@ -185,34 +184,107 @@ class ProfileBuilder:
                 authors.append(str(author).strip())
         # Deduplicate while preserving order for frequency ranking
         from collections import Counter
+
         author_counts = Counter(authors)
         top_authors = [name for name, _ in author_counts.most_common(50)]
+
+        # v0.3.23+: per-item natural-language context. For history rows
+        # that already carry ``context`` (xhs items, future sources that
+        # plumbed through event_format) we use it verbatim. For raw B站
+        # history items we synthesize from event_format.format_event_context
+        # so the LLM sees a uniform stream of "在 X 平台干了 Y" sentences
+        # regardless of where the signal originated. This makes
+        # cross-platform behaviour readable instead of forcing the model
+        # to reverse-engineer it from titles + author lists.
+        from openbiliclaw.sources.event_format import (
+            SOURCE_BILIBILI,
+            format_event_context,
+        )
+
+        def _item_context(item: dict[str, Any]) -> str:
+            existing = str(item.get("context", "")).strip()
+            if existing:
+                return existing
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            source_platform = (
+                str(item.get("source_platform", "")).strip()
+                or str(metadata.get("source_platform", "")).strip()
+                or SOURCE_BILIBILI  # legacy raw-B站-history default
+            )
+            event_type = (
+                str(item.get("event_type", "")).strip()
+                or "view"  # raw history items are implicitly views
+            )
+            title = str(item.get("title", "")).strip()
+            author = (
+                str(item.get("author_name", "")).strip()
+                or str(item.get("author", "")).strip()
+                or str(item.get("up_name", "")).strip()
+                or str(metadata.get("author", "") or metadata.get("up_name", "") or "").strip()
+            )
+            if not title:
+                return ""
+            return format_event_context(
+                event_type=event_type,
+                source_platform=source_platform,
+                title=title,
+                author=author,
+            )
 
         # Time-based grouping: split into recent vs older if timestamps exist
         recent_titles: list[str] = []
         older_titles: list[str] = []
+        recent_contexts: list[str] = []
+        older_contexts: list[str] = []
         cutoff = max(1, len(regular_items) * 3 // 10)
         for i, item in enumerate(regular_items):
             title = str(item.get("title", "")).strip()
             if not title:
                 continue
+            ctx_line = _item_context(item)
             if i < cutoff:
                 recent_titles.append(title)
+                if ctx_line:
+                    recent_contexts.append(ctx_line)
             else:
                 older_titles.append(title)
+                if ctx_line:
+                    older_contexts.append(ctx_line)
+
+        # Cap context lists to keep prompt token cost bounded. Each line
+        # is ~30 chars Chinese ≈ 60-90 tokens; 50 + 50 + 100 ≈ 12k tokens
+        # additional payload at the worst case, comparable to the existing
+        # titles[:100] payload.
+        all_contexts: list[str] = []
+        for item in regular_items:
+            ctx_line = _item_context(item)
+            if ctx_line:
+                all_contexts.append(ctx_line)
 
         summary: dict[str, object] = {
             "count": len(regular_items),
             "titles": titles[:100],
             "authors": top_authors,
         }
+        if all_contexts:
+            summary["contexts"] = all_contexts[:100]
+            summary["contexts_hint"] = (
+                "contexts 是 v0.3.22+ 跨源统一的事件自然语言摘要,"
+                "每行一个'在 X 平台干了 Y'。优先以 contexts 来理解用户行为,"
+                "titles / authors / favorites_summary / following_summary "
+                "可作为细化的结构化补充。"
+            )
         if recent_titles:
             summary["recent_titles"] = recent_titles[:50]
             summary["recent_hint"] = (
-                f"最近观看的 {len(recent_titles)} 个视频（前30%）代表当前活跃兴趣"
+                f"最近观看的 {len(recent_titles)} 个视频(前30%)代表当前活跃兴趣"
             )
         if older_titles:
             summary["older_titles"] = older_titles[:50]
+        if recent_contexts:
+            summary["recent_contexts"] = recent_contexts[:50]
+        if older_contexts:
+            summary["older_contexts"] = older_contexts[:50]
         if favorites_summary:
             summary["favorites_summary"] = favorites_summary
         if following_summary:

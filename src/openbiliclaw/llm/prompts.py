@@ -280,6 +280,13 @@ def build_soul_profile_prompt(
     爱玩、外向、社交驱动可能是 ESFP/ENFP;
     审美驱动可能是 INFP/ISFP;
     行动驱动可能是 ESTP/ESTJ 等。
+13. history_summary 里的 `contexts` / `recent_contexts` / `older_contexts`
+    (v0.3.22+ 跨源统一)是用户行为的中文自然语言摘要,每行形如
+    "在 B 站收藏了《...》,作者:..." 或 "小红书点赞:... 作者:..."。
+    **优先把 contexts 当作行为图景**来感受用户在做什么、跨哪些平台,
+    再结合 titles / authors / favorites_summary / following_summary
+    做更细的标签匹配。跨平台信号要一视同仁,不要因为某条来自小红书
+    就降权——portrait 写的是"内在需求和为人方式",和平台来源无关。
 </rules>
 
 <positive_examples>

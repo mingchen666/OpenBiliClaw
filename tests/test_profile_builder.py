@@ -163,8 +163,7 @@ async def test_profile_builder_allows_missing_preference_data() -> None:
     service = FakeStructuredService(
         json.dumps(
             {
-                "personality_portrait": "喜欢长期积累、偏好深度内容、处理信息比较审慎的人。"
-                * 8,
+                "personality_portrait": "喜欢长期积累、偏好深度内容、处理信息比较审慎的人。" * 8,
                 "core_traits": ["理性", "自驱", "克制"],
                 "cognitive_style": ["偏好先想清楚再表态", "对信息密度要求较高"],
                 "motivational_drivers": ["确认方向", "积累长期能力"],
@@ -299,16 +298,20 @@ def test_summarize_history_includes_favorites_and_following() -> None:
     history: list[dict[str, object]] = [
         {"title": f"视频{i}", "author_name": f"UP主{i % 3}"} for i in range(10)
     ]
-    history.append({
-        "title": "[收藏夹汇总]",
-        "_favorites": [{"title": "收藏A", "folder": "默认"}],
-        "_favorites_summary": "共 1 个收藏，涵盖: 默认",
-    })
-    history.append({
-        "title": "[关注列表汇总]",
-        "_following": [{"name": "大佬A"}],
-        "_following_summary": "共关注 1 人，包括: 大佬A",
-    })
+    history.append(
+        {
+            "title": "[收藏夹汇总]",
+            "_favorites": [{"title": "收藏A", "folder": "默认"}],
+            "_favorites_summary": "共 1 个收藏，涵盖: 默认",
+        }
+    )
+    history.append(
+        {
+            "title": "[关注列表汇总]",
+            "_following": [{"name": "大佬A"}],
+            "_following_summary": "共关注 1 人，包括: 大佬A",
+        }
+    )
 
     summary = ProfileBuilder._summarize_history(history)  # type: ignore[arg-type]
 
@@ -334,6 +337,78 @@ def test_summarize_history_works_without_enriched_items() -> None:
     assert summary["count"] == 5
     assert "favorites_summary" not in summary
     assert "following_summary" not in summary
+
+
+def test_summarize_history_synthesises_context_for_raw_bilibili_items() -> None:
+    """v0.3.23+: raw B站 history items don't carry a ``context`` field
+    natively. _summarize_history should synthesise one via
+    format_event_context so the LLM sees a uniform stream of
+    natural-language descriptions across sources."""
+    from openbiliclaw.soul.profile_builder import ProfileBuilder
+
+    history: list[dict[str, object]] = [
+        {"title": "讲透历史叙事", "author_name": "历史实验室"},
+        {"title": "Rust 重写老代码", "author": "独立编程人"},
+    ]
+    summary = ProfileBuilder._summarize_history(history)  # type: ignore[arg-type]
+
+    contexts = summary.get("contexts")
+    assert isinstance(contexts, list)
+    assert len(contexts) == 2
+    # Synthesised context carries platform + verb + author
+    assert any("B 站" in c and "讲透历史叙事" in c and "历史实验室" in c for c in contexts)
+    assert any("B 站" in c and "Rust" in c and "独立编程人" in c for c in contexts)
+    # Hint string lives alongside contexts so the LLM knows what they are
+    assert "contexts_hint" in summary
+
+
+def test_summarize_history_preserves_xhs_native_context() -> None:
+    """v0.3.23+: history items already carrying ``context`` (xhs items
+    via _xhs_events_to_history_items) should pass through verbatim,
+    not be overwritten by the synthesised fallback."""
+    from openbiliclaw.soul.profile_builder import ProfileBuilder
+
+    history: list[dict[str, object]] = [
+        {
+            "title": "手冲咖啡入门",
+            "context": "小红书收藏：手冲咖啡入门 作者：豆子老师",
+            "metadata": {"source_platform": "xiaohongshu", "author": "豆子老师"},
+            "event_type": "favorite",
+        },
+        {
+            "title": "讲透历史叙事",
+            "author_name": "历史实验室",
+        },
+    ]
+    summary = ProfileBuilder._summarize_history(history)  # type: ignore[arg-type]
+
+    contexts = summary.get("contexts", [])
+    assert isinstance(contexts, list)
+    # XHS context preserved verbatim (uses fullwidth ":" / scope label)
+    assert "小红书收藏" in contexts[0]
+    assert "豆子老师" in contexts[0]
+    # B站 raw item synthesised in unified format
+    assert "B 站" in contexts[1]
+
+
+def test_summarize_history_recent_contexts_split_matches_recent_titles() -> None:
+    """recent_contexts / older_contexts mirror the same recent/older
+    cutoff used by recent_titles / older_titles, so a downstream
+    consumer can assume they're index-aligned."""
+    from openbiliclaw.soul.profile_builder import ProfileBuilder
+
+    history: list[dict[str, object]] = [
+        {"title": f"视频{i}", "author_name": f"UP{i}"} for i in range(20)
+    ]
+    summary = ProfileBuilder._summarize_history(history)  # type: ignore[arg-type]
+
+    assert "recent_titles" in summary
+    assert "recent_contexts" in summary
+    assert "older_titles" in summary
+    assert "older_contexts" in summary
+    # The cutoff is 30% of items (max 1) — for 20 items that's 6
+    assert len(summary["recent_titles"]) == len(summary["recent_contexts"])  # type: ignore[arg-type]
+    assert len(summary["older_titles"]) == len(summary["older_contexts"])  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -362,18 +437,22 @@ async def test_e2e_init_favorites_following_reach_llm_prompt() -> None:
     ]
 
     combined_history: list[dict[str, object]] = list(history)
-    combined_history.append({
-        "title": "[收藏夹汇总]",
-        "_favorites": favorites_data,
-        "_favorites_summary": f"共 {len(favorites_data)} 个收藏，涵盖: "
-        + ", ".join(set(f["folder"] for f in favorites_data)),
-    })
-    combined_history.append({
-        "title": "[关注列表汇总]",
-        "_following": following_data,
-        "_following_summary": f"共关注 {len(following_data)} 人，包括: "
-        + ", ".join(f["name"] for f in following_data),
-    })
+    combined_history.append(
+        {
+            "title": "[收藏夹汇总]",
+            "_favorites": favorites_data,
+            "_favorites_summary": f"共 {len(favorites_data)} 个收藏，涵盖: "
+            + ", ".join(set(f["folder"] for f in favorites_data)),
+        }
+    )
+    combined_history.append(
+        {
+            "title": "[关注列表汇总]",
+            "_following": following_data,
+            "_following_summary": f"共关注 {len(following_data)} 人，包括: "
+            + ", ".join(f["name"] for f in following_data),
+        }
+    )
 
     # 2. Build profile with a fake LLM that captures the prompt
     service = FakeStructuredService(
