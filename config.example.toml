@@ -45,8 +45,13 @@ reasoning_effort = "max"
 
 [llm.ollama]
 # Local model via Ollama（本地运行，不要求 api_key）
+# base_url MUST include the /v1 suffix — OpenBiliClaw uses Ollama's
+# OpenAI-compatible shim (`/v1/chat/completions`) for chat, and the
+# native `/api/embeddings` route is derived by stripping that suffix.
+# A bare "http://localhost:11434" makes the OpenAI SDK call
+# `/chat/completions` which Ollama 404s.
 model = "llama3"
-base_url = "http://localhost:11434"
+base_url = "http://localhost:11434/v1"
 
 [llm.openrouter]
 # 若 default_provider = "openrouter"，api_key 必填
@@ -72,7 +77,14 @@ x_title = "OpenBiliClaw"
 #   2. `ollama pull bge-m3`
 #   3. set `provider = "ollama"` here, or run `openbiliclaw setup-embedding`
 provider = ""
-model = "gemini-embedding-001"
+# Leave model empty so the registry picks the provider-appropriate default.
+# Hardcoding "gemini-embedding-001" here used to break OpenAI / Ollama paths
+# (the model name only exists on Gemini's API; other backends 404 on it).
+# v0.3.20+ note: the registry's per-provider defaults are
+#   gemini → gemini-embedding-001
+#   openai → text-embedding-3-small
+#   ollama → bge-m3
+model = ""
 # Cosine similarity threshold: topics above this are considered "same topic"
 similarity_threshold = 0.82
 

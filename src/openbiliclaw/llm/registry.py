@@ -272,6 +272,13 @@ def _maybe_ollama_provider(config: Config, overrides: dict[str, LLMProvider]) ->
     if not model and not raw_base_url and not embedding_wants_ollama:
         return None
     base_url = raw_base_url or "http://localhost:11434/v1"
+    # Normalise: Ollama's OpenAI-compat shim lives at `/v1/...`. Older
+    # config.example.toml shipped `http://localhost:11434` (no /v1),
+    # which makes the OpenAI SDK call `/chat/completions` — Ollama 404s
+    # those. Append /v1 defensively so existing users with stale configs
+    # still get working chat completions after upgrade.
+    if not base_url.rstrip("/").endswith("/v1"):
+        base_url = base_url.rstrip("/") + "/v1"
     return OllamaProvider(
         api_key=config.llm.ollama.api_key or "ollama",
         model=model or "llama3",

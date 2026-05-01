@@ -306,6 +306,53 @@ def test_build_embedding_service_returns_none_with_no_capable_provider(
     assert service is None
 
 
+def test_ollama_base_url_normalised_to_v1_suffix() -> None:
+    """Older config.example.toml shipped ``base_url = "http://localhost:11434"``
+    (no /v1). The OpenAI SDK then calls ``/chat/completions`` directly,
+    which Ollama 404s — its OpenAI-compat shim lives at /v1. The
+    registry must auto-append /v1 so users with stale configs still work
+    after upgrade. Regression for v0.3.20.1."""
+    config = Config(
+        llm=LLMConfig(
+            default_provider="ollama",
+            ollama=LLMProviderConfig(model="llama3", base_url="http://localhost:11434"),
+        ),
+    )
+    registry = build_llm_registry(config)
+    ollama_provider = registry.get("ollama")
+    assert ollama_provider.base_url.endswith("/v1"), (
+        f"expected /v1 suffix, got {ollama_provider.base_url!r}"
+    )
+
+
+def test_openai_primary_with_default_embedding_model_uses_correct_default(
+    tmp_path,
+) -> None:
+    """Pre-v0.3.20.1, config.example.toml hardcoded
+    ``[llm.embedding] model = "gemini-embedding-001"`` as the default.
+    For OpenAI / Ollama / DeepSeek primaries that string was wrong —
+    OpenAI's embeddings endpoint 404s on it. After the fix
+    config.example.toml ships ``model = ""`` so the registry's
+    per-provider defaults kick in (text-embedding-3-small for OpenAI)."""
+    from openbiliclaw.config import EmbeddingConfig
+
+    config = Config(
+        llm=LLMConfig(
+            default_provider="openai",
+            openai=LLMProviderConfig(api_key="openai-key"),
+            embedding=EmbeddingConfig(provider="", model=""),
+        ),
+        data_dir=str(tmp_path),
+    )
+    registry = build_llm_registry(config)
+    service = build_embedding_service(config, registry)
+    assert service is not None
+    assert service._provider.name == "openai"
+    assert service._model == "text-embedding-3-small", (
+        f"expected text-embedding-3-small for OpenAI primary, got {service._model!r}"
+    )
+
+
 def test_openai_provider_supports_embedding_flag_is_set() -> None:
     """``supports_embedding`` must be True for providers with a working
     embeddings endpoint and False for those that don't. This is the
