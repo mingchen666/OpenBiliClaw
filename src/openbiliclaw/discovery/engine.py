@@ -667,18 +667,22 @@ class ContentDiscoveryEngine:
         if franchise_key:
             content.franchise_key = franchise_key
         self._eval_cache[cache_key] = (
-            score, reason, topic_group, style_key, franchise_key,
+            score,
+            reason,
+            topic_group,
+            style_key,
+            franchise_key,
         )
         return score
 
     # Safety cap applied at the evaluator level regardless of caller.
     # Strategies that over-fetch (related_chain depth-2 fanout, explore
     # with expanded budget, etc.) would otherwise dump 400+ items into a
-    # single discover run. 30 keeps each strategy at ~3 eval batches,
-    # so 4 strategies × 3 batches = 12 fits in a single concurrency
-    # wave under the default ``llm_evaluation_concurrency=32`` cap.
-    # Truncation is top-of-list (natural ranking from strategies), and
-    # a WARNING is emitted so we see when strategies hit the cap.
+    # single discover run. 30 keeps each strategy's evaluation bounded
+    # to a single LLM call when ``batch_size`` matches the cap (v0.3.25+
+    # default — see below). Truncation is top-of-list (natural ranking
+    # from strategies), and a WARNING is emitted so we see when
+    # strategies hit the cap.
     _EVALUATE_BATCH_HARD_CAP = 30
 
     async def evaluate_content_batch(
@@ -687,13 +691,22 @@ class ContentDiscoveryEngine:
         profile: SoulProfile,
         *,
         source_context: str = "",
-        batch_size: int = 10,
+        batch_size: int = 30,
     ) -> list[float]:
         """Evaluate multiple content items with batched LLM calls.
 
         Groups items into batches of ``batch_size`` and sends one LLM
         call per batch instead of one per item.  Falls back to single
         evaluation for items that fail in a batch.
+
+        v0.3.25+ default raised from 10 → 30 to amortize the ~3500-token
+        fixed prompt overhead (system rules + profile_summary) across
+        more candidates: 3 calls × (3500 + 800) input ≈ 12,900 input
+        tokens vs 1 call × (3500 + 2400) ≈ 5,900 — a ~54% reduction in
+        evaluation cost. The matching ``max_tokens`` boost (8192 → 16384
+        in the actual call below) gives the larger JSON output array
+        comfortable headroom (~50 tokens × 30 items ≈ 1500 output, well
+        under the new ceiling).
 
         Returns scores in the same order as ``contents``.
         """
@@ -845,7 +858,12 @@ class ContentDiscoveryEngine:
             llm_call = self._llm_service.complete_structured_task(
                 system_instruction=messages[0]["content"],
                 user_input=messages[1]["content"],
-                max_tokens=8192,
+                # v0.3.25+: 8192 → 16384 to leave headroom for the larger
+                # batch_size=30 default. 30 items × ~50 tokens of JSON
+                # each ≈ 1500 output tokens; the bump gives 10x slack
+                # so a verbose ``reason`` field doesn't truncate the
+                # array on the last few items.
+                max_tokens=16384,
             )
             if self._concurrency is not None:
                 response = await self._concurrency.run_llm(llm_call)
@@ -892,7 +910,11 @@ class ContentDiscoveryEngine:
 
             cache_key = f"{content.bvid}:{id(profile)}"
             self._eval_cache[cache_key] = (
-                score, reason, topic_group, style_key, franchise_key,
+                score,
+                reason,
+                topic_group,
+                style_key,
+                franchise_key,
             )
             results.append(score)
 

@@ -40,7 +40,6 @@ import pytest
 
 from openbiliclaw.discovery.engine import DiscoveredContent
 
-
 # ---------------------------------------------------------------------------
 # 1. Migration on an existing v0.3.17-shape database
 # ---------------------------------------------------------------------------
@@ -91,18 +90,14 @@ def test_migrates_existing_v0317_database_in_place(tmp_path: Path) -> None:
     db.initialize()
 
     # Now the column exists.
-    cols = {
-        r["name"]
-        for r in db.conn.execute("PRAGMA table_info(content_cache)").fetchall()
-    }
+    cols = {r["name"] for r in db.conn.execute("PRAGMA table_info(content_cache)").fetchall()}
     assert "franchise_key" in cols, (
         f"v0.3.18 migration didn't add franchise_key column; got: {cols}"
     )
 
     # Legacy row is intact and franchise_key defaults to empty string.
     row = db.conn.execute(
-        "SELECT bvid, title, topic_key, franchise_key FROM content_cache "
-        "WHERE bvid='BV_legacy'"
+        "SELECT bvid, title, topic_key, franchise_key FROM content_cache WHERE bvid='BV_legacy'"
     ).fetchone()
     assert row is not None
     assert row["title"] == "老内容标题"
@@ -154,8 +149,7 @@ def test_cache_content_roundtrip_persists_and_protects_franchise_key(
     ).fetchone()
     # Both LLM-tagged columns must be preserved.
     assert row2["franchise_key"] == "原神", (
-        "re-ingest blew away the LLM-tagged franchise_key — "
-        "COALESCE NULLIF protection broken"
+        "re-ingest blew away the LLM-tagged franchise_key — COALESCE NULLIF protection broken"
     )
     assert row2["topic_key"] == "游戏摄影"
 
@@ -210,13 +204,15 @@ async def test_evaluator_propagates_llm_franchise_key_through_to_db(
                     franchise = "崩坏:星穹铁道"
                 else:
                     franchise = ""
-                payload.append({
-                    "score": 0.78,
-                    "reason": "fake reason",
-                    "topic_group": "游戏",
-                    "style_key": "visual_showcase",
-                    "franchise_key": franchise,
-                })
+                payload.append(
+                    {
+                        "score": 0.78,
+                        "reason": "fake reason",
+                        "topic_group": "游戏",
+                        "style_key": "visual_showcase",
+                        "franchise_key": franchise,
+                    }
+                )
 
             async def _coro() -> _FakeLLMResponse:
                 return _FakeLLMResponse(payload)
@@ -246,9 +242,7 @@ async def test_evaluator_propagates_llm_franchise_key_through_to_db(
 
     profile = SoulProfile()
 
-    scores = await engine.evaluate_content_batch(
-        contents, profile, source_context="test"
-    )
+    scores = await engine.evaluate_content_batch(contents, profile, source_context="test")
 
     # Every item got scored.
     assert all(s > 0 for s in scores)
@@ -268,13 +262,77 @@ async def test_evaluator_propagates_llm_franchise_key_through_to_db(
         db.cache_content(c.bvid, **c.to_cache_kwargs())
     rows = {
         row["bvid"]: row["franchise_key"]
-        for row in db.conn.execute(
-            "SELECT bvid, franchise_key FROM content_cache"
-        ).fetchall()
+        for row in db.conn.execute("SELECT bvid, franchise_key FROM content_cache").fetchall()
     }
     assert rows["BV1"] == "原神"
     assert rows["BV2"] == "原神"
     assert rows["BV3"] == ""
+
+
+@pytest.mark.asyncio
+async def test_evaluate_content_batch_default_size_30_uses_single_llm_call(
+    tmp_path: Path,
+) -> None:
+    """v0.3.25+ regression: default ``batch_size`` was raised from 10 → 30
+    so a typical strategy's full candidate slate (capped at
+    ``_EVALUATE_BATCH_HARD_CAP=30``) goes through the LLM in a single
+    call instead of three. This amortises the ~3500-token fixed prompt
+    overhead (system rules + profile_summary) across more items.
+
+    Concretely: 25 candidates evaluated in one batch should produce
+    exactly 1 LLM call, not 3 (which the old 10-item batch_size would
+    have caused: ceil(25/10) = 3).
+    """
+    from openbiliclaw.discovery.engine import ContentDiscoveryEngine
+
+    class _Resp:
+        def __init__(self, payload: list[dict[str, object]]) -> None:
+            self.content = json.dumps(payload, ensure_ascii=False)
+
+    class _FakeLLMService:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def complete_structured_task(
+            self, *, system_instruction: str, user_input: str, max_tokens: int
+        ) -> object:
+            self.call_count += 1
+            input_data = json.loads(
+                user_input.split("<content_batch>", 1)[1].rsplit("</content_batch>", 1)[0]
+            )
+            payload = [
+                {
+                    "score": 0.5,
+                    "reason": "ok",
+                    "topic_group": "test",
+                    "style_key": "deep_dive",
+                    "franchise_key": "",
+                }
+                for _ in input_data
+            ]
+
+            async def _coro() -> _Resp:
+                return _Resp(payload)
+
+            return _coro()
+
+    fake_llm = _FakeLLMService()
+    engine = ContentDiscoveryEngine.__new__(ContentDiscoveryEngine)
+    engine._llm_service = fake_llm
+    engine._concurrency = None
+    engine._eval_cache = {}
+
+    from openbiliclaw.soul.profile import SoulProfile
+
+    profile = SoulProfile()
+    contents = [DiscoveredContent(bvid=f"BV{i}", title=f"item {i}") for i in range(25)]
+
+    scores = await engine.evaluate_content_batch(contents, profile, source_context="test")
+
+    assert len(scores) == 25
+    assert fake_llm.call_count == 1, (
+        f"expected single LLM call with batch_size=30 default, got {fake_llm.call_count}"
+    )
 
 
 # ---------------------------------------------------------------------------
