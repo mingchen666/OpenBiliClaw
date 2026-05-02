@@ -726,23 +726,55 @@ _PROVIDER_MODEL_HINT: dict[str, str] = {
 # 2. Pick a representative low-cost default_model so users get a
 #    cheap experience by default; advanced users can switch in
 #    Phase 2.
+#
+# Order rationale (2026-05): the OpenAI-protocol-compat menu's *primary*
+# real-world purpose is to plumb in 中转站 / OneAPI / 团队 LLM 网关 keys
+# — the user has already bought access from a relay vendor and just
+# wants OpenBiliClaw to talk to it. That's why ``relay`` is the
+# default (#1). Native Chinese vendor APIs (Kimi / MiniMax / Qwen / GLM
+# / Yi) follow because some users do go straight to the vendor; Azure
+# and self-hosted are infrastructure-flavor variants for企业 / 玩家;
+# ``custom`` is the manual escape hatch.
 _OPENAI_COMPAT_PRESETS: tuple[tuple[str, dict[str, str]], ...] = (
+    (
+        "relay",
+        {
+            "label": "★ 中转站 / OneAPI / 公司团队 LLM 网关 (大多数人选这个)",
+            "description": (
+                "中转站 = 第三方代理 OpenAI / Claude 的二级商家(国内付人民币用海外模型)。"
+                "OneAPI / 团队 LLM 网关 = 公司自建的多模型聚合 + 计费 + 限流网关。"
+                "买中转站 Key 的人选这个就对了"
+            ),
+            "signup_url": (
+                "找你充值的那家中转站官网拿 Key (它们大多有自己的 base_url 和文档)。"
+                "OneAPI 是开源自建项目: https://github.com/songquanpeng/one-api"
+            ),
+            "supports_embedding": "true",  # most relay services proxy embeddings too
+            "base_url": "",  # user-supplied — every relay has its own
+            "default_model": "gpt-5-nano",
+            "hint": (
+                "看你中转站后端代理到哪个真实模型。中转站 / OneAPI 通常代理 "
+                "OpenAI (gpt-5-nano / gpt-5.4-mini / gpt-5.5) 或 "
+                "Claude (claude-sonnet-4-6 / claude-opus-4-7) 或国产模型,"
+                "按你充值的那家给你的模型清单填"
+            ),
+            "embedding_alt": (
+                "中转站通常也代理 OpenAI text-embedding-3-small,"
+                "Phase 3 高级选项里可以指向同一个 base_url"
+            ),
+        },
+    ),
     (
         "kimi",
         {
-            "label": "Kimi (Moonshot AI 月之暗面)",
+            "label": "Kimi (Moonshot AI 月之暗面) 官方",
             "description": (
                 "国产长上下文老牌 (256K ctx),长文档理解 / 网页爬阅 / "
-                "学术阅读这些场景表现好,日常对话也稳"
+                "学术阅读这些场景表现好,日常对话也稳。直接从 Moonshot 官方拿 Key"
             ),
             "signup_url": "https://platform.moonshot.cn/console/api-keys （国内）/ https://platform.moonshot.ai （国际）",
             "supports_embedding": "false",
-            # International: api.moonshot.ai/v1 — this is the canonical
-            # one as of 2026-05. .cn still works for China users.
             "base_url": "https://api.moonshot.ai/v1",
-            # kimi-k2.6 (latest, multimodal, 256K ctx). kimi-latest 已停服
-            # (2026-01-28), 旧 K2-series 2026-05-25 停服, moonshot-v1-*
-            # legacy series 也将停服 — 不要再用。
             "default_model": "kimi-k2.6",
             "hint": (
                 "kimi-k2.6 (默认 / 最新 / 256K 上下文 / 多模态) / kimi-k2.5。"
@@ -756,17 +788,14 @@ _OPENAI_COMPAT_PRESETS: tuple[tuple[str, dict[str, str]], ...] = (
     (
         "minimax",
         {
-            "label": "MiniMax",
+            "label": "MiniMax 官方",
             "description": (
                 "国产代码 / agent 场景的当前 SOTA 之一 (M2.7 在 SWE-Bench 上 80%+),"
                 "便宜 ($0.30 / $1.20 per M),适合做推荐这种结构化输出任务"
             ),
             "signup_url": "https://platform.minimaxi.com/user-center/basic-information/interface-key （国内）/ https://platform.minimax.io （国际）",
             "supports_embedding": "false",
-            # International: api.minimax.io/v1; China: api.minimaxi.com/v1
-            # The old api.minimaxi.chat domain is being phased out.
             "base_url": "https://api.minimax.io/v1",
-            # MiniMax-M2.7 (released 2026-04-11, $0.30/$1.20 per M, 228K ctx)
             "default_model": "MiniMax-M2.7",
             "hint": (
                 "MiniMax-M2.7 (默认 / 最新 / 4-2026 / 228K ctx) / "
@@ -781,7 +810,7 @@ _OPENAI_COMPAT_PRESETS: tuple[tuple[str, dict[str, str]], ...] = (
     (
         "qwen",
         {
-            "label": "通义千问 (阿里 DashScope)",
+            "label": "通义千问 (阿里 DashScope) 官方",
             "description": (
                 "阿里出品,中文最强档之一 (qwen3.6 系列),qwen-plus 别名"
                 "自动跟最新快照,无需手动升级。免费档调用次数有限,商用记得充值"
@@ -789,7 +818,6 @@ _OPENAI_COMPAT_PRESETS: tuple[tuple[str, dict[str, str]], ...] = (
             "signup_url": "https://bailian.console.aliyun.com/?apiKey=1#/api-key",
             "supports_embedding": "true",
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            # qwen-plus 是别名,自动跟最新快照 (qwen3.6-plus, 2026-04-02)
             "default_model": "qwen-plus",
             "hint": (
                 "qwen-flash (最便宜) / qwen-plus (默认 / 平衡) / qwen-max (旗舰)。"
@@ -801,7 +829,7 @@ _OPENAI_COMPAT_PRESETS: tuple[tuple[str, dict[str, str]], ...] = (
     (
         "zhipu",
         {
-            "label": "智谱 ChatGLM",
+            "label": "智谱 ChatGLM 官方",
             "description": (
                 "清华 + 智谱出品。GLM-4.7-Flash 完全免费(每天调用次数限制),"
                 "做推荐 / 画像够用;GLM-5 是付费旗舰 (745B MoE,Claude Opus 级)"
@@ -809,8 +837,6 @@ _OPENAI_COMPAT_PRESETS: tuple[tuple[str, dict[str, str]], ...] = (
             "signup_url": "https://www.bigmodel.cn/usercenter/proj-mgmt/apikeys",
             "supports_embedding": "true",
             "base_url": "https://open.bigmodel.cn/api/paas/v4",
-            # GLM-4.7-Flash (1/2026 发布) 是当前免费旗舰;GLM-5 (2/2026) 是付费
-            # 旗舰 (745B MoE)。glm-4-flash 老了。
             "default_model": "glm-4.7-flash",
             "hint": (
                 "glm-4.7-flash (默认 / 免费 / 200K ctx) / glm-5 (付费旗舰 / 4/2026 / 745B MoE) / "
@@ -822,7 +848,7 @@ _OPENAI_COMPAT_PRESETS: tuple[tuple[str, dict[str, str]], ...] = (
     (
         "yi",
         {
-            "label": "零一万物 (Yi)",
+            "label": "零一万物 (Yi) 官方",
             "description": (
                 "李开复创业团队出品,Yi-Large 在 LMSYS 中文榜常年 top 国产之一。"
                 "yi-medium 平衡好用,yi-spark 最便宜适合高频小任务"
@@ -834,55 +860,6 @@ _OPENAI_COMPAT_PRESETS: tuple[tuple[str, dict[str, str]], ...] = (
             "hint": (
                 "yi-spark (最便宜) / yi-medium (默认 / 平衡) / yi-lightning (新 / 快) / "
                 "yi-large (旗舰) / yi-large-turbo (平衡) / yi-medium-200k (长上下文)"
-            ),
-        },
-    ),
-    (
-        "self-hosted",
-        {
-            "label": "自建 vLLM / LMStudio / Ollama 网关",
-            "description": (
-                "你自己跑的 LLM 服务,常见: vLLM (多卡推理) / LMStudio (Mac M-series) / "
-                "Ollama 的 OpenAI 兼容 shim。免费但要自备硬件"
-            ),
-            "signup_url": "无 (本地服务通常不需要 Key,鉴权可留空)",
-            "supports_embedding": "false",  # depends — assume no
-            "base_url": "http://localhost:8000/v1",
-            "default_model": "",  # force user to type their deployed model
-            "hint": (
-                "看你网关上部署的是什么。HuggingFace 路径,如 "
-                "meta-llama/Llama-3.3-70B-Instruct / Qwen/Qwen2.5-72B-Instruct / "
-                "deepseek-ai/DeepSeek-V3"
-            ),
-            "embedding_alt": (
-                "如果你的 vLLM/LMStudio 也部署了 embedding 模型,Phase 3 高级选项里"
-                "可以指向同一个 base_url"
-            ),
-        },
-    ),
-    (
-        "relay",
-        {
-            "label": "中转站 / OneAPI / 公司团队 LLM 网关",
-            "description": (
-                "中转站 = 第三方代理 OpenAI / Claude 的二级商家(国内付人民币用海外模型)。"
-                "OneAPI / 团队 LLM 网关 = 公司自建的多模型聚合 + 计费 + 限流网关"
-            ),
-            "signup_url": (
-                "找你充值的那家中转站官网拿 Key。"
-                "OneAPI 是开源自建项目: https://github.com/songquanpeng/one-api"
-            ),
-            "supports_embedding": "true",  # most relay services proxy embeddings too
-            "base_url": "",  # user-supplied
-            "default_model": "gpt-5-nano",
-            "hint": (
-                "看你中转站后端代理到哪个真实模型。中转站 / OneAPI 通常代理 "
-                "OpenAI (gpt-5-nano / gpt-5.4-mini / gpt-5.5) 或 "
-                "Claude (claude-sonnet-4-6 / claude-opus-4-7),按你充值的那家选"
-            ),
-            "embedding_alt": (
-                "中转站通常也代理 OpenAI text-embedding-3-small,"
-                "Phase 3 高级选项里可以指向同一个 base_url"
             ),
         },
     ),
@@ -908,6 +885,29 @@ _OPENAI_COMPAT_PRESETS: tuple[tuple[str, dict[str, str]], ...] = (
             "embedding_alt": (
                 "Azure 上 embedding 模型也是单独 deployment,Phase 3 时再起一个 deployment "
                 "并填那个的 endpoint"
+            ),
+        },
+    ),
+    (
+        "self-hosted",
+        {
+            "label": "自建 vLLM / LMStudio / Ollama 网关",
+            "description": (
+                "你自己跑的 LLM 服务,常见: vLLM (多卡推理) / LMStudio (Mac M-series) / "
+                "Ollama 的 OpenAI 兼容 shim。免费但要自备硬件"
+            ),
+            "signup_url": "无 (本地服务通常不需要 Key,鉴权可留空)",
+            "supports_embedding": "false",  # depends — assume no
+            "base_url": "http://localhost:8000/v1",
+            "default_model": "",  # force user to type their deployed model
+            "hint": (
+                "看你网关上部署的是什么。HuggingFace 路径,如 "
+                "meta-llama/Llama-3.3-70B-Instruct / Qwen/Qwen2.5-72B-Instruct / "
+                "deepseek-ai/DeepSeek-V3"
+            ),
+            "embedding_alt": (
+                "如果你的 vLLM/LMStudio 也部署了 embedding 模型,Phase 3 高级选项里"
+                "可以指向同一个 base_url"
             ),
         },
     ),
@@ -1228,8 +1228,8 @@ _LLM_MENU: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "openai-compat",
-        "（高级）OpenAI 协议兼容服务（Kimi / MiniMax / 通义 / 智谱 / Yi / 中转站 / Azure / 自建）",
-        "选完进 9 项子菜单,Base URL 和模型自动填好,只用填 Key",
+        "中转站 / OpenAI 协议兼容服务（OneAPI / 团队网关 / 国产官方 / Azure / 自建）",
+        "买了中转站 Key 就选这个。也覆盖 Kimi / 通义 / 智谱 / Yi / MiniMax 官方 / Azure / vLLM 等",
     ),
 )
 
@@ -1300,8 +1300,12 @@ def _prompt_openai_compat() -> tuple[str, str, str, str]:
     """
     console.print(
         "\n[bold]配置 OpenAI 协议兼容服务[/bold]\n"
-        r"[dim]后端按 OpenAI 协议(Bearer 鉴权 + /v1/chat/completions)打你给的 Base URL,"
-        r"配置写入 config.toml 的 \[llm.openai] 段。[/dim]\n"
+        "[dim]这一项主要给三类用户:[/dim]\n"
+        "[dim]  1. **买了中转站 / OneAPI Key**(国内付人民币用海外模型,最常见)→ 选 1[/dim]\n"
+        "[dim]  2. **用国产大模型官方 API**(Kimi / 通义 / 智谱 / Yi / MiniMax) → 选 2-6[/dim]\n"
+        "[dim]  3. **企业 Azure / 自建 vLLM-LMStudio** → 选 7-8[/dim]\n"
+        r"[dim]后端会按 OpenAI 协议(Bearer 鉴权 + /v1/chat/completions)打你给的 Base URL,"
+        r"配置统一写到 config.toml 的 \[llm.openai] 段。[/dim]\n"
     )
     table = Table(show_lines=False, show_header=True)
     table.add_column("#", style="cyan", no_wrap=True)
@@ -1315,9 +1319,8 @@ def _prompt_openai_compat() -> tuple[str, str, str, str]:
     console.print(table)
     console.print(
         "[dim]Tip: 不知道选哪个就看你的 API Key 是哪家发的—— "
-        "Kimi/MiniMax/通义/智谱/Yi 是国产大模型厂商;"
-        "中转站 = 第三方代理 OpenAI/Claude 的二级商家;Azure = 微软的 OpenAI;"
-        "其它 / 自建 = 你自己跑的 vLLM/LMStudio。[/dim]\n"
+        "买的中转站 / OneAPI(常见)选 1;Kimi/MiniMax/通义/智谱/Yi 官方选 2-6;"
+        "Azure 选 7;自建本地服务选 8。[/dim]\n"
     )
     raw = typer.prompt(f"选服务类型 (1-{len(_OPENAI_COMPAT_PRESETS)})", default="1").strip()
     try:

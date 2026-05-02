@@ -31,6 +31,7 @@
   - **预提醒 embedding 怎么办**: Kimi / MiniMax / Yi / 自建 没 embedding endpoint(打印黄色 ⓘ 提醒 Phase 3 自动 fallback Ollama bge-m3,免费 / 离线);Qwen / GLM / Azure / 中转站 有 embedding(打印 💡 提示 Phase 3 高级选项可指向同一 base_url)
   - **结尾打印将写入的 (base_url, model) 二元组**,catch typo
 - **`scripts/agent_bootstrap.py --llm-preset {kimi,minimax,qwen,zhipu,yi,self-hosted,relay,azure,custom}`** —— AI agent 驱动的非交互式安装路径补一刀。之前 AI agent 用 `--llm-base-url` + `--llm-model` 配 OpenAI 兼容服务时,得自己记住每家的 endpoint(经常写错);现在 `--llm-preset kimi` 一句话搞定,base_url 和默认模型从 `LLM_PRESETS` 表里取(和 cli.py 的 `_OPENAI_COMPAT_PRESETS` 同步)。隐式锁 `--provider=openai`,显式传不同 provider 会冲突报错。`--llm-base-url` / `--llm-model` 可以 per-field 覆盖 preset 默认。`docs/agent-install.md` 加 8 行示例(每家服务一行)
+- **OpenAI 协议兼容子菜单 — 中转站(relay) 提到第 1 位 + 主菜单第 7 项 label 突出"中转站"** —— 复盘发现协议兼容选项的真正主流场景是"我买了中转站 / OneAPI Key,想用人民币付钱跑 OpenAI/Claude/国产模型"。之前菜单按"国产官方 → 自建 → 中转站 → Azure → 其它"排序,把最常见的中转站埋在第 7 个,普通用户得先翻过 5 个国产官方项才看到自己的选项。重排为:relay 第 1 位(default,带 ★ 标记 + "大多数人选这个"标注) → Kimi/MiniMax/Qwen/Zhipu/Yi 国产官方 → Azure → 自建 → custom 兜底。同步:主菜单第 7 项 label 改为"中转站 / OpenAI 协议兼容服务(OneAPI / 团队网关 / 国产官方 / Azure / 自建)";子菜单 intro 显式区分三类用户(中转站 / 国产官方 / 企业 Azure-自建);`docs/{openclaw-quickstart,docker-deployment,agent-install}.md` 同步重排表格 + 补"国内绝大多数中国用户选这个就对了"框架
 
 ---
 

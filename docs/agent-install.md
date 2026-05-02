@@ -108,50 +108,60 @@ user's main menu unless they explicitly mention having a gateway):
 
 > ⚠️ **不要把选项 2 (OpenAI 官方) 和选项 7 (协议兼容) 混淆**:走 OpenAI API 官方端点选 2;走任何"OpenAI 协议兼容"的第三方 / 自建服务选 7。
 
-**选项 7 的子菜单(9 个 preset,2026-05 当前模型)** —— 选完后 Base URL + 默认模型自动填好,只用填 API Key:
+**选项 7 的核心场景:你买了第三方中转站 / OneAPI 的 Key**,想用人民币付钱跑 OpenAI / Claude / 国产模型 —— 这是国内绝大多数用户用这个选项的真正原因。子菜单 9 个 preset 中,**第 1 个就是中转站(默认)**:
 
 | 子菜单# | 服务 | Base URL | 默认模型 / 备选 |
 |---|---|---|---|
-| 1 | **Kimi (Moonshot AI 月之暗面)** | `https://api.moonshot.ai/v1` | `kimi-k2.6`(最新 / 256K ctx / 多模态)。⚠ 旧 K2-series **2026/05/25 停服**;旧 `moonshot-v1-*` 也将停 |
-| 2 | **MiniMax** | `https://api.minimax.io/v1` | `MiniMax-M2.7`(4/2026 / 228K ctx / $0.30 ~ $1.20 per M);可选 M2.5 / M2.1。**旧 abab 系列已替代** |
-| 3 | **通义千问 (阿里 DashScope)** | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus`(自动跟最新快照,当前 → qwen3.6-plus) / `qwen-flash`(便宜) / `qwen-max`(旗舰) |
-| 4 | **智谱 ChatGLM** | `https://open.bigmodel.cn/api/paas/v4` | `glm-4.7-flash`(1/2026 免费 / 200K ctx) / `glm-5`(2/2026 付费旗舰 / 745B MoE)。注意 base_url 用 `/api/paas/v4` 不是 `/v1` |
-| 5 | **零一万物 (Yi)** | `https://api.lingyiwanwu.com/v1` | `yi-medium` / `yi-spark`(便宜) / `yi-lightning`(快) / `yi-large`(旗舰) / `yi-medium-200k`(长上下文) |
-| 6 | **自建 vLLM / LMStudio / Ollama 网关** | `http://localhost:8000/v1` | 用户自填 HuggingFace 路径(如 `meta-llama/Llama-3.3-70B-Instruct` / `Qwen/Qwen2.5-72B-Instruct` / `deepseek-ai/DeepSeek-V3`) |
-| 7 | **中转站 / OneAPI / 公司团队 LLM 网关** | 用户自填 | 默认 `gpt-5-nano`;按你充值的那家选(OpenAI gpt-5-* / Claude claude-sonnet-4-6 等) |
-| 8 | **Azure OpenAI** | `https://YOUR-RESOURCE.openai.azure.com/openai/deployments/YOUR-DEPLOYMENT` | 用户自填 deployment name(不是底层 gpt-5) |
+| ★ 1 | **中转站 / OneAPI / 公司团队 LLM 网关 (大多数人选这个)** | 用户自填 | 默认 `gpt-5-nano`;按你充值的那家给你的模型清单填(中转站常代理 OpenAI / Claude / 国产) |
+| 2 | **Kimi (Moonshot AI 月之暗面) 官方** | `https://api.moonshot.ai/v1` | `kimi-k2.6`(最新 / 256K ctx / 多模态)。⚠ 旧 K2-series **2026/05/25 停服**;旧 `moonshot-v1-*` 也将停 |
+| 3 | **MiniMax 官方** | `https://api.minimax.io/v1` | `MiniMax-M2.7`(4/2026 / 228K ctx / $0.30 ~ $1.20 per M) |
+| 4 | **通义千问 (阿里 DashScope) 官方** | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus`(自动跟最新快照,当前 → qwen3.6-plus) / `qwen-flash`(便宜) / `qwen-max`(旗舰) |
+| 5 | **智谱 ChatGLM 官方** | `https://open.bigmodel.cn/api/paas/v4` | `glm-4.7-flash`(1/2026 免费 / 200K ctx) / `glm-5`(2/2026 付费旗舰 / 745B MoE)。注意 base_url 用 `/api/paas/v4` 不是 `/v1` |
+| 6 | **零一万物 (Yi) 官方** | `https://api.lingyiwanwu.com/v1` | `yi-medium` / `yi-spark`(便宜) / `yi-lightning`(快) / `yi-large`(旗舰) |
+| 7 | **Azure OpenAI** | `https://YOUR-RESOURCE.openai.azure.com/openai/deployments/YOUR-DEPLOYMENT` | 用户自填 deployment name(不是底层 gpt-5) |
+| 8 | **自建 vLLM / LMStudio / Ollama 网关** | `http://localhost:8000/v1` | 用户自填 HuggingFace 路径(如 `meta-llama/Llama-3.3-70B-Instruct`) |
 | 9 | **其它(完全手填)** | 用户自填 | 用户自填 |
 
-> 💡 **AI agent 注意**: 当用户提到"我有 Kimi / 通义 / 智谱 / Yi / Moonshot / MiniMax / Qwen / GLM / 中转站 / OneAPI / Azure / vLLM / LMStudio"等关键词时,优先引导走选项 7 子菜单的对应 preset。子菜单选完后,bootstrap 会写到 `[llm.openai]` 段(provider 字段都是 `openai`,因为底层走的是 OpenAI Chat Completions 协议)。
+> 💡 **AI agent 注意**:
+> - 用户说"我有中转站 / OneAPI / 团队网关 / 公司给的 Key"等(国内最常见)→ 选项 7 子菜单 #1 (relay)
+> - 用户说"我有 Kimi / 通义 / 智谱 / Yi / Moonshot / MiniMax / Qwen / GLM 官方 Key" → 选项 7 子菜单 #2-6 对应 preset
+> - 用户说"Azure OpenAI / 公司 Azure 部署" → 子菜单 #7 (azure)
+> - 用户说"自己跑的 vLLM / LMStudio / Ollama OpenAI 兼容 shim" → 子菜单 #8 (self-hosted)
 >
-> 子菜单还会:**显示该家服务介绍 + Key 申请链接**(国内国际两个域名),并在结尾**预提醒 embedding 怎么办**(Kimi / MiniMax / Yi / 自建 没 embedding endpoint,Phase 3 自动 fallback Ollama bge-m3;Qwen / GLM / Azure / 中转站 有 embedding,Phase 3 高级选项可指向同一 base_url)。
+> 子菜单选完后,bootstrap 会写到 `[llm.openai]` 段(provider 字段都是 `openai`,底层走的是 OpenAI Chat Completions 协议)。子菜单还会**显示服务介绍 + Key 申请链接**,并**预提醒 embedding 怎么办**(Kimi / MiniMax / Yi / 自建 没 embedding endpoint → Phase 3 自动 fallback Ollama bge-m3;Qwen / GLM / Azure / 中转站 有 embedding → Phase 3 高级选项可指向同一 base_url)。
 
-**AI agent 一键非交互式安装(`--llm-preset`)** —— 不走交互菜单,直接传 preset 名给 `agent_bootstrap.py`,Base URL + 默认模型自动从 preset 表里拿。各 preset 对应的最简调用:
+**AI agent 一键非交互式安装(`--llm-preset`)** —— 不走交互菜单,直接传 preset 名给 `agent_bootstrap.py`,Base URL + 默认模型自动从 preset 表里拿。**最常见的中转站场景排第一**:
 
 ```bash
-# Kimi (Moonshot AI)
-python3 scripts/agent_bootstrap.py --llm-preset kimi --llm-api-key sk-xxx --bilibili-cookie "SESSDATA=..."
+# ★ 中转站 / OneAPI (国内最常见 — Base URL + Key 必填,模型默认 gpt-5-nano 可改)
+python3 scripts/agent_bootstrap.py --llm-preset relay \
+  --llm-base-url https://your-relay.com/v1 \
+  --llm-api-key sk-xxx \
+  --bilibili-cookie "SESSDATA=..."
 
-# MiniMax
+# Kimi (Moonshot AI) 官方
+python3 scripts/agent_bootstrap.py --llm-preset kimi --llm-api-key sk-xxx ...
+
+# MiniMax 官方
 python3 scripts/agent_bootstrap.py --llm-preset minimax --llm-api-key xxx ...
 
-# 通义千问 (DashScope)
+# 通义千问 (DashScope) 官方
 python3 scripts/agent_bootstrap.py --llm-preset qwen --llm-api-key sk-xxx ...
 
-# 智谱 ChatGLM
+# 智谱 ChatGLM 官方
 python3 scripts/agent_bootstrap.py --llm-preset zhipu --llm-api-key xxx.xxx ...
 
-# 零一万物 Yi
+# 零一万物 Yi 官方
 python3 scripts/agent_bootstrap.py --llm-preset yi --llm-api-key xxx ...
 
-# 中转站 / OneAPI (Base URL + Key 必填,模型走默认 gpt-5-nano)
-python3 scripts/agent_bootstrap.py --llm-preset relay --llm-base-url https://your-relay.com/v1 --llm-api-key sk-xxx ...
+# Azure OpenAI (Base URL 是 deployment 全路径, 模型 = deployment name)
+python3 scripts/agent_bootstrap.py --llm-preset azure \
+  --llm-base-url 'https://YOUR.openai.azure.com/openai/deployments/YOUR-DEP' \
+  --llm-api-key xxx --llm-model YOUR-DEP ...
 
 # 自建 vLLM / LMStudio (默认 base_url 是 localhost:8000/v1, 模型必填)
-python3 scripts/agent_bootstrap.py --llm-preset self-hosted --llm-model meta-llama/Llama-3.3-70B-Instruct ...
-
-# Azure OpenAI (Base URL 是 deployment 全路径, 模型 = deployment name)
-python3 scripts/agent_bootstrap.py --llm-preset azure --llm-base-url 'https://YOUR.openai.azure.com/openai/deployments/YOUR-DEP' --llm-api-key xxx --llm-model YOUR-DEP ...
+python3 scripts/agent_bootstrap.py --llm-preset self-hosted \
+  --llm-model meta-llama/Llama-3.3-70B-Instruct ...
 ```
 
 `--llm-base-url` / `--llm-model` 单独传时会**覆盖**对应 preset 字段(per-field override),给你 escape hatch 而不强制走 preset 默认。`--llm-preset` 隐式锁 `--provider=openai`,显式传不同 provider 会冲突报错。
