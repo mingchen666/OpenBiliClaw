@@ -53,12 +53,26 @@ class ClaudeProvider(LLMProvider):
             else:
                 chat_messages.append(msg)
 
+        # v0.3.29+: Anthropic prompt-cache integration. Claude requires
+        # explicit ``cache_control: {"type": "ephemeral"}`` markers on
+        # the message blocks we want cached — pure plain-string
+        # ``system="..."`` is never cached. We always mark the system
+        # block as cacheable; Anthropic silently ignores the marker if
+        # the system text is below the per-model min (1024 tok Sonnet,
+        # 2048 tok Haiku/Opus), so this is safe for short prompts too.
+        # Cache hit gets billed at 10% of input rate; the first call
+        # writes cache at +25% surcharge, then 5min TTL on reads. The
+        # system_param goes through ``_render_system_param`` which the
+        # tests can override.
+        system_text = system or "You are a helpful assistant."
+        system_param: Any = self._render_system_param(system_text)
+
         response = cast(
             "Message",
             await self._request_with_retry(
                 model=self._model,
                 max_tokens=max_tokens,
-                system=system or "You are a helpful assistant.",
+                system=system_param,
                 messages=chat_messages,
                 temperature=temperature,
             ),
@@ -96,6 +110,25 @@ class ClaudeProvider(LLMProvider):
             raw=response,
         )
 
+    def _render_system_param(self, system_text: str) -> Any:
+        """Wrap the system prompt in Anthropic's prompt-cache shape.
+
+        The Claude API accepts ``system`` as either a plain string or a
+        list of typed blocks; only the latter form supports
+        ``cache_control``. We always emit the list form with an
+        ``ephemeral`` cache marker on the system block. If the system
+        text is below the per-model minimum (1024 tok Sonnet / 2048
+        tok Haiku/Opus), Anthropic silently ignores the marker rather
+        than erroring, so this is safe regardless of size.
+        """
+        return [
+            {
+                "type": "text",
+                "text": system_text,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
     async def _request_with_retry(self, **kwargs: Any) -> Any:
         """Send a request with bounded retry for transient failures."""
         last_error: Exception | None = None
@@ -105,7 +138,7 @@ class ClaudeProvider(LLMProvider):
                 return await self._client.messages.create(
                     model=cast("str", kwargs["model"]),
                     max_tokens=cast("int", kwargs["max_tokens"]),
-                    system=cast("str", kwargs["system"]),
+                    system=kwargs["system"],
                     messages=cast("list[MessageParam]", kwargs["messages"]),
                     temperature=cast("float", kwargs["temperature"]),
                 )

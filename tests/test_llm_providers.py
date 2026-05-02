@@ -165,6 +165,77 @@ async def test_claude_provider_normalizes_response(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
+async def test_claude_provider_marks_system_with_ephemeral_cache_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v0.3.29+: ``system`` must reach Anthropic as a list of typed
+    blocks with ``cache_control: {"type": "ephemeral"}`` so prompt cache
+    fires (90% off on cached input). Plain string ``system="..."`` is
+    NEVER cached by Anthropic, regardless of length.
+    """
+    provider = ClaudeProvider(api_key="test-key")
+
+    captured_kwargs: dict[str, object] = {}
+
+    async def fake_create(**kwargs: object) -> SimpleNamespace:
+        captured_kwargs.update(kwargs)
+        return SimpleNamespace(
+            model="claude-sonnet-4-6",
+            content=[SimpleNamespace(text="ok")],
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+        )
+
+    monkeypatch.setattr(provider._client.messages, "create", fake_create)
+
+    await provider.complete(
+        [
+            {"role": "system", "content": "static rules text"},
+            {"role": "user", "content": "hi"},
+        ]
+    )
+
+    system_param = captured_kwargs["system"]
+    # Must be the list-of-blocks form, not a plain string
+    assert isinstance(system_param, list), (
+        f"system must be list for cache_control, got {type(system_param).__name__}"
+    )
+    assert len(system_param) == 1
+    block = system_param[0]
+    assert block["type"] == "text"
+    assert block["text"] == "static rules text"
+    # The actual cache marker
+    assert block["cache_control"] == {"type": "ephemeral"}
+
+
+@pytest.mark.asyncio
+async def test_claude_provider_extracts_cache_read_and_creation_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When Anthropic reports cache hit/write tokens, normalize them
+    under ``cached_input_tokens`` and ``cache_creation_input_tokens``."""
+    provider = ClaudeProvider(api_key="test-key")
+
+    async def fake_create(**_: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            model="claude-sonnet-4-6",
+            content=[SimpleNamespace(text="ok")],
+            usage=SimpleNamespace(
+                input_tokens=2000,
+                output_tokens=300,
+                cache_read_input_tokens=1500,
+                cache_creation_input_tokens=400,
+            ),
+        )
+
+    monkeypatch.setattr(provider._client.messages, "create", fake_create)
+
+    response = await provider.complete([{"role": "user", "content": "hi"}])
+
+    assert response.usage["cached_input_tokens"] == 1500
+    assert response.usage["cache_creation_input_tokens"] == 400
+
+
+@pytest.mark.asyncio
 async def test_claude_provider_maps_provider_error(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = ClaudeProvider(api_key="test-key")
 

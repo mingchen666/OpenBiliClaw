@@ -4,6 +4,23 @@
 
 ---
 
+## v0.3.29 (cont): Claude 显式 cache_control 标记 (Layer 2)（2026-05-02）
+
+### 新增
+
+- **`ClaudeProvider` 自动给 system message 打 ephemeral cache_control 标记** —— Anthropic prompt cache 是显式机制,纯字符串 `system="..."` 永远不缓存,必须用 list-of-blocks 形式 + `cache_control: {"type": "ephemeral"}` 才会激活。新增 `_render_system_param()` 把 system 文本包成单 block 列表 + cache marker,5min TTL,90% off on cache reads,首次写 +25% 加价。系统 prompt 短于 per-model 阈值时(Sonnet 1024 / Opus-Haiku 2048 token)Anthropic 静默忽略 marker,所以这个改动对短 prompt 也安全
+- 2 个新单测 covering: marker 正确插入到 system list-of-blocks 形式,以及 `cache_read_input_tokens` / `cache_creation_input_tokens` 通过 `LLMResponse.usage` 正确流转
+
+### 仍未做(deferred)
+
+- **Gemini 显式 Context Caching API** —— Gemini 的 prompt cache 不是 in-line marker,而是另起一个 `cachedContents.create()` API 提前上传 stable 部分得到 `cache_id`,然后调 `complete()` 时引用 cache_id。需要 cache_id LRU 池 + TTL 管理,改动量比 Claude 大得多。先观察 Layer 3 数据 —— 如果用 Gemini 的人多且命中率确实低,再投资
+
+### 测试
+
+- 全套 940 通过 / 16 失败(基线) / 15 跳过 — 0 新回归
+
+---
+
 ## v0.3.29: prompt-cache 通用化改造 + 命中率观测 (Layer 1 + Layer 3)（2026-05-02）
 
 为 daemon 长跑成本拉低 50-80% 做架构性铺垫。挖到 v0.3.26 计费台账没有 cache 字段(provider 报但没归一化),v0.3.27 prompt builders 多个把 per-call 变量塞进 system 消息(让 provider-side 自动缓存命中率永远是 0)。两者一起改。
