@@ -60,7 +60,18 @@ class ExploreStrategy(DiscoveryStrategy):
     # generator suggesting domains that mapped to already-covered
     # topic_groups by the time the eval LLM labeled them.
     database: _SupportsTopicCoverage | None = None
-    score_threshold: float = 0.70
+    # Explore deliberately keeps a 0.65 threshold while other strategies
+    # use 0.70 (v0.3.31). Reason: explore returns content the user
+    # *hasn't* seen — the eval LLM tends to score these conservatively
+    # (0.65-0.69) because they're outside familiar topics, and a 0.70
+    # bar wipes out 70%+ of the explore pipeline. The whole point of
+    # explore is bringing novelty that doesn't perfectly match
+    # current interests, so a slightly more permissive threshold
+    # preserves the variety it's designed to provide. The blind-spot
+    # guidance (covered_topic_groups, v0.3.31) and high
+    # ``score_threshold`` already used by other strategies still keep
+    # the pool's overall quality high.
+    score_threshold: float = 0.65
     queries_per_domain: int = 3
     max_domains: int = 5
     last_intermediates: dict[str, object] = field(default_factory=dict)
