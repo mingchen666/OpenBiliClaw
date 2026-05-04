@@ -1901,8 +1901,38 @@ def create_app(
     # Backend persists in ``discovery_runtime_state["xhs_self_info"]``
     # and consults it on every ingest path.
 
-    def _extract_self_info_from_debug(debug: Any) -> dict[str, str] | None:
-        """Pull self_info from the bootstrap-debug payload, if present."""
+    def _normalize_self_info(raw: Any) -> dict[str, str] | None:
+        """Validate + normalize a self_info-shaped dict.
+
+        Returns ``{"user_id": ..., "nickname": ...}`` if either field is
+        non-empty, otherwise ``None``.
+        """
+        if not isinstance(raw, dict):
+            return None
+        user_id = str(raw.get("user_id", "") or "").strip()
+        nickname = str(raw.get("nickname", "") or "").strip()
+        if not user_id and not nickname:
+            return None
+        return {"user_id": user_id, "nickname": nickname}
+
+    def _extract_self_info_from_payload(payload: Any) -> dict[str, str] | None:
+        """Pull self_info from any XHS ingest payload.
+
+        v0.3.57+: extension v0.3.10 sends self_info at the **payload top
+        level** for every ingest path (passive ``observed-urls``, search /
+        creator ``task-result``, bootstrap_profile ``task-result``). The
+        legacy bootstrap-only nested location
+        ``debug.xhs_bootstrap.steps[*].self_info`` (v0.3.48 / extension
+        v0.3.9) is kept as fallback for older extensions.
+        """
+        if not isinstance(payload, dict):
+            return None
+        # 1) New top-level location.
+        info = _normalize_self_info(payload.get("self_info"))
+        if info is not None:
+            return info
+        # 2) Legacy bootstrap-debug nested location.
+        debug = payload.get("debug")
         if not isinstance(debug, dict):
             return None
         bootstrap = debug.get("xhs_bootstrap")
@@ -1914,12 +1944,9 @@ def create_app(
         for step in steps:
             if not isinstance(step, dict):
                 continue
-            self_info = step.get("self_info")
-            if isinstance(self_info, dict):
-                user_id = str(self_info.get("user_id", "") or "").strip()
-                nickname = str(self_info.get("nickname", "") or "").strip()
-                if user_id or nickname:
-                    return {"user_id": user_id, "nickname": nickname}
+            info = _normalize_self_info(step.get("self_info"))
+            if info is not None:
+                return info
         return None
 
     def _persist_xhs_self_info(self_info: dict[str, str]) -> None:
@@ -1978,6 +2005,41 @@ def create_app(
         if author_id and user_id and author_id == user_id:
             return True
         return False
+
+    def _purge_self_authored_pool_items(
+        database: Any,
+        self_info: dict[str, str],
+    ) -> int:
+        """Mark every pool row authored by ``self_info.nickname`` as suppressed.
+
+        v0.3.57+: cleans up content_cache rows that entered before the
+        per-path self_info filter was wired in. Idempotent — already-
+        suppressed rows are not flipped further. Returns the number of
+        rows actually changed in this call.
+
+        ``up_name`` is the column populated by ``_cache_xhs_notes`` from
+        the note's ``author`` field, so the comparison mirrors the
+        runtime filter exactly.
+        """
+        if not self_info or not hasattr(database, "conn"):
+            return 0
+        nickname = (self_info.get("nickname") or "").strip()
+        if not nickname:
+            return 0
+        try:
+            cursor = database.conn.execute(
+                "UPDATE content_cache "
+                "SET pool_status = 'suppressed' "
+                "WHERE source_platform = 'xiaohongshu' "
+                "  AND COALESCE(pool_status, 'fresh') = 'fresh' "
+                "  AND LOWER(COALESCE(up_name, '')) = LOWER(?)",
+                (nickname,),
+            )
+            database.conn.commit()
+            return int(cursor.rowcount or 0)
+        except Exception:
+            logger.exception("Failed to purge self-authored xhs pool items")
+            return 0
 
     def _cache_xhs_notes(
         database: Any,
@@ -2072,6 +2134,15 @@ def create_app(
                 detail=f"Too many URLs (max {xhs_max_urls_per_batch})",
             )
 
+        # v0.3.57+: passive collector (extension v0.3.10) piggybacks
+        # self_info on every observed-urls request. Persist on first
+        # arrival so subsequent requests without self_info still filter
+        # via the loaded state.
+        self_info_now = _extract_self_info_from_payload(payload)
+        if self_info_now:
+            _persist_xhs_self_info(self_info_now)
+        self_info_for_filter = self_info_now or _load_xhs_self_info()
+
         # Filter to valid xhs note URLs
         valid_urls = [
             u
@@ -2087,7 +2158,12 @@ def create_app(
         # Store rich notes directly into content_cache
         cached = 0
         if notes_raw:
-            cached = _cache_xhs_notes(ctx.database, notes_raw, page_type)
+            cached = _cache_xhs_notes(
+                ctx.database,
+                notes_raw,
+                page_type,
+                self_info=self_info_for_filter or None,
+            )
             # Trigger background LLM classification so XHS content gets the
             # same style_key / topic_group / relevance_score that bilibili
             # content receives during discovery.  Without this the
@@ -2206,11 +2282,13 @@ def create_app(
                 complete=is_final,
             )
             # v0.3.48+: piggyback self_info from bootstrap debug payload.
+            # v0.3.57+: also accept self_info at the payload top level for
+            # search / creator / passive paths via extension v0.3.10.
             # Persist immediately so future requests can also consult it,
             # AND use the just-extracted value in this request's
             # downstream filters (skip a state round-trip that some
             # in-process test stubs don't implement).
-            self_info_from_request = _extract_self_info_from_debug(debug)
+            self_info_from_request = _extract_self_info_from_payload(payload)
             if self_info_from_request:
                 _persist_xhs_self_info(self_info_from_request)
             self_info_now = self_info_from_request or _load_xhs_self_info()
@@ -2533,5 +2611,21 @@ def create_app(
             message=reload_message,
             reloaded=reloaded,
         )
+
+    # v0.3.57+: one-shot purge of self-authored xhs pool rows that
+    # accumulated before the per-path filter was wired in. No-op on
+    # fresh installs (no persisted self_info → nothing to scan against);
+    # repairs the pool the first time the user upgrades after having
+    # browsed XHS while logged in.
+    _existing_self_info = _load_xhs_self_info()
+    if _existing_self_info:
+        _purged = _purge_self_authored_pool_items(ctx.database, _existing_self_info)
+        if _purged:
+            logger.info(
+                "startup purge: suppressed %d self-authored xhs pool item(s) "
+                "(nickname=%r)",
+                _purged,
+                _existing_self_info.get("nickname", ""),
+            )
 
     return app

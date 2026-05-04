@@ -21,9 +21,20 @@ if TYPE_CHECKING:
 class RecordingMemoryManager:
     def __init__(self) -> None:
         self.events: list[dict[str, object]] = []
+        self._discovery_runtime_state: dict[str, object] = {}
 
     async def propagate_event(self, event: dict[str, object]) -> None:
         self.events.append(event)
+
+    # v0.3.57+: in-memory shim for the runtime-state API used by
+    # _persist_xhs_self_info / _load_xhs_self_info. Tests don't need
+    # disk persistence, just round-trip equivalence inside one request
+    # cycle.
+    def load_discovery_runtime_state(self) -> dict[str, object]:
+        return dict(self._discovery_runtime_state)
+
+    def save_discovery_runtime_state(self, state: dict[str, object]) -> None:
+        self._discovery_runtime_state = dict(state)
 
 
 @pytest.fixture
@@ -97,7 +108,10 @@ def xhs_task_client(
         database=db,
         memory_manager=memory,
         soul_engine=SimpleNamespace(),
-        runtime_controller=SimpleNamespace(),
+        # v0.3.57+: _persist_xhs_self_info / _load_xhs_self_info read
+        # ``ctx.runtime_controller.memory_manager``. Wire the recording
+        # manager in so tests can round-trip persisted self_info.
+        runtime_controller=SimpleNamespace(memory_manager=memory),
         recommendation_engine=None,
     )
     return TestClient(app), db, memory
@@ -315,6 +329,237 @@ class TestXhsObservedUrls:
         assert "xsec_token=PRIOR456" in row["content_url"], (
             f"cache overwrote tokenized URL with bare: {row['content_url']!r}"
         )
+
+    def test_observed_urls_top_level_self_info_filters_self_authored_notes(
+        self,
+        xhs_task_client: tuple[TestClient, Database, RecordingMemoryManager],
+    ) -> None:
+        """v0.3.57+: passive XHS pages send self_info at the payload top level
+        (extension v0.3.10's xiaohongshu.ts:runPassiveCollection); backend
+        must read it and drop notes authored by the logged-in user before
+        they enter content_cache.
+
+        Reproduces the leak where the user's own posts ("自家宝安领航城...
+        165㎡大五房出售") landed in the XHS recommendation pool because the
+        passive collector didn't carry self_info — only bootstrap_profile
+        did, and the search task pre-populated the pool first."""
+        app_client, db, _ = xhs_task_client
+
+        own_url = "https://www.xiaohongshu.com/explore/passive-own-001?xsec_token=A"
+        other_url = "https://www.xiaohongshu.com/explore/passive-other-001?xsec_token=B"
+        response = app_client.post(
+            "/api/sources/xhs/observed-urls",
+            json={
+                "self_info": {"user_id": "self-uid-123", "nickname": "屎屎"},
+                "notes": [
+                    {
+                        "url": own_url,
+                        "title": "自家宝安领航城165㎡",
+                        "author": "屎屎",
+                        "cover_url": "",
+                    },
+                    {
+                        "url": other_url,
+                        "title": "别人发的笔记",
+                        "author": "Jupiter",
+                        "cover_url": "",
+                    },
+                ],
+                "page_type": "search",
+            },
+        )
+        assert response.status_code == 200
+
+        bvids = {
+            row["bvid"]
+            for row in db.conn.execute(
+                "SELECT bvid FROM content_cache WHERE source_platform='xiaohongshu'"
+            ).fetchall()
+        }
+        assert "passive-other-001" in bvids
+        assert "passive-own-001" not in bvids
+
+    def test_observed_urls_persists_self_info_for_subsequent_requests(
+        self,
+        xhs_task_client: tuple[TestClient, Database, RecordingMemoryManager],
+    ) -> None:
+        """v0.3.57+: once self_info arrives on any request, subsequent
+        observed-urls posts (without their own self_info) must still
+        filter self-authored notes via the persisted state."""
+        app_client, db, _ = xhs_task_client
+
+        # 1st request: bring self_info
+        app_client.post(
+            "/api/sources/xhs/observed-urls",
+            json={
+                "self_info": {"user_id": "uid-9", "nickname": "屎屎"},
+                "notes": [
+                    {
+                        "url": "https://www.xiaohongshu.com/explore/n0?xsec_token=Z",
+                        "title": "占位",
+                        "author": "Jupiter",
+                        "cover_url": "",
+                    }
+                ],
+                "page_type": "explore",
+            },
+        )
+
+        # 2nd request: NO self_info, but a self-authored note
+        own_url = "https://www.xiaohongshu.com/explore/n1?xsec_token=Y"
+        app_client.post(
+            "/api/sources/xhs/observed-urls",
+            json={
+                "notes": [
+                    {
+                        "url": own_url,
+                        "title": "屎屎又发一条",
+                        "author": "屎屎",
+                        "cover_url": "",
+                    }
+                ],
+                "page_type": "explore",
+            },
+        )
+
+        bvids = {
+            row["bvid"]
+            for row in db.conn.execute(
+                "SELECT bvid FROM content_cache WHERE source_platform='xiaohongshu'"
+            ).fetchall()
+        }
+        assert "n0" in bvids
+        assert "n1" not in bvids
+
+    def test_startup_purge_suppresses_existing_self_authored_pool_items(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """v0.3.57+: when self_info is already persisted (from a prior
+        session), backend startup must scan content_cache for rows whose
+        author matches and flip them to ``pool_status='suppressed'``,
+        repairing any pool that was polluted before the filter went live.
+        """
+        from types import SimpleNamespace
+
+        from openbiliclaw.api.app import create_app
+        from openbiliclaw.storage.database import Database
+
+        db = Database(tmp_path / "purge.db")
+        db.initialize()
+
+        # Pre-seed the pool with one self-authored row + one foreign row.
+        db.cache_content(
+            "own-existing",
+            title="自家165㎡大五房",
+            up_name="屎屎",
+            source="xhs-extension-task",
+            source_platform="xiaohongshu",
+            content_url="https://www.xiaohongshu.com/explore/own-existing?xsec_token=A",
+        )
+        db.cache_content(
+            "stranger-existing",
+            title="别人的笔记",
+            up_name="Jupiter",
+            source="xhs-extension-task",
+            source_platform="xiaohongshu",
+            content_url="https://www.xiaohongshu.com/explore/stranger-existing?xsec_token=B",
+        )
+
+        # Pre-seed the runtime state: self_info present from prior session.
+        memory = RecordingMemoryManager()
+        memory.save_discovery_runtime_state(
+            {"xhs_self_info": {"user_id": "u1", "nickname": "屎屎"}}
+        )
+
+        fake_config = SimpleNamespace(
+            data_path=tmp_path,
+            bilibili=SimpleNamespace(cookie="", browser_executable="", browser_headed=False),
+            sources=SimpleNamespace(
+                browser_cdp_url="",
+                browser_headed=False,
+                xiaohongshu=SimpleNamespace(
+                    daily_search_budget=20,
+                    daily_creator_budget=10,
+                    task_interval_seconds=45,
+                ),
+            ),
+            scheduler=SimpleNamespace(
+                pool_target_count=300, account_sync_interval_hours=24
+            ),
+        )
+        monkeypatch.setattr("openbiliclaw.config.load_config", lambda: fake_config)
+
+        # create_app should fire the purge hook before returning.
+        create_app(
+            database=db,
+            memory_manager=memory,
+            soul_engine=SimpleNamespace(),
+            runtime_controller=SimpleNamespace(memory_manager=memory),
+            recommendation_engine=None,
+        )
+
+        rows = {
+            r["bvid"]: r["pool_status"]
+            for r in db.conn.execute(
+                "SELECT bvid, pool_status FROM content_cache"
+            ).fetchall()
+        }
+        assert rows["own-existing"] == "suppressed"
+        assert rows["stranger-existing"] == "fresh"
+
+    def test_task_result_top_level_self_info_takes_precedence_over_debug(
+        self,
+        xhs_task_client: tuple[TestClient, Database, RecordingMemoryManager],
+    ) -> None:
+        """v0.3.57+: extension v0.3.10 may send self_info at the top of
+        the task-result payload too. Top-level wins over the older
+        debug.xhs_bootstrap.steps[*].self_info nested location."""
+        from openbiliclaw.sources.xhs_tasks import XhsTaskQueue
+
+        app_client, db, _ = xhs_task_client
+        queue = XhsTaskQueue(db)
+        assert queue.enqueue("search", {"keyword": "猫"})
+        task = queue.next_pending()
+        assert task is not None
+
+        own_url = "https://www.xiaohongshu.com/explore/search-own-001?xsec_token=A"
+        other_url = "https://www.xiaohongshu.com/explore/search-other-001?xsec_token=B"
+        response = app_client.post(
+            "/api/sources/xhs/task-result",
+            json={
+                "task_id": task["id"],
+                "status": "ok",
+                "self_info": {"user_id": "u-top", "nickname": "屎屎"},
+                "urls": [own_url, other_url],
+                "notes": [
+                    {
+                        "scope": "saved",
+                        "title": "自家",
+                        "url": own_url,
+                        "note_id": "search-own-001",
+                        "author": "屎屎",
+                    },
+                    {
+                        "scope": "saved",
+                        "title": "别人",
+                        "url": other_url,
+                        "note_id": "search-other-001",
+                        "author": "陌生人",
+                    },
+                ],
+            },
+        )
+        assert response.status_code == 200
+        bvids = {
+            row["bvid"]
+            for row in db.conn.execute(
+                "SELECT bvid FROM content_cache WHERE source_platform='xiaohongshu'"
+            ).fetchall()
+        }
+        assert "search-other-001" in bvids
+        assert "search-own-001" not in bvids
 
 
 class TestXhsTaskResults:
