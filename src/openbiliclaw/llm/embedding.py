@@ -33,6 +33,10 @@ class SupportsEmbeddingService(Protocol):
 
     async def embed(self, text: str) -> list[float]: ...
 
+    def lookup_cached(self, text: str) -> list[float]:
+        """Cache-only lookup; default returns ``[]`` for protocol compatibility."""
+        return []
+
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors (pure Python)."""
@@ -146,24 +150,39 @@ class EmbeddingService:
         # using both cores for inference + tokenization.
         self._provider_semaphore = asyncio.Semaphore(max_concurrent_provider_calls)
 
+    def lookup_cached(self, text: str) -> list[float]:
+        """Cache-only lookup — never triggers a provider API call.
+
+        Returns ``[]`` on miss. Callers (recommendation hot path) use
+        this when they need a hard latency budget: a miss means the
+        item simply doesn't participate in embedding-based diversity
+        for this batch, and the warmer task fills the cache asynchronously
+        for subsequent batches.
+        """
+        key = text.strip().lower()[:200]
+        if not key:
+            return []
+        cached = self._l1_cache.get(key)
+        if cached is not None:
+            self._l1_cache.move_to_end(key)
+            return cached
+        if self._l2_cache is not None:
+            persisted = self._l2_cache.get(key)
+            if persisted is not None:
+                self._l1_cache[key] = persisted
+                return persisted
+        return []
+
     async def embed(self, text: str) -> list[float]:
         """Get embedding for text. Checks L1 → L2 → API."""
         key = text.strip().lower()[:200]
         if not key:
             return []
 
-        # L1: in-memory (LRU — move_to_end marks the key as recently used)
-        cached = self._l1_cache.get(key)
-        if cached is not None:
-            self._l1_cache.move_to_end(key)
+        # L1 / L2 cache lookup (also covers warming-side hits).
+        cached = self.lookup_cached(text)
+        if cached:
             return cached
-
-        # L2: SQLite persistent
-        if self._l2_cache is not None:
-            persisted = self._l2_cache.get(key)
-            if persisted is not None:
-                self._l1_cache[key] = persisted
-                return persisted
 
         # L3: API call (throttled — see __init__ semaphore comment)
         async with self._provider_semaphore:

@@ -1534,8 +1534,54 @@ class ContentDiscoveryEngine:
     def _cache_results(self, results: list[DiscoveredContent]) -> None:
         if self._database is None or not results:
             return
+        persisted: list[DiscoveredContent] = []
         for item in results:
             try:
                 self._database.cache_content(item.bvid, **item.to_cache_kwargs())
+                persisted.append(item)
             except Exception:
                 logger.exception("Failed to cache discovered content: %s", item.bvid)
+
+        # v0.3.45+: warm the recommendation MMR embedding cache while we
+        # still hold these items in memory. Without this hook, the first
+        # ``serve()`` after a discovery run pays ~150ms × N for serial
+        # API calls — the warm path is L2 SQLite so subsequent reshuffles
+        # are <1s. Fired in a detached task so we don't block discovery
+        # finalization on a slow embedding provider.
+        if persisted and self._embedding_service is not None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # _cache_results is sometimes called from sync test paths;
+                # fall through silently rather than raise.
+                return
+            loop.create_task(self._warm_mmr_embeddings(persisted))
+
+    async def _warm_mmr_embeddings(
+        self,
+        items: list[DiscoveredContent],
+    ) -> None:
+        """Pre-warm the MMR embedding cache for newly-cached items.
+
+        Mirrors ``RecommendationEngine._mmr_embedding_text`` so the cache
+        keys line up byte-for-byte. Best-effort — never raises.
+        """
+        if self._embedding_service is None or not items:
+            return
+
+        async def _warm(item: DiscoveredContent) -> None:
+            text = (
+                f"{item.title or ''} {(item.description or '')[:160]}"
+            ).strip()[:200]
+            if not text:
+                return
+            try:
+                await self._embedding_service.embed(text)
+            except Exception:
+                logger.debug(
+                    "discovery._warm_mmr_embeddings: embed failed for %s",
+                    item.bvid,
+                    exc_info=True,
+                )
+
+        await asyncio.gather(*(_warm(item) for item in items))

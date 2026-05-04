@@ -313,7 +313,25 @@ class RuntimeContext:
             except Exception:
                 pass  # Profile not initialized yet — skip silently
 
+        # v0.3.45+: warm the recommendation MMR embedding L2 cache for
+        # the existing pool. The per-item warm hooks only catch items
+        # added *after* this code lands; without a startup pass, the
+        # first popup "换一批" pays a cold-fetch ~10-60s on day-1 of a
+        # deploy. Detached so we don't block API readiness.
+        prewarm_pool = getattr(
+            self.recommendation_engine, "prewarm_pool_mmr_embeddings", None
+        )
+        if callable(prewarm_pool):
+            asyncio.create_task(self._safe_prewarm_pool_mmr_embeddings(prewarm_pool))
+
         logger.info("Background tasks restarted after hot-reload")
+
+    @staticmethod
+    async def _safe_prewarm_pool_mmr_embeddings(prewarm_callable: Any) -> None:
+        try:
+            await prewarm_callable()
+        except Exception:
+            logger.exception("Startup prewarm_pool_mmr_embeddings failed")
 
 
 def build_runtime_context(

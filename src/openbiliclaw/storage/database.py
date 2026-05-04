@@ -1764,8 +1764,28 @@ class Database:
         ``lastrowid`` per item, computed from the auto-increment delta
         since this connection's last id.
         """
-        if not items:
+        return self.batch_insert_recommendations_and_mark_shown(items, [])
+
+    def batch_insert_recommendations_and_mark_shown(
+        self,
+        items: list[dict[str, Any]],
+        shown_bvids: list[str],
+    ) -> list[int]:
+        """Insert recommendations + mark pool items shown in **one transaction**.
+
+        v0.3.45+: serve() used to fire two separate writes (insert recs,
+        then UPDATE content_cache.pool_status='shown') and pay two
+        fsyncs. Under refresh-tick write contention this stretched the
+        tail to ~1s. One BEGIN IMMEDIATE / COMMIT pair gives the same
+        atomic semantics with a single fsync, and the rare lost-write
+        case (insert succeeds, mark fails) is now structurally
+        impossible — both succeed or both rollback together.
+
+        Returns ``lastrowid`` per item, in the same order as ``items``.
+        """
+        if not items and not shown_bvids:
             return []
+        clean_bvids = [b for b in shown_bvids if b]
         attempts = _LOCK_RETRY_ATTEMPTS
         while True:
             try:
@@ -1789,6 +1809,17 @@ class Database:
                             ),
                         )
                         ids.append(cursor.lastrowid or 0)
+                    if clean_bvids:
+                        placeholders = ", ".join("?" for _ in clean_bvids)
+                        cursor.execute(
+                            f"""
+                            UPDATE content_cache
+                            SET pool_status = 'shown',
+                                recommended_at = CURRENT_TIMESTAMP
+                            WHERE bvid IN ({placeholders})
+                            """,
+                            clean_bvids,
+                        )
                     self.conn.commit()
                     return ids
                 except Exception:

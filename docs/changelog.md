@@ -4,6 +4,33 @@
 
 ---
 
+## v0.3.45: 「换一批」恒定亚秒级 — MMR embedding 提前到 discovery 暖入（2026-05-04）
+
+### 背景
+
+v0.3.44 的 MMR 多样化把候选 embedding 拉到 serve() 热路径，靠 `_merge_topic_supergroups` 顺手暖到的 L1 缓存兜底。但 supergroup 用的文本 shape 是 `"{label} | {titles}"`，跟 MMR 用的 `"{title} {desc[:160]}"` 不是同一个 cache key——结果第一波 reshuffle 30+ 条候选全 miss，串行调 embedding API 把 P50 拖到 6-10s。
+
+### 改动
+
+- **`RecommendationEngine.warm_mmr_embeddings`** (`recommendation/engine.py`): 新公开方法，统一 MMR cache key 文本（`_mmr_embedding_text` 静态方法做 single source of truth），并行调 `EmbeddingService.embed`（自带 provider semaphore），结果落 SQLite L2 持久化。
+- **`_classify_pool_backlog_locked` 持久化后立即 warm**: 每个分类批次落库成功的 item 都过一遍 `warm_mmr_embeddings`。
+- **`ContentDiscoveryEngine._cache_results` detached task warm**: 主 discovery 路径每条新内容入池时 `loop.create_task(_warm_mmr_embeddings)`，不阻塞 discovery 收尾。
+- **`EmbeddingService.lookup_cached`**: 新增 cache-only 同步查询接口（L1→L2，never API）。`SupportsEmbeddingService` 协议同步加签。
+- **`_fetch_candidate_embeddings` 改 cache-only**: serve() 热路径**绝不**触发 provider API 调用——只查 L1/L2，miss 的 item 走 string-cap fallback 兜底。换来 <1s 的硬保证；warmer 后台填，下一次 reshuffle 自然命中。
+- **`prewarm_pool_mmr_embeddings`**: 新公开方法，覆盖现有 200 条池内候选——专治升级窗口（已有 pool 早于 warm hook 落库，单靠 per-item hook 永远暖不到）。在 `restart_background_tasks` 启动时跑一次（detached task 不阻塞 API ready），并接入 refresh tick 跟 `prewarm_supergroup_embeddings` 同处。
+- **MMR embedding fetch 埋点**: serve() 新增 `MMR embedding fetch: coverage=N/M elapsed=Xms` INFO，覆盖率/耗时回归立即可见。
+- **`mark_pool_items_shown` 离开关键路径**: serve() 原本同步等 `mark_pool_items_shown` 提交才返回；refresh tick 的 `_enforce_pool_cap` 在 reactivate 300+ 行 `content_cache` 的瞬间会把这个 UPDATE 卡 0.5-1.5s（撞 SQLite write lock）。改成 `loop.create_task(self._mark_pool_shown_async(...))` fire-and-forget——within-session 双击重复由 `_last_served_bvids` in-memory 兜底，DB 落地稍后跟即可。配套保留 `batch_insert_recommendations_and_mark_shown` 作为可复用 API（caller 自行决定是否合并 / 异步）。
+- **不动任何 LLM prompt builder**: 完全不引入新 LLM 调用，`build_batch_content_evaluation_prompt` 的 system_prompt 静态约定不变，DeepSeek/Claude/Gemini 前缀缓存命中率不受影响。
+
+### 影响
+
+- 「换一批」实测 30 轮（混合节奏：背靠背 / 2s 间隔 / 5s 间隔触发 refresh tick）全部 <1s。背靠背 P50≈0.61s P99≈0.85s；间隔模式 P50≈0.28s（最快 0.14s），完全没有 >1s 离群点。
+- 首次 fresh-install 刷新：startup detached prewarm 跑后台填 L2，user 用啥时刻刷都 <1s。
+- SQLite `embedding_cache` 表每 discovery cycle 增长 ~30-100 行，无 schema 变更。
+- LLM 月支出无变化（prompt cache 命中率不动，无新 LLM 调用）。
+
+---
+
 ## v0.3.37 / extension v0.3.5: popup 与后端实时同步修复（2026-05-04）
 
 ### 改动

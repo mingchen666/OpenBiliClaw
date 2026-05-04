@@ -264,10 +264,23 @@ class RecommendationEngine:
             score_override = self._curator.score_candidates(candidates, context)
 
         # v0.3.44+: pre-fetch embeddings for MMR-based diversification.
-        # Most are L1 cache hits because _merge_topic_supergroups above
-        # already warmed the EmbeddingService cache. Falls back to
-        # string-cap-only diversification when embeddings are unavailable.
+        # In v0.3.45+ discovery and classify_pool_backlog warm these into
+        # the L2 SQLite cache up front, so this should be near-zero on
+        # the hot path. The elapsed/coverage log below makes regressions
+        # in cache warming visible — sustained "elapsed > 500ms" or
+        # "coverage < 100%" means warm hooks are missing items.
+        import time as _time
+
+        _embed_t0 = _time.monotonic()
         embeddings = await self._fetch_candidate_embeddings(candidates)
+        _embed_elapsed_ms = (_time.monotonic() - _embed_t0) * 1000.0
+        if candidates:
+            logger.info(
+                "MMR embedding fetch: coverage=%d/%d elapsed=%.0fms",
+                len(embeddings),
+                len(candidates),
+                _embed_elapsed_ms,
+            )
 
         ranked = self._select_diversified_batch(
             candidates,
@@ -305,10 +318,8 @@ class RecommendationEngine:
                     rec.topic_label = self._fallback_topic_label(profile)
             recommendations.append(rec)
 
-        # Batch all recommendation inserts into a single transaction.
-        # Per-item insert_recommendation each commit a fsync, which under
-        # the discovery loop's concurrent content_cache writes serialized
-        # to ~200-300ms each — the popup paid 2-3s here on every reshuffle.
+        # Critical-path write: only the insert (we need the IDs for the
+        # response). Single transaction, single fsync.
         ids = self._database.batch_insert_recommendations(
             [
                 {
@@ -336,8 +347,32 @@ class RecommendationEngine:
                     topic=rec.topic_label,
                 )
 
-        self._database.mark_pool_items_shown([item.bvid for item in ranked])
+        # v0.3.45+: detach pool_status='shown' update from the response
+        # critical path. Under refresh-tick write contention (eg.
+        # _enforce_pool_cap reactivating 300+ rows) this UPDATE could
+        # wait 0.5-1.5s for the SQLite write lock, blowing the <1s
+        # budget. Within-session double-click protection is already
+        # provided by `_last_served_bvids` (in-memory) so it's safe to
+        # let the persistent flag commit slightly later.
+        ranked_bvids = [item.bvid for item in ranked]
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._mark_pool_shown_async(ranked_bvids))
+        except RuntimeError:
+            # serve() is normally invoked from an event loop; only the
+            # rare sync-test path falls through here.
+            self._database.mark_pool_items_shown(ranked_bvids)
         return recommendations
+
+    async def _mark_pool_shown_async(self, bvids: list[str]) -> None:
+        """Fire-and-forget pool-marking helper. Never raises."""
+        try:
+            self._database.mark_pool_items_shown(bvids)
+        except Exception:
+            logger.exception(
+                "mark_pool_items_shown (detached) failed for %d bvids",
+                len(bvids),
+            )
 
     # Hybrid rule for online supergroup merging:
     #   - Strict embedding alone: sim >= 0.90 (catches 自走棋↔金铲铲之战
@@ -528,6 +563,35 @@ class RecommendationEngine:
             )
         return len(labels)
 
+    async def prewarm_pool_mmr_embeddings(self, *, limit: int = 200) -> int:
+        """Warm the MMR embedding L2 cache for the current pool.
+
+        Companion to ``warm_mmr_embeddings`` (which fires per-item at
+        discovery / classification time) — this method handles the
+        migration / cold-restart case where the pool already contains
+        items that pre-date the warming hooks. Called from the refresh
+        loop and at startup so the next ``serve()`` is an L2 hit even
+        on day 1 of a deploy.
+
+        ``limit`` defaults to 200 — covers the candidate window that
+        ``serve()`` actually pulls from, sized so a fresh-restart warm
+        completes in a few minutes against a slow local embedding
+        provider (Ollama). Idempotent: ``EmbeddingService.embed``
+        short-circuits on L2 hit.
+        """
+        if self._embedding_service is None:
+            return 0
+        candidates = self._load_pool_candidates(limit=limit)
+        if not candidates:
+            return 0
+        warmed = await self.warm_mmr_embeddings(candidates)
+        logger.info(
+            "Pool MMR embedding prewarm: %d/%d items warmed",
+            warmed,
+            len(candidates),
+        )
+        return warmed
+
     async def precompute_pool_copy(
         self,
         *,
@@ -663,6 +727,7 @@ class RecommendationEngine:
                 continue
 
             # Persist results back to the pool.
+            persisted: list[DiscoveredContent] = []
             for item in batch:
                 # Use topic_group as topic_key when the original is empty —
                 # diversity tokens fall back to topic_key, so this is critical.
@@ -674,11 +739,19 @@ class RecommendationEngine:
                         **item.to_cache_kwargs(),
                     )
                     classified += 1
+                    persisted.append(item)
                 except Exception:
                     logger.exception(
                         "classify_pool_backlog: failed to persist %s",
                         item.bvid,
                     )
+
+            # Pre-warm the MMR embedding cache so the next reshuffle is an
+            # L2 hit instead of paying ~150ms × N for serial API calls in
+            # serve(). Best-effort — failures fall back to the
+            # string-cap-only path at serve time.
+            if persisted:
+                await self.warm_mmr_embeddings(persisted)
 
         logger.info(
             "classify_pool_backlog: %d/%d items classified (styles: %s, topics: %s)",
@@ -1243,39 +1316,81 @@ class RecommendationEngine:
             return f"你最近那股偏{profile.core_traits[0]}的状态"
         return "想先丢给你的一条"
 
+    @staticmethod
+    def _mmr_embedding_text(content: DiscoveredContent) -> str:
+        """Canonical text shape for the MMR embedding cache key.
+
+        Kept as a single source of truth so warm-time and serve-time
+        agree on the cache key — otherwise the warm side fills L2 with
+        one shape while serve() looks up a different one and never hits.
+        """
+        return (f"{content.title or ''} {(content.description or '')[:160]}").strip()[:200]
+
     async def _fetch_candidate_embeddings(
         self,
         candidates: list[DiscoveredContent],
     ) -> dict[str, list[float]]:
-        """Best-effort pre-fetch of candidate embeddings for MMR diversification.
+        """Cache-only embedding lookup for MMR diversification.
 
-        Returns ``{bvid: vector}`` only for items whose embedding is available
-        (mostly L1 cache hits because supergroup merging already touched
-        these texts). Items whose embedding fetch fails simply don't appear
-        in the dict — the diversifier falls back to its string-cap-only
-        path for those, which is the legacy behaviour.
+        **Never triggers a provider API call** — this is the hot path
+        ``serve()`` runs on every "换一批" click and we contract a
+        sub-second budget. Items missing from the cache simply fall
+        through to the string-cap-only diversifier path; the warmer
+        (``warm_mmr_embeddings`` from discovery / classify / refresh /
+        startup) is responsible for filling the L2 SQLite cache so this
+        lookup hits next time.
+
+        Returns ``{bvid: vector}`` only for items already cached. Pure
+        synchronous-via-async; no I/O.
         """
         if self._embedding_service is None or not candidates:
             return {}
+        lookup = getattr(self._embedding_service, "lookup_cached", None)
+        if not callable(lookup):
+            return {}
         result: dict[str, list[float]] = {}
         for c in candidates:
+            text = self._mmr_embedding_text(c)
+            if not text:
+                continue
+            vec = lookup(text)
+            if vec:
+                result[c.bvid] = vec
+        return result
+
+    async def warm_mmr_embeddings(
+        self,
+        items: list[DiscoveredContent],
+    ) -> int:
+        """Pre-warm the embedding cache for items entering the pool.
+
+        Called by discovery and pool-classification paths so the
+        recommendation hot path (``serve`` → ``_fetch_candidate_embeddings``)
+        is an L2 cache hit instead of a 30× sequential API round trip.
+        Returns the number of items actually warmed (cache hits +
+        successful API calls). Idempotent — ``EmbeddingService.embed``
+        short-circuits on L1/L2 hit.
+        """
+        if self._embedding_service is None or not items:
+            return 0
+
+        async def _warm(c: DiscoveredContent) -> bool:
+            text = self._mmr_embedding_text(c)
+            if not text:
+                return False
             try:
-                # Same text shape as topic_group_supergroup_merge so we hit
-                # the cached vector instead of computing a fresh one.
-                text = (f"{c.title or ''} {(c.description or '')[:160]}").strip()[:200]
-                if not text:
-                    continue
                 vec = await self._embedding_service.embed(text)
-                if vec:
-                    result[c.bvid] = vec
             except Exception:
                 logger.debug(
-                    "MMR embedding fetch failed for %s, falling back to "
-                    "string-cap diversification for this item",
+                    "warm_mmr_embeddings: embed failed for %s",
                     c.bvid,
                     exc_info=True,
                 )
-        return result
+                return False
+            return bool(vec)
+
+        results = await asyncio.gather(*(_warm(c) for c in items))
+        return sum(1 for ok in results if ok)
 
     @classmethod
     def _select_diversified_batch(

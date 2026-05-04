@@ -131,6 +131,8 @@ class SupportsRecommendationEngine(Protocol):
 
     async def prewarm_supergroup_embeddings(self) -> int: ...
 
+    async def prewarm_pool_mmr_embeddings(self, *, limit: int = 200) -> int: ...
+
 
 @dataclass
 class ContinuousRefreshController:
@@ -776,6 +778,15 @@ class ContinuousRefreshController:
                 await self.recommendation_engine.prewarm_supergroup_embeddings()
             except Exception:
                 logger.exception("prewarm_supergroup_embeddings failed")
+            # Warm the MMR per-candidate embedding L2 cache so the next
+            # popup "换一批" doesn't have to pay the embedding round trip
+            # synchronously. Detached from the per-item warm hook in
+            # discovery — covers items that pre-date the hook and survives
+            # restart cycles.
+            try:
+                await self.recommendation_engine.prewarm_pool_mmr_embeddings()
+            except Exception:
+                logger.exception("prewarm_pool_mmr_embeddings failed")
             delight_count_after = self._safe_count_delight_candidates()
             net_new_delights = max(0, delight_count_after - delight_count_before)
             if net_new_delights > 0:
