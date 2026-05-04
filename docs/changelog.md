@@ -4,6 +4,56 @@
 
 ---
 
+## v0.3.49: 惊喜推荐 threshold 跟 LLM rubric 对齐（2026-05-05）
+
+### 背景
+
+用户反馈 popup 里"惊喜推荐"数量太多。日志确认 43 分钟会话里 `Delight candidate found` 打了 35 次，单 01:05 那一波就 20+ 条。
+
+根因：`DEFAULT_DELIGHT_THRESHOLD = 0.57` 跟 `_DELIGHT_BATCH_SCORE_SYSTEM_PROMPT` 里 LLM 自己定义的 score 标尺**对不上**：
+
+```
+prompt rubric:
+  0.85+:       极少数真正「哇这个意外好对胃口」
+  0.70-0.85:   跨域呼应,用户大概率会感兴趣但自己不会主动找  ← 真 delight
+  0.55-0.70:   有惊喜潜力但相对常规                          ← NOT delight
+  0.40-0.55:   跟用户兴趣有些关联但太普通
+```
+
+旧 threshold 0.57 落在 prompt 自己标记为「相对常规」的 0.55-0.70 区间——**LLM 都说"这不算惊喜"了，代码却推送给用户**。日志里出现的 hook 也佐证：「常规补给」「实用工具」「信息整合」「AI趣味」这种明显不是惊喜的标签都被推送。
+
+threshold 历史轨迹：v0.3.36（0.44→0.55）→ v0.3.37（0.55→0.57）。每次加一点点，**始终没跨过 LLM rubric 的 0.70 真惊喜线**。
+
+### 改动
+
+`src/openbiliclaw/recommendation/delight.py`:
+- `DEFAULT_DELIGHT_THRESHOLD: 0.57 → 0.70`（贴齐 LLM rubric「跨域呼应」起点）
+- `CONSERVATIVE_DELIGHT_THRESHOLD: 0.67 → 0.80`（保守用户向上一档「极少数真正惊喜」靠）
+
+新增回归测试 `tests/test_delight_scorer.py`:
+- `test_default_thresholds_align_with_llm_rubric` — lock floor at 0.70 / 0.80
+- `test_score_065_rejected_at_default_threshold` — 0.65 分（rubric 标的"相对常规"）必须被拒
+
+### 影响
+
+按本次日志数据估算（35 个 candidates 的 score 分布）：
+
+| score 段 | 旧（≥0.57）| 新（≥0.70）|
+|------|------|------|
+| 0.85+ | 0 | 0 |
+| 0.70-0.85 | 14 | **14**（保留）|
+| 0.57-0.70 | 21 | **0**（被拒）|
+| **总计** | 35 | **14** （-60%）|
+
+- 通过的全是 LLM 自己评 0.70+ 的"用户大概率会感兴趣但自己不会主动找"
+- 拒掉的 21 条全是 LLM 自己说「相对常规」的内容
+- LLM 调用频率不变（仍要扫所有候选），只是 surface 变严
+- 像 "常规补给" / "实用工具" / "信息整合" 这种 hook 不再触发推送
+
+测试：26/26 通过（24 原有 + 2 新）。
+
+---
+
 ## v0.3.48 / extension v0.3.9: 拦截"自己发的小红书笔记被推回给自己"（2026-05-05）
 
 ### 背景

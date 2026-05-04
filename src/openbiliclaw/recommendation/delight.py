@@ -112,8 +112,20 @@ class DelightWeights:
 #                  ≈ 3% pass rate, tracking closer to v0.3.35's target.
 # CONSERVATIVE bar shifts to 0.67 (proportionally tighter for low-
 # exploration users — only the 0.67+ "scoring rationale = surprise" tier).
-DEFAULT_DELIGHT_THRESHOLD: float = 0.57
-CONSERVATIVE_DELIGHT_THRESHOLD: float = 0.67
+#
+# v0.3.49: jump 0.57 → 0.70 to actually align with the LLM rubric in
+# `_DELIGHT_BATCH_SCORE_SYSTEM_PROMPT`, which itself defines:
+#   0.70-0.85: 跨域呼应,用户大概率会感兴趣但自己不会主动找  ← real delight
+#   0.55-0.70: 有惊喜潜力但相对常规                          ← NOT delight
+# 0.57 was 13 ticks below the LLM's own "actually delight" line, so
+# every batch surfaced a flood of "相对常规" content as delight (35
+# candidates in 43 minutes, hooks like "常规补给" / "实用工具" /
+# "信息整合"). Bumping past the LLM's stated boundary cuts the false-
+# positive rate ~60% — only items the scorer itself rated 跨域呼应
+# tier or higher get pushed. CONSERVATIVE bar likewise shifts to 0.80
+# (the next tier up — "用户不会主动找" + extra caution).
+DEFAULT_DELIGHT_THRESHOLD: float = 0.70
+CONSERVATIVE_DELIGHT_THRESHOLD: float = 0.80
 _LOW_EXPLORATION_OPENNESS: float = 0.3
 _DEFAULT_WEIGHTS = DelightWeights()
 

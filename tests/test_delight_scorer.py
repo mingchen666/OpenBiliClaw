@@ -175,6 +175,44 @@ def test_effective_threshold_raises_for_conservative_users(tmp_path: Path) -> No
     assert scorer.effective_threshold(0.2) == 0.80  # Conservative user
 
 
+def test_default_thresholds_align_with_llm_rubric() -> None:
+    """v0.3.49 regression: delight thresholds must match the LLM scoring rubric.
+
+    `_DELIGHT_BATCH_SCORE_SYSTEM_PROMPT` defines:
+      0.70-0.85: "跨域呼应,用户大概率会感兴趣但自己不会主动找"  ← real delight
+      0.55-0.70: "有惊喜潜力但相对常规"                          ← NOT delight
+
+    Earlier defaults (0.57 / 0.67) sat inside the "相对常规" band, so
+    every batch surfaced ~60% false-positive "delight" content with
+    hooks like "常规补给"/"实用工具"/"信息整合" — items the LLM
+    itself flagged as **not** surprising. Lock the floor at 0.70.
+    """
+    from openbiliclaw.recommendation.delight import (
+        CONSERVATIVE_DELIGHT_THRESHOLD,
+        DEFAULT_DELIGHT_THRESHOLD,
+    )
+
+    assert DEFAULT_DELIGHT_THRESHOLD >= 0.70, (
+        "Default threshold must clear the LLM's 0.70 '跨域呼应' boundary; "
+        "values below admit content the LLM itself rated 'relatively normal'."
+    )
+    assert CONSERVATIVE_DELIGHT_THRESHOLD >= 0.80
+    # And the conservative bar must remain strictly above the default.
+    assert CONSERVATIVE_DELIGHT_THRESHOLD > DEFAULT_DELIGHT_THRESHOLD
+
+
+def test_score_065_rejected_at_default_threshold(tmp_path: Path) -> None:
+    """A 0.65 score (the prompt's '相对常规' band) must NOT pass."""
+    database = _make_database(tmp_path)
+    scorer = DelightScorer(embedding_service=None, database=database)
+
+    threshold = scorer.effective_threshold(exploration_openness=0.5)
+    assert 0.65 < threshold, (
+        f"effective_threshold={threshold} would admit score=0.65, but the "
+        "LLM rubric explicitly tags 0.55-0.70 as '相对常规' (not delight)."
+    )
+
+
 def test_reason_stub_includes_relevance_fallback(tmp_path: Path) -> None:
     from openbiliclaw.recommendation.delight import DelightScorer
 
