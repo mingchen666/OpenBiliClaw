@@ -88,25 +88,27 @@ class DelightWeights:
 # amplifier yields ~0.70 contribution; combined with the 0.30 weight
 # that's a 0.21 ceiling on the likes signal alone.
 #
-# Empirical score distribution on a 200-by-relevance sample of this
-# codebase's pool (2026-05-03, after the embedding/dislike fixes):
-#     max = 0.485, p95 = 0.440, p90 = 0.428, median = 0.181
-# Pass-rate at candidate thresholds (extrapolated to a 613-item pool):
-#     threshold 0.43:  5.5% sample →  ~22-33 in pool (too noisy)
-#     threshold 0.44:  3.0% sample →  ~12-18 in pool ← target tier
-#     threshold 0.45:  2.0% sample →   ~8-12 in pool (slightly thin)
-#     threshold 0.46:  1.5% sample →    ~6-9 in pool (rare)
-# Goal is ~15 candidates in a 600-item pool — exceptional but not
-# starving the popup queue. 0.44 lands closest. CONSERVATIVE bar
-# drops proportionally to 0.54 (same ratio gap as 0.44 ↔ default).
-#
-# A 0.65 threshold (the original Gemini-era constant) was unreachable
-# under bge-m3 — no content ever surfaced as delight, defeating the
-# feature. If discovery quality changes (different pool, different
-# embedding model, profile shift), recheck the empirical distribution
-# and re-tune.
-DEFAULT_DELIGHT_THRESHOLD: float = 0.44
-CONSERVATIVE_DELIGHT_THRESHOLD: float = 0.54
+# History of this constant:
+#   v0.3.31  0.65  Gemini-era; under bge-m3 unreachable, killed feature
+#   v0.3.34  0.45  embedding-cosine empirical p95 (~4-5/100)
+#   v0.3.35  0.44  re-tuned for ~12-18/600 (top-200 sample extrapolation)
+#   v0.3.39  0.55  ↓ swap to LLM-judged scoring exposed a wider score
+#                  distribution: with rubric-driven rationale, LLM
+#                  generously gives 0.45-0.55 to "common-fit" content
+#                  (hooks like 「常规关联」/「常规推荐」). Empirical
+#                  observation 2026-05-04 on 193 scored items:
+#                    0.44-0.60:  9   ← "common" tier — LLM hedging
+#                    0.60-0.75: 14   ← real cross-domain delight
+#                    0.75+   : 12   ← exceptional ("跨域惊喜")
+#                  35/193 = 18.1% = ~116 in 642 pool — 7x the v0.3.35
+#                  target. Lifting to 0.55 cuts the LLM's middle-of-rubric
+#                  "common" tier (which doesn't read as surprise to the
+#                  user) while keeping the 0.60+ band that's genuinely
+#                  delightful. Expected: ~26/642 ≈ 4% pass rate.
+# CONSERVATIVE bar shifts to 0.65 (proportionally tighter for low-
+# exploration users — only the 0.65+ "scoring rationale = surprise" tier).
+DEFAULT_DELIGHT_THRESHOLD: float = 0.55
+CONSERVATIVE_DELIGHT_THRESHOLD: float = 0.65
 _LOW_EXPLORATION_OPENNESS: float = 0.3
 _DEFAULT_WEIGHTS = DelightWeights()
 
