@@ -16,16 +16,25 @@ informed the URL / endpoint catalog used elsewhere in the dy_ tree.
 
 from __future__ import annotations
 
-from typing import Any
+import json
+import logging
+import uuid
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from openbiliclaw.storage.database import Database
+
+logger = logging.getLogger(__name__)
 
 # Map each Douyin bootstrap scope to its canonical event_type. Scopes
 # are the ones the extension's MAIN-world fetch-tap can observe in a
 # logged-in user's tab; see design doc §Scope.
 DY_BOOTSTRAP_SCOPE_EVENT_TYPES: dict[str, str] = {
-    "dy_post": "view",       # user posted it — weak taste signal but is one
+    "dy_post": "view",  # user posted it — weak taste signal but is one
     "dy_collect": "favorite",  # 收藏夹: most deliberate
-    "dy_like": "like",       # 喜欢过 tab
-    "dy_follow": "follow",   # 关注列表 — interest in a creator's catalog
+    "dy_like": "like",  # 喜欢过 tab
+    "dy_follow": "follow",  # 关注列表 — interest in a creator's catalog
 }
 
 # Per-scope signal strength fed into the preference layer. Numbers
@@ -116,3 +125,241 @@ def dy_bootstrap_videos_to_events(
             )
         )
     return events
+
+
+def _video_key(video: dict[str, Any]) -> str:
+    """Identity key for dedup. Includes scope so the same aweme_id can
+    legitimately appear in two scopes (e.g. user posted AND collected)."""
+    scope = str(video.get("scope", "")).strip()
+    aweme_id = str(video.get("aweme_id", "")).strip()
+    creator_sec_uid = str(video.get("creator_sec_uid", "")).strip()
+    url = str(video.get("url", "")).strip()
+    title = str(video.get("title", "")).strip()
+    key = aweme_id or creator_sec_uid or url or title
+    return f"{scope}:{key}" if key else ""
+
+
+def _merge_dy_result_payload(
+    current: dict[str, Any],
+    *,
+    videos: list[dict[str, Any]] | None = None,
+    scope_counts: dict[str, Any] | None = None,
+    debug: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Merge a partial result into the current row.
+
+    Returns the merged payload + the list of videos newly added by this
+    merge (caller propagates only those to the soul pipeline so the
+    same item never causes two events).
+
+    Independent of xhs_tasks._merge_result_payload — Douyin uses
+    aweme_id (not note_id) and the natural scope-counts logic differs
+    once dy_history may join later.
+    """
+    merged_videos: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for video in current.get("videos") or []:
+        if not isinstance(video, dict):
+            continue
+        key = _video_key(video)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged_videos.append(video)
+
+    added: list[dict[str, Any]] = []
+    for video in videos or []:
+        if not isinstance(video, dict):
+            continue
+        key = _video_key(video)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged_videos.append(video)
+        added.append(video)
+
+    merged: dict[str, Any] = {}
+    if merged_videos:
+        merged["videos"] = merged_videos
+
+    merged_counts: dict[str, Any] = {}
+    existing_counts = current.get("scope_counts")
+    if isinstance(existing_counts, dict):
+        merged_counts.update(existing_counts)
+    if isinstance(scope_counts, dict):
+        for scope, count in scope_counts.items():
+            current_count = merged_counts.get(scope, 0)
+            if isinstance(current_count, int) and isinstance(count, int):
+                merged_counts[scope] = max(current_count, count)
+            else:
+                merged_counts[scope] = count
+    # Backfill counts from observed videos if the executor didn't send them.
+    for video in merged_videos:
+        scope = str(video.get("scope", "")).strip()
+        if scope and scope not in merged_counts:
+            merged_counts[scope] = sum(
+                1 for v in merged_videos if str(v.get("scope", "")).strip() == scope
+            )
+    if merged_counts:
+        merged["scope_counts"] = merged_counts
+
+    if isinstance(current.get("debug"), dict) or isinstance(debug, dict):
+        merged_debug: dict[str, Any] = {}
+        if isinstance(current.get("debug"), dict):
+            merged_debug.update(current["debug"])
+        if isinstance(debug, dict):
+            merged_debug.update(debug)
+        merged["debug"] = merged_debug
+
+    return merged, added
+
+
+class DyTaskQueue:
+    """Manages the dy_tasks table.
+
+    Independent of XhsTaskQueue. Schema mirrors xhs_tasks because the
+    underlying state machine is the same (pending → completed/failed),
+    but the table is separate so daily-budget exhaustion on one
+    platform never blocks the other, and so future per-platform
+    columns can be added without conflict.
+    """
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+        self._ensure_table()
+
+    def _ensure_table(self) -> None:
+        self._db.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS dy_tasks (
+                id           TEXT PRIMARY KEY,
+                type         TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                status       TEXT NOT NULL DEFAULT 'pending',
+                result_json  TEXT,
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_dy_tasks_status
+                ON dy_tasks (status, created_at);
+        """)
+
+    def enqueue(
+        self,
+        task_type: str,
+        payload: dict[str, Any],
+        *,
+        daily_budget: int = 100,
+    ) -> bool:
+        """Enqueue a task if today's budget for this type allows it.
+
+        Returns True on enqueue, False on budget exhausted.
+        """
+        return self.enqueue_with_id(task_type, payload, daily_budget=daily_budget) is not None
+
+    def enqueue_with_id(
+        self,
+        task_type: str,
+        payload: dict[str, Any],
+        *,
+        daily_budget: int = 100,
+    ) -> str | None:
+        """Enqueue a task and return its id, or None when budget exhausted."""
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        count_today = self._db.conn.execute(
+            "SELECT COUNT(*) FROM dy_tasks WHERE type = ? AND created_at >= ?",
+            (task_type, today),
+        ).fetchone()[0]
+
+        if count_today >= daily_budget:
+            logger.info(
+                "dy task budget exhausted: type=%s, count=%d, budget=%d",
+                task_type,
+                count_today,
+                daily_budget,
+            )
+            return None
+
+        task_id = str(uuid.uuid4())
+        self._db.conn.execute(
+            "INSERT INTO dy_tasks (id, type, payload_json) VALUES (?, ?, ?)",
+            (task_id, task_type, json.dumps(payload, ensure_ascii=False)),
+        )
+        self._db.conn.commit()
+        return task_id
+
+    def next_pending(self) -> dict[str, Any] | None:
+        row = self._db.conn.execute(
+            "SELECT * FROM dy_tasks WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get(self, task_id: str) -> dict[str, Any] | None:
+        row = self._db.conn.execute(
+            "SELECT * FROM dy_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def merge_result(
+        self,
+        task_id: str,
+        *,
+        videos: list[dict[str, Any]] | None = None,
+        scope_counts: dict[str, Any] | None = None,
+        debug: dict[str, Any] | None = None,
+        complete: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Merge a partial/final result and optionally mark complete.
+
+        Returns only the videos newly added by this merge so the caller
+        can propagate exactly those to the soul pipeline (avoids
+        duplicate events when the executor re-sends overlapping batches).
+        """
+        row = self.get(task_id)
+        current: dict[str, Any] = {}
+        if row and row.get("result_json"):
+            try:
+                parsed = json.loads(str(row["result_json"]))
+                if isinstance(parsed, dict):
+                    current = parsed
+            except json.JSONDecodeError:
+                current = {}
+
+        merged, added = _merge_dy_result_payload(
+            current,
+            videos=videos,
+            scope_counts=scope_counts,
+            debug=debug,
+        )
+        result = json.dumps(merged, ensure_ascii=False)
+        if complete:
+            self._db.conn.execute(
+                "UPDATE dy_tasks SET status = 'completed', result_json = ?, "
+                "completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (result, task_id),
+            )
+        else:
+            self._db.conn.execute(
+                "UPDATE dy_tasks SET result_json = ? WHERE id = ?",
+                (result, task_id),
+            )
+        self._db.conn.commit()
+        return added
+
+    def fail(
+        self,
+        task_id: str,
+        *,
+        error: str = "",
+        debug: dict[str, Any] | None = None,
+    ) -> None:
+        result_payload: dict[str, Any] = {"error": error}
+        if debug is not None:
+            result_payload["debug"] = debug
+        result = json.dumps(result_payload, ensure_ascii=False)
+        self._db.conn.execute(
+            "UPDATE dy_tasks SET status = 'failed', result_json = ?, "
+            "completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (result, task_id),
+        )
+        self._db.conn.commit()

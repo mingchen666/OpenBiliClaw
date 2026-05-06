@@ -2368,6 +2368,91 @@ def create_app(
             raise HTTPException(status_code=404, detail="Subscription not found")
         return {"ok": True}
 
+    # ── Douyin task queue endpoints (extension dispatcher) ──────────
+    # Independent from the XHS block above by design — see
+    # docs/plans/2026-05-06-douyin-bootstrap-import-design.md
+    # §"Module Isolation from XHS". Different table (dy_tasks),
+    # different queue class, different fail isolation.
+
+    from openbiliclaw.sources.dy_tasks import (
+        DyTaskQueue,
+        dy_bootstrap_videos_to_events,
+    )
+
+    _dy_task_queue: DyTaskQueue | None = None
+    if hasattr(ctx.database, "conn"):
+        _dy_task_queue = DyTaskQueue(ctx.database)
+
+    @app.get("/api/sources/dy/next-task")
+    def dy_next_task(response: Any = None) -> Any:
+        """Return the oldest pending dy task, or 204 if none."""
+        from starlette.responses import Response
+
+        if _dy_task_queue is None:
+            return Response(status_code=204)
+        task = _dy_task_queue.next_pending()
+        if task is None:
+            return Response(status_code=204)
+
+        import json as _json
+
+        payload = _json.loads(task["payload_json"]) if task.get("payload_json") else {}
+        return {
+            "id": task["id"],
+            "type": task["type"],
+            **payload,
+        }
+
+    @app.post("/api/sources/dy/task-result")
+    async def dy_task_result(payload: dict[str, Any]) -> dict[str, Any]:
+        """Accept a Douyin task result from the extension dispatcher.
+
+        Status semantics mirror XHS (``ok`` = final, ``partial`` = keep
+        pending, ``failed`` = mark failed) but the result schema uses
+        ``videos`` instead of ``notes`` and propagation goes through
+        ``dy_bootstrap_videos_to_events``. No self-author filtering yet
+        (Douyin has its own posts in ``dy_post`` scope which we treat as
+        a weak ``view`` signal — they're meant to count as input).
+        """
+        task_id = payload.get("task_id", "")
+        status = payload.get("status", "")
+        videos = [v for v in payload.get("videos", []) if isinstance(v, dict)]
+        scope_counts = payload.get("scope_counts")
+        if not isinstance(scope_counts, dict):
+            scope_counts = None
+        debug = payload.get("debug")
+        if not isinstance(debug, dict):
+            debug = None
+
+        if not task_id:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=422, detail="task_id is required")
+
+        if _dy_task_queue is None:
+            return {"ok": True}
+
+        task = _dy_task_queue.get(task_id)
+        task_type = str(task.get("type", "")).strip() if task else ""
+
+        if status in {"partial", "ok"} or (status == "empty" and task_type == "bootstrap_profile"):
+            is_final = status == "ok" or (status == "empty" and task_type == "bootstrap_profile")
+            added_videos = _dy_task_queue.merge_result(
+                task_id,
+                videos=videos if videos else None,
+                scope_counts=scope_counts,
+                debug=debug,
+                complete=is_final,
+            )
+            if task_type == "bootstrap_profile" and added_videos:
+                for video in added_videos:
+                    for event in dy_bootstrap_videos_to_events([video]):
+                        await ctx.memory_manager.propagate_event(event)
+        else:
+            _dy_task_queue.fail(task_id, error=payload.get("error", ""), debug=debug)
+
+        return {"ok": True}
+
     # ── Configuration management endpoints ──────────────────────────
 
     def _config_to_response(

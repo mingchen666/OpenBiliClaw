@@ -50,9 +50,24 @@ def test_dy_bootstrap_videos_to_events_signal_strength_per_scope() -> None:
     """Signal strengths follow the design doc: collect=1.0, like=0.85, follow=0.6, post=0.4."""
     events = dy_bootstrap_videos_to_events(
         [
-            {"scope": "dy_post", "title": "p", "url": "https://www.douyin.com/video/p", "aweme_id": "p"},
-            {"scope": "dy_collect", "title": "c", "url": "https://www.douyin.com/video/c", "aweme_id": "c"},
-            {"scope": "dy_like", "title": "l", "url": "https://www.douyin.com/video/l", "aweme_id": "l"},
+            {
+                "scope": "dy_post",
+                "title": "p",
+                "url": "https://www.douyin.com/video/p",
+                "aweme_id": "p",
+            },
+            {
+                "scope": "dy_collect",
+                "title": "c",
+                "url": "https://www.douyin.com/video/c",
+                "aweme_id": "c",
+            },
+            {
+                "scope": "dy_like",
+                "title": "l",
+                "url": "https://www.douyin.com/video/l",
+                "aweme_id": "l",
+            },
             {
                 "scope": "dy_follow",
                 "title": "f",
@@ -72,7 +87,12 @@ def test_dy_bootstrap_videos_to_events_skips_blank_and_unknown() -> None:
             {"scope": "dy_collect", "title": "", "url": "", "aweme_id": "x"},  # blank — drop
             {"scope": "dy_unknown_scope", "title": "t", "url": "u"},  # unknown scope — drop
             "not-a-dict",  # invalid type — drop
-            {"scope": "dy_collect", "title": "valid", "url": "https://www.douyin.com/video/v", "aweme_id": "v"},
+            {
+                "scope": "dy_collect",
+                "title": "valid",
+                "url": "https://www.douyin.com/video/v",
+                "aweme_id": "v",
+            },
         ]
     )
     assert len(events) == 1
