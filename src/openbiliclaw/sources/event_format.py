@@ -59,6 +59,7 @@ from typing import Any
 # Source platform constants — kept stable for analyzer mix calculations.
 SOURCE_BILIBILI = "bilibili"
 SOURCE_XIAOHONGSHU = "xiaohongshu"
+SOURCE_DOUYIN = "douyin"
 SOURCE_WEB = "web"
 
 # Human-readable platform labels used to render the context string.
@@ -66,6 +67,7 @@ SOURCE_WEB = "web"
 _PLATFORM_LABELS: dict[str, str] = {
     SOURCE_BILIBILI: "B 站",
     SOURCE_XIAOHONGSHU: "小红书",
+    SOURCE_DOUYIN: "抖音",
     SOURCE_WEB: "网页",
 }
 
