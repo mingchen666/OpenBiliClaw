@@ -94,6 +94,122 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Find the homepage's "我" / profile link. Tries multiple selectors
+ * because Douyin's UI structure shifts across releases.
+ *
+ * Returns the element to click, or null if no candidate found.
+ */
+function findProfileLink(): HTMLElement | null {
+  // Most direct: anchor whose href points at /user/self.
+  const directHrefSelectors = [
+    'a[href="/user/self"]',
+    'a[href^="/user/MS4w"]',
+    'a[href*="/user/self"]',
+  ];
+  for (const sel of directHrefSelectors) {
+    const el = document.querySelector(sel);
+    if (el && "click" in el) return el as HTMLElement;
+  }
+  // Data-attribute selectors (e2e test selectors Douyin sometimes ships).
+  const dataSelectors = ['[data-e2e="profile-icon"]', '[data-e2e="user-tab-self"]'];
+  for (const sel of dataSelectors) {
+    const el = document.querySelector(sel);
+    if (el && "click" in el) return el as HTMLElement;
+  }
+  // Last resort: anchor or button whose visible text is "我".
+  const candidates = Array.from(document.querySelectorAll<HTMLElement>("a, button"));
+  for (const el of candidates) {
+    if (el.textContent?.trim() === "我") return el;
+  }
+  return null;
+}
+
+/**
+ * Find the sub-tab element on the user profile page for a given scope.
+ * Returns null for dy_post (which is the default visible tab — no
+ * click needed to land on it).
+ */
+function findScopeSubTab(scope: DouyinScope): HTMLElement | null {
+  if (scope === "dy_post") return null;
+  const dataSelectors: Record<DouyinScope, string[]> = {
+    dy_post: [],
+    dy_collect: [
+      '[data-e2e="user-favorite-tab"]',
+      '[data-e2e="user-tab-favorite_collection"]',
+      'a[href*="favorite_collection"]',
+    ],
+    dy_like: [
+      '[data-e2e="user-like-tab"]',
+      '[data-e2e="user-tab-like"]',
+      'a[href*="showTab=like"]',
+    ],
+    dy_follow: [
+      '[data-e2e="user-following-tab"]',
+      '[data-e2e="user-tab-following"]',
+      'a[href*="showTab=following"]',
+    ],
+  };
+  for (const sel of dataSelectors[scope]) {
+    const el = document.querySelector(sel);
+    if (el && "click" in el) return el as HTMLElement;
+  }
+  // Text fallback. Douyin sub-tab labels:
+  //   dy_collect → 收藏
+  //   dy_like    → 喜欢
+  //   dy_follow  → 关注
+  const labelMap: Record<DouyinScope, string> = {
+    dy_post: "作品",
+    dy_collect: "收藏",
+    dy_like: "喜欢",
+    dy_follow: "关注",
+  };
+  const label = labelMap[scope];
+  const candidates = Array.from(
+    document.querySelectorAll<HTMLElement>('a, button, [role="tab"], [class*="tab"]'),
+  );
+  for (const el of candidates) {
+    if (el.textContent?.trim() === label) return el;
+  }
+  return null;
+}
+
+/**
+ * Drive the page from wherever it currently is to the requested
+ * scope's view, using **clicks**, not URL writes. This makes the
+ * navigation look like user behaviour to Douyin's risk control —
+ * direct chrome.tabs.update jumps to /user/self trip the captcha
+ * intermediate page (verified 2026-05-08 e2e).
+ *
+ * Flow per scope:
+ *   1. If we're on the homepage (anywhere outside /user/), click
+ *      the profile link to land on /user/<sec_uid>. SPA-route, no
+ *      document commit, fetch-tap stays.
+ *   2. If the requested scope isn't dy_post (which is the default
+ *      visible tab), click the sub-tab element. Again SPA-route.
+ *
+ * Returns true on best-effort success (click(s) attempted), false if
+ * we couldn't find any candidate elements — caller can still proceed
+ * to scroll loop, just won't have items.
+ */
+async function clickToScope(scope: DouyinScope): Promise<boolean> {
+  const onProfile = location.pathname.startsWith("/user/");
+  if (!onProfile) {
+    const profileLink = findProfileLink();
+    if (!profileLink) return false;
+    profileLink.click();
+    // SPA route is async; let React mount the profile page.
+    await sleep(2_000);
+  }
+
+  if (scope === "dy_post") return true; // default tab, no click needed
+  const subTab = findScopeSubTab(scope);
+  if (!subTab) return false;
+  subTab.click();
+  await sleep(1_500); // allow the new sub-tab to fire its first /aweme/.../<scope>/
+  return true;
+}
+
 async function runScope(msg: ScopeExecuteMessage): Promise<ScopeResultPayload> {
   const { BootstrapItemSink, dyShouldContinueScroll, ingestMainWorldFetchMessage } =
     await loadTaskExecutorHelpers();
@@ -119,6 +235,11 @@ async function runScope(msg: ScopeExecuteMessage): Promise<ScopeResultPayload> {
   window.addEventListener("message", onMessage);
 
   try {
+    // Navigate via UI clicks (more natural to Douyin risk control
+    // than chrome.tabs.update URL jumps). clickToScope handles both
+    // the homepage→profile transition and the sub-tab switch.
+    await clickToScope(msg.scope);
+
     // The MAIN-world fetch-tap auto-installs after waitForDouyinSdk
     // resolves. Give it a beat to settle so any pageload-time
     // /aweme/.../<scope>/ that fires AFTER our install gets captured.

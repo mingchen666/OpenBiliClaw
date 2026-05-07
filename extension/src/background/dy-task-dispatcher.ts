@@ -273,41 +273,16 @@ function sendScopeExecuteMessage(): void {
     });
 }
 
-async function navigateToCurrentScope(): Promise<void> {
+function navigateToCurrentScope(): void {
+  // Click-driven navigation lives entirely in the content script
+  // (douyin.ts: clickToScope). Dispatcher just hands it off — no
+  // chrome.tabs.update, no fresh document commit, no need to re-
+  // inject fetch-tap (it's still installed from the homepage stage,
+  // and SPA route within Douyin's React app doesn't unload it).
+  // Risk control is happier because every nav is a real-looking
+  // user click instead of a URL jump.
   if (!progress || taskTabId === null) return;
-  const scope = progress.scopes[progress.current_scope_idx];
-  if (!scope) return;
-  // Scope URLs intentionally use /user/self when sec_uid is unknown;
-  // Douyin redirects /user/self to the logged-in user's own profile.
-  const buildScopeUrl = await loadBuildScopeUrl();
-  const url = buildScopeUrl(scope, "");
-  const tabId = taskTabId;
-
-  // chrome.tabs.update changes the URL but on Douyin's SPA-routed
-  // React app a same-origin same-path nav (only ?showTab=… changing)
-  // doesn't trigger a fresh document commit — content_scripts don't
-  // re-inject. To guarantee fetch-tap runs in every scope, we drop
-  // the manifest-based MAIN-world content_script and instead
-  // explicitly chrome.scripting.executeScript-inject dy-fetch-tap.js
-  // after every onTabReady fires. Real e2e probe 2026-05-08 v1
-  // (about:blank intermediate) made this worse — sometimes the
-  // about:blank commit raced with the next URL change and Chrome
-  // skipped the second navigation's content_scripts injection
-  // entirely. Explicit scripting is more reliable.
-  try {
-    await chrome.tabs.update(tabId, { url, active: true });
-  } catch {
-    void postTaskResult({
-      task_id: progress.task_id,
-      status: "failed",
-      error: "tab_update_failed",
-    });
-    cleanupTask();
-    return;
-  }
-  onTabReady(tabId, () => {
-    void injectFetchTapInto(tabId).then(sendScopeExecuteMessage);
-  });
+  sendScopeExecuteMessage();
 }
 
 async function injectFetchTapInto(tabId: number): Promise<void> {
@@ -382,20 +357,14 @@ export async function executeTask(task: DyTask): Promise<void> {
     return;
   }
 
-  // Two-stage entry:
-  //   1. wait for douyin.com home to load → inject fetch-tap
-  //      (so any preload of the user's data goes through our hook)
-  //   2. navigate to scope 0's profile URL → wait for load → inject
-  //      fetch-tap again (the homepage → profile transition might
-  //      reset the page-bundle state)
-  //   3. send DY_SCOPE_EXECUTE for scope 0
+  // Single-stage entry now — we land on douyin.com home, inject
+  // fetch-tap once into MAIN world, then hand control to the
+  // content-script's runScope. runScope clicks "我" then the
+  // requested sub-tab (clickToScope), staying inside Douyin's SPA
+  // session the whole time. No more chrome.tabs.update between
+  // scopes; fetch-tap stays installed across SPA routes.
   onTabReady(taskTabId, () => {
-    void injectFetchTapInto(taskTabId!).then(() => {
-      // Now nav to the actual scope URL via the same per-scope path
-      // navigateToCurrentScope uses for scopes 1+. This keeps the
-      // injection / sendMessage handshake symmetric across all scopes.
-      void navigateToCurrentScope();
-    });
+    void injectFetchTapInto(taskTabId!).then(sendScopeExecuteMessage);
   });
 }
 
