@@ -302,19 +302,18 @@ async function clickToScope(scope: DouyinScope): Promise<ClickToScopeReport> {
     report.page_url = location.href;
   }
 
-  // Step 2: navigate to the target scope tab via pushState. Verified
-  // empirically (2026-05-08 e2e + url_probe) that clicking
-  // [data-e2e="user-<scope>-tab"] elements is a no-op when Douyin's
-  // React Router thinks we're already on the same route — the URL
-  // doesn't change and no /aweme/v1/web/aweme/<scope>/ request fires.
-  // pushState + popstate forces React Router to detect the route
-  // change and re-mount the scope tab, which DOES trigger the data
-  // fetch.
+  // Step 2: navigate to the target scope tab. Strategy: TRY a real
+  // click first (it's what user would do — fires React's onClick,
+  // which sets internal tab state AND attaches the
+  // IntersectionObserver that drives lazy-loading on scroll). Fall
+  // back to pushState only if click didn't change the URL within a
+  // settle window.
   //
-  // Bounce through a neutral URL first when the current URL already
-  // points at the target tab (e.g. landing page from previous run was
-  // ?showTab=like and scope=dy_like). Without the bounce, pushing the
-  // same URL is a true no-op.
+  // Why this matters: pushState alone routes the page to the right
+  // tab visually but doesn't always wire up the lazy-load observer
+  // (verified 2026-05-08 e2e — pages stayed at 12 cards after 5
+  // stagnant scroll rounds). Real click on the tab element is what
+  // makes "scroll → load more" work.
   const queryMap: Record<DouyinScope, string> = {
     dy_post: "",
     dy_collect: "?showTab=favorite_collection",
@@ -322,19 +321,133 @@ async function clickToScope(scope: DouyinScope): Promise<ClickToScopeReport> {
     dy_follow: "?showTab=following",
   };
   const targetUrl = "/user/self" + queryMap[scope];
-  const currentRelative = location.pathname + location.search;
-  if (currentRelative === targetUrl) {
-    // Same — bounce off a sentinel query to force re-route.
-    window.history.pushState({}, "", "/user/self?_obc=" + Date.now());
-    window.dispatchEvent(new PopStateEvent("popstate"));
-    await sleep(400);
+  const wantedSearch = queryMap[scope];
+
+  const clickedTab = clickScopeSubTab(scope);
+  report.sub_tab_found = clickedTab;
+  if (clickedTab) {
+    await sleep(1_500);
   }
-  window.history.pushState({}, "", targetUrl);
-  window.dispatchEvent(new PopStateEvent("popstate"));
-  report.sub_tab_found = true; // pushState always succeeds
-  await sleep(2_500); // allow React Router to refetch + render
+  // After click, check whether URL actually changed to the right
+  // showTab. If not (or click missed), pushState as fallback.
+  const onTargetTab =
+    wantedSearch === ""
+      ? !location.search.includes("showTab=")
+      : location.search.includes(wantedSearch.replace("?", ""));
+  if (!onTargetTab) {
+    const currentRelative = location.pathname + location.search;
+    if (currentRelative === targetUrl) {
+      window.history.pushState({}, "", "/user/self?_obc=" + Date.now());
+      window.dispatchEvent(new PopStateEvent("popstate"));
+      await sleep(400);
+    }
+    window.history.pushState({}, "", targetUrl);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await sleep(2_000);
+  }
   report.page_url = location.href;
   return report;
+}
+
+/**
+ * Click the sub-tab element for the given scope. Returns true when a
+ * candidate was found and clicked (independent of whether React
+ * actually responded — caller checks URL afterwards). Uses both
+ * data-e2e attribute selectors (most stable) and visible-text label
+ * matching as fallbacks. For dy_post we click the "作品" tab to
+ * ensure the post list's IntersectionObserver gets bound; pushState
+ * to /user/self alone wasn't reliable.
+ *
+ * To improve React's onClick firing reliability we dispatch a real
+ * MouseEvent (bubbles+composed+cancelable) instead of the simpler
+ * `.click()` — some Douyin tab targets are wrapper spans whose
+ * synthesized React handler depends on the bubbling phase.
+ */
+function clickScopeSubTab(scope: DouyinScope): boolean {
+  const dataSelectors: Record<DouyinScope, string[]> = {
+    dy_post: [
+      '[data-e2e="user-tab-self"]',
+      '[data-e2e="user-tab-post"]',
+      '[data-e2e="user-tab-work"]',
+    ],
+    dy_collect: [
+      '[data-e2e="user-favorite-tab"]',
+      '[data-e2e="user-tab-favorite_collection"]',
+      '[data-e2e="user-tab-favorite"]',
+      'a[href*="favorite_collection"]',
+    ],
+    dy_like: [
+      '[data-e2e="user-like-tab"]',
+      '[data-e2e="user-tab-like"]',
+      'a[href*="showTab=like"]',
+    ],
+    dy_follow: [
+      '[data-e2e="user-following-tab"]',
+      '[data-e2e="user-tab-following"]',
+      'a[href*="showTab=following"]',
+    ],
+  };
+  for (const sel of dataSelectors[scope]) {
+    const el = document.querySelector<HTMLElement>(sel);
+    if (el) {
+      fireRealClick(el);
+      return true;
+    }
+  }
+  const labelMap: Record<DouyinScope, string> = {
+    dy_post: "作品",
+    dy_collect: "收藏",
+    dy_like: "喜欢",
+    dy_follow: "关注",
+  };
+  const label = labelMap[scope];
+  const candidates = Array.from(
+    document.querySelectorAll<HTMLElement>('a, button, [role="tab"], [class*="tab"]'),
+  );
+  for (const el of candidates) {
+    if (el.textContent?.trim() === label) {
+      fireRealClick(el);
+      return true;
+    }
+  }
+  return false;
+}
+
+function fireRealClick(el: HTMLElement): void {
+  el.dispatchEvent(
+    new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }),
+  );
+}
+
+/**
+ * Scroll the scope's list to its last rendered card. Works for both
+ * document-level scrollers and inner overflow:auto containers, since
+ * Element.scrollIntoView walks up the ancestor chain and scrolls
+ * whichever ancestor is the actual scroller. block:"end" puts the
+ * card at the bottom of the viewport, ensuring the trailing sentinel
+ * (the IntersectionObserver target Douyin uses to load more) becomes
+ * visible.
+ *
+ * Returns true when a card was found and scrolled (so the caller can
+ * decide between this strategy and the window.scrollBy fallback,
+ * though we currently run both for max coverage).
+ */
+function scrollScopeListToEnd(scope: DouyinScope): boolean {
+  const selector =
+    scope === "dy_follow"
+      ? 'a[href*="/user/MS4w"]'
+      : 'a[href*="/video/"]';
+  const anchors = document.querySelectorAll<HTMLElement>(selector);
+  if (anchors.length === 0) return false;
+  const last = anchors[anchors.length - 1];
+  if (!last) return false;
+  try {
+    last.scrollIntoView({ block: "end", inline: "nearest", behavior: "auto" });
+  } catch {
+    // older browsers may not accept the options object — fall through
+    return false;
+  }
+  return true;
 }
 
 async function runScope(msg: ScopeExecuteMessage): Promise<ScopeResultPayload> {
@@ -421,9 +534,16 @@ async function runScope(msg: ScopeExecuteMessage): Promise<ScopeResultPayload> {
     for (let round = 0; round < msg.max_scroll_rounds; round += 1) {
       const beforeCount = sink.scopeCounts()[msg.scope];
 
-      // Trigger Douyin's virtual-list pagination by scrolling down.
-      // Use scrollBy with a large delta so even tall card lists move
-      // multiple cards' worth per round.
+      // Trigger Douyin's virtual-list pagination. Two strategies in
+      // sequence:
+      // 1. scrollIntoView the LAST scope-anchor card with block:"end".
+      //    This works for arbitrary internal scroll containers
+      //    (Douyin's user-tab list lives in [role="tabpanel"] or
+      //    similar with overflow:auto, NOT document scroll), and is
+      //    what triggers the IntersectionObserver-driven lazy load.
+      // 2. window.scrollBy as fallback for cases where the document
+      //    IS the scroller (e.g. some compact layouts, or follow tab).
+      scrollScopeListToEnd(msg.scope);
       window.scrollBy({ top: window.innerHeight * 2, behavior: "auto" });
       await sleep(SCROLL_DELAY_MS);
 
