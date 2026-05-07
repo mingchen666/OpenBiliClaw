@@ -106,26 +106,43 @@ function sleep(ms: number): Promise<void> {
  * Returns the element to click, or null if no candidate found.
  */
 function findProfileLink(): HTMLElement | null {
-  // Most direct: anchor whose href points at /user/self.
+  // Most direct: anchor whose href points at /user/self or any
+  // /user/<sec_uid> pattern.
   const directHrefSelectors = [
     'a[href="/user/self"]',
     'a[href^="/user/MS4w"]',
     'a[href*="/user/self"]',
+    'a[href*="/user/"]',
   ];
   for (const sel of directHrefSelectors) {
     const el = document.querySelector(sel);
     if (el && "click" in el) return el as HTMLElement;
   }
   // Data-attribute selectors (e2e test selectors Douyin sometimes ships).
-  const dataSelectors = ['[data-e2e="profile-icon"]', '[data-e2e="user-tab-self"]'];
+  const dataSelectors = [
+    '[data-e2e="profile-icon"]',
+    '[data-e2e="user-tab-self"]',
+    '[data-e2e="user-info"]',
+    '[data-e2e="my-tab"]',
+  ];
   for (const sel of dataSelectors) {
     const el = document.querySelector(sel);
     if (el && "click" in el) return el as HTMLElement;
   }
-  // Last resort: anchor or button whose visible text is "我".
-  const candidates = Array.from(document.querySelectorAll<HTMLElement>("a, button"));
+  // Last resort: anchor / button / clickable div whose visible text
+  // is the leftnav profile entry. Douyin's left sidebar has been
+  // observed shipping this as either "我" or "我的" (and "我的"
+  // occasionally as part of a longer label like "我的关注"). Match
+  // exactly to avoid clicking an unrelated string-containing element.
+  const profileLabels = ["我", "我的", "个人主页"];
+  const candidates = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      'a, button, [role="link"], [role="button"], [data-e2e]',
+    ),
+  );
   for (const el of candidates) {
-    if (el.textContent?.trim() === "我") return el;
+    const text = el.textContent?.trim() ?? "";
+    if (profileLabels.includes(text)) return el;
   }
   return null;
 }
@@ -213,10 +230,18 @@ async function clickToScope(scope: DouyinScope): Promise<ClickToScopeReport> {
   if (!onProfile) {
     const profileLink = findProfileLink();
     report.profile_link_found = profileLink !== null;
-    if (!profileLink) return report;
-    profileLink.click();
+    if (profileLink) {
+      profileLink.click();
+    } else {
+      // Fallback: page-driven nav. window.location.href = "/user/self"
+      // is more natural than chrome.tabs.update because the source is
+      // the page itself (Douyin's React app sees a same-origin load
+      // initiated by a same-document context). Risk control treats
+      // it more leniently than an extension-driven URL change.
+      window.location.href = "/user/self";
+    }
     // SPA route is async; let React mount the profile page.
-    await sleep(2_000);
+    await sleep(2_500);
     report.page_url = location.href;
   }
 
@@ -226,8 +251,22 @@ async function clickToScope(scope: DouyinScope): Promise<ClickToScopeReport> {
   }
   const subTab = findScopeSubTab(scope);
   report.sub_tab_found = subTab !== null;
-  if (!subTab) return report;
-  subTab.click();
+  if (subTab) {
+    subTab.click();
+  } else {
+    // Fallback: append the appropriate showTab query. Douyin's React
+    // app handles ?showTab=… changes via its own pushState handler
+    // — same SPA-route effect as a click on the sub-tab element,
+    // just driven by a same-page nav rather than a click event.
+    const queryMap: Record<DouyinScope, string> = {
+      dy_post: "",
+      dy_collect: "?showTab=favorite_collection",
+      dy_like: "?showTab=like",
+      dy_follow: "?showTab=following",
+    };
+    const baseUrl = location.pathname;
+    window.location.href = baseUrl + queryMap[scope];
+  }
   await sleep(1_500); // allow the new sub-tab to fire its first /aweme/.../<scope>/
   report.page_url = location.href;
   return report;
