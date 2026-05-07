@@ -121,11 +121,24 @@ if (typeof window !== "undefined") {
   window.addEventListener("message", (event: MessageEvent) => {
     const data = event?.data as { type?: unknown; status?: unknown } | null;
     if (!data || typeof data !== "object") return;
-    if (data.type !== "OPENBILICLAW_DOUYIN_FETCH_TAP_INSTALL") return;
-    _installMessagesReceived += 1;
-    const s = String(data.status ?? "");
-    if (s === "installed" || s === "skipped_no_sdk") {
-      _lastFetchTapInstallStatus = s;
+    if (data.type === "OPENBILICLAW_DOUYIN_FETCH_TAP_INSTALL") {
+      _installMessagesReceived += 1;
+      const s = String(data.status ?? "");
+      if (s === "installed" || s === "skipped_no_sdk") {
+        _lastFetchTapInstallStatus = s;
+      }
+      return;
+    }
+    // TEMP DIAGNOSTIC (2026-05-08): relay every /aweme*/ URL the
+    // MAIN-world tap sees back to the daemon log so we can diagnose
+    // why aweme_messages_received stays at 0.
+    if (data.type === "OPENBILICLAW_DOUYIN_URL_PROBE") {
+      const probe = data as { transport?: unknown; url?: unknown; classified?: unknown };
+      debugLog("url_probe", {
+        transport: String(probe.transport ?? ""),
+        url: String(probe.url ?? ""),
+        classified: probe.classified ?? null,
+      });
     }
   });
 }

@@ -200,6 +200,26 @@ type FetchLike = (
   init?: RequestInit,
 ) => Promise<Response>;
 
+// TEMP DIAGNOSTIC (2026-05-08): post every observed /aweme*/ URL back
+// so we can see what Douyin actually fetches. Rate-limited to avoid
+// flooding the daemon log relay.
+const URL_PROBE_TYPE = "OPENBILICLAW_DOUYIN_URL_PROBE";
+let _probeCount = 0;
+function probeUrl(transport: "fetch" | "xhr", url: string): void {
+  if (!url) return;
+  if (!url.includes("/aweme") && !url.includes("/user/")) return;
+  if (_probeCount >= 60) return;
+  _probeCount += 1;
+  try {
+    window.postMessage(
+      { type: URL_PROBE_TYPE, transport, url, classified: classifyDouyinResponseUrl(url) },
+      window.location.origin,
+    );
+  } catch {
+    // best effort
+  }
+}
+
 /**
  * Install the fetch-tap onto `target.fetch`. Wraps whatever
  * `target.fetch` is at install time, which in production is the
@@ -225,6 +245,7 @@ export function installFetchTap(
         : input instanceof URL
           ? input.toString()
           : (input as Request).url;
+    probeUrl("fetch", url);
     const resp = await originalFetch(input, init);
     const scope = classifyDouyinResponseUrl(url);
     if (scope) {
@@ -249,6 +270,69 @@ export function installFetchTap(
   w.fetch = wrapped;
   return (): void => {
     w.fetch = originalFetch;
+  };
+}
+
+/**
+ * Install an XHR tap parallel to the fetch tap. Douyin's older code
+ * paths (and some user-tab endpoints) use XMLHttpRequest, which the
+ * fetch wrap can't see. We hook .open() to capture the URL, then
+ * listen on the per-request readystatechange (state=4) and parse
+ * .responseText.
+ *
+ * Diagnostic-only: returns the disposer that un-wraps both .open and
+ * .send.
+ */
+export function installXhrTap(
+  target: Window,
+  postBack: (items: DouyinBootstrapItem[], scope: DouyinScope) => void,
+): () => void {
+  const proto = (target as unknown as { XMLHttpRequest: { prototype: XMLHttpRequest } })
+    .XMLHttpRequest.prototype;
+  type OpenLike = (
+    method: string,
+    url: string | URL,
+    async?: boolean,
+    user?: string | null,
+    password?: string | null,
+  ) => void;
+  const originalOpen = proto.open as unknown as OpenLike;
+
+  const wrappedOpen: OpenLike = function wrappedOpen(
+    this: XMLHttpRequest,
+    method: string,
+    url: string | URL,
+    async?: boolean,
+    user?: string | null,
+    password?: string | null,
+  ) {
+    const urlString = typeof url === "string" ? url : url.toString();
+    (this as unknown as { __obcUrl?: string }).__obcUrl = urlString;
+    probeUrl("xhr", urlString);
+    this.addEventListener("readystatechange", () => {
+      if (this.readyState !== 4) return;
+      const u = (this as unknown as { __obcUrl?: string }).__obcUrl ?? urlString;
+      const scope = classifyDouyinResponseUrl(u);
+      if (!scope) return;
+      try {
+        const text = this.responseText;
+        if (!text) return;
+        const json: unknown = JSON.parse(text);
+        const items =
+          scope === "dy_follow"
+            ? parseUserFollowListResponse(json)
+            : parseAwemeListResponse(json, scope);
+        if (items.length > 0) postBack(items, scope);
+      } catch {
+        // Best-effort: never throw inside XHR listener.
+      }
+    });
+    return originalOpen.call(this, method, url, async ?? true, user, password);
+  };
+
+  (proto as unknown as { open: OpenLike }).open = wrappedOpen;
+  return (): void => {
+    (proto as unknown as { open: OpenLike }).open = originalOpen;
   };
 }
 
@@ -303,12 +387,14 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       console.debug("[OpenBiliClaw] dy fetch-tap skipped: SDK not detected");
       return;
     }
-    installFetchTap(window, (items, scope) => {
+    const postItems = (items: DouyinBootstrapItem[], scope: DouyinScope): void => {
       window.postMessage(
         { type: FETCH_TAP_MESSAGE_TYPE, scope, items },
         window.location.origin,
       );
-    });
+    };
+    installFetchTap(window, postItems);
+    installXhrTap(window, postItems);
     replayInstallStatusPing("installed");
     // eslint-disable-next-line no-console
     console.debug("[OpenBiliClaw] dy fetch-tap installed (MAIN world)");
