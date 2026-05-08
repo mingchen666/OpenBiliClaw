@@ -104,6 +104,10 @@ interface ScopeResultPayload {
     aweme_messages_received: number;
     install_messages_received: number;
     dom_items_harvested?: number;
+    api_items_harvested?: number;
+    api_pages_fetched?: number;
+    api_error?: string;
+    sec_uid?: string;
     end_of_feed?: string;
     inject_status?: string;
     page_url?: string;
@@ -125,6 +129,7 @@ const POST_INSTALL_SETTLE_MS = 800;
 // fetch in this tab.
 let _lastFetchTapInstallStatus: "unknown" | "installed" | "skipped_no_sdk" = "unknown";
 let _installMessagesReceived = 0;
+let _detectedSecUid = "";
 if (typeof window !== "undefined") {
   window.addEventListener("message", (event: MessageEvent) => {
     const data = event?.data as { type?: unknown; status?: unknown } | null;
@@ -134,6 +139,14 @@ if (typeof window !== "undefined") {
       const s = String(data.status ?? "");
       if (s === "installed" || s === "skipped_no_sdk") {
         _lastFetchTapInstallStatus = s;
+      }
+      return;
+    }
+    if (data.type === "OPENBILICLAW_DOUYIN_SEC_UID") {
+      const secUid = String((data as { secUid?: unknown }).secUid ?? "");
+      if (secUid && secUid !== _detectedSecUid) {
+        _detectedSecUid = secUid;
+        debugLog("sec_uid_detected", { secUid });
       }
       return;
     }
@@ -148,6 +161,61 @@ if (typeof window !== "undefined") {
         classified: probe.classified ?? null,
       });
     }
+  });
+}
+
+/**
+ * Drive the MAIN-world API harvester for the given scope. Returns
+ * the items it crawled (or [] on timeout/error). The MAIN-world tap
+ * was installed at page load and is listening for
+ * OPENBILICLAW_DOUYIN_API_REQUEST messages — see dy-fetch-tap.ts.
+ *
+ * Per-call timeout is generous: 50 pages × ~500ms = 25s, plus signing
+ * overhead and risk-control rate limits, so a 90s ceiling lets even
+ * the largest user's likes/favorites finish.
+ */
+async function harvestScopeViaApiBridge(
+  scope: DouyinScope,
+  secUid: string,
+  maxItems: number,
+  timeoutMs: number = 90_000,
+): Promise<{ items: DouyinBootstrapItem[]; pages: number; error?: string }> {
+  return new Promise((resolve) => {
+    const requestId = `obc_dy_api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener("message", onMessage);
+      resolve({ items: [], pages: 0, error: "timeout" });
+    }, timeoutMs);
+    const onMessage = (event: MessageEvent): void => {
+      const data = event?.data as Record<string, unknown> | null;
+      if (!data || typeof data !== "object") return;
+      if (data.type !== "OPENBILICLAW_DOUYIN_API_RESPONSE") return;
+      if (data.requestId !== requestId) return;
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      const items = Array.isArray(data.items)
+        ? (data.items as DouyinBootstrapItem[])
+        : [];
+      const pages = Number(data.pages_fetched ?? 0);
+      const error = typeof data.error === "string" ? data.error : undefined;
+      resolve({ items, pages, error });
+    };
+    window.addEventListener("message", onMessage);
+    window.postMessage(
+      {
+        type: "OPENBILICLAW_DOUYIN_API_REQUEST",
+        requestId,
+        scope,
+        secUid,
+        maxItems,
+      },
+      window.location.origin,
+    );
   });
 }
 
@@ -563,6 +631,12 @@ async function runScope(msg: ScopeExecuteMessage): Promise<ScopeResultPayload> {
   // is the primary source for 喜欢/收藏/作品 because Douyin's React
   // Router often re-renders without firing a fresh /aweme/ XHR.
   let domItemsHarvested = 0;
+  // API-harvest counters — primary source post-2026-05-08 since UI
+  // scrolling failed to trigger Douyin's lazy-load (verified via
+  // scroll_round telemetry — DOM stuck at 12-13 cards).
+  let apiItemsHarvested = 0;
+  let apiPagesFetched = 0;
+  let apiError = "";
 
   const onMessage = (event: MessageEvent): void => {
     const data = event?.data as { type?: unknown } | null;
@@ -620,8 +694,46 @@ async function runScope(msg: ScopeExecuteMessage): Promise<ScopeResultPayload> {
     await sleep(POST_INSTALL_SETTLE_MS);
 
     // Initial DOM harvest before scrolling — captures whatever
-    // Douyin's React Router rendered on landing.
+    // Douyin's React Router rendered on landing. Also kicks the
+    // page-bundle to fire its first /aweme/.../<scope>/ XHR which
+    // gives our XHR tap a sec_uid to broadcast.
     harvestDomSnapshot();
+
+    // API-driven harvest — primary path. UI scrolling on Douyin's
+    // user-tab list does not reliably trigger lazy-load (verified
+    // 2026-05-08), so we directly call the page's own paged
+    // endpoints via window.fetch (already X-Bogus signed by
+    // webmssdk). Need a sec_uid first — wait up to 4s for the
+    // page-bundle's initial XHR to leak it (caught by the XHR tap
+    // and broadcast as OPENBILICLAW_DOUYIN_SEC_UID).
+    for (let waited = 0; waited < 4_000 && !_detectedSecUid; waited += 200) {
+      await sleep(200);
+    }
+    if (_detectedSecUid) {
+      const apiResult = await harvestScopeViaApiBridge(
+        msg.scope,
+        _detectedSecUid,
+        msg.max_items_per_scope,
+      );
+      apiPagesFetched = apiResult.pages;
+      apiError = apiResult.error ?? "";
+      if (apiResult.items.length > 0) {
+        const newOnes = sink.ingest(apiResult.items);
+        apiItemsHarvested += newOnes.length;
+        for (const item of newOnes) {
+          if (item.scope === msg.scope) allItems.push(item);
+        }
+      }
+      debugLog("api_harvest_done", {
+        scope: msg.scope,
+        pages: apiResult.pages,
+        items_total: apiResult.items.length,
+        items_new: apiItemsHarvested,
+        error: apiError,
+      });
+    } else {
+      debugLog("api_harvest_skipped", { scope: msg.scope, reason: "no_sec_uid" });
+    }
 
     const anchorSelector =
       msg.scope === "dy_follow"
@@ -696,6 +808,10 @@ async function runScope(msg: ScopeExecuteMessage): Promise<ScopeResultPayload> {
         aweme_messages_received: awemeMessagesReceived,
         install_messages_received: _installMessagesReceived,
         dom_items_harvested: domItemsHarvested,
+        api_items_harvested: apiItemsHarvested,
+        api_pages_fetched: apiPagesFetched,
+        api_error: apiError,
+        sec_uid: _detectedSecUid,
         end_of_feed: endOfFeedPhrase,
         inject_status: msg.debug_inject_status,
         page_url: clickReport.page_url,
@@ -716,6 +832,10 @@ async function runScope(msg: ScopeExecuteMessage): Promise<ScopeResultPayload> {
         aweme_messages_received: awemeMessagesReceived,
         install_messages_received: _installMessagesReceived,
         dom_items_harvested: domItemsHarvested,
+        api_items_harvested: apiItemsHarvested,
+        api_pages_fetched: apiPagesFetched,
+        api_error: apiError,
+        sec_uid: _detectedSecUid,
         end_of_feed: endOfFeedPhrase,
         inject_status: msg.debug_inject_status,
         page_url: clickReport.page_url,

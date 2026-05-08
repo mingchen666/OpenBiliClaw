@@ -204,19 +204,38 @@ type FetchLike = (
 // so we can see what Douyin actually fetches. Rate-limited to avoid
 // flooding the daemon log relay.
 const URL_PROBE_TYPE = "OPENBILICLAW_DOUYIN_URL_PROBE";
+const SEC_UID_DETECTED_TYPE = "OPENBILICLAW_DOUYIN_SEC_UID";
 let _probeCount = 0;
+let _detectedSecUid = "";
 function probeUrl(transport: "fetch" | "xhr", url: string): void {
   if (!url) return;
   if (!url.includes("/aweme") && !url.includes("/user/")) return;
-  if (_probeCount >= 60) return;
-  _probeCount += 1;
-  try {
-    window.postMessage(
-      { type: URL_PROBE_TYPE, transport, url, classified: classifyDouyinResponseUrl(url) },
-      window.location.origin,
-    );
-  } catch {
-    // best effort
+  if (_probeCount < 60) {
+    _probeCount += 1;
+    try {
+      window.postMessage(
+        { type: URL_PROBE_TYPE, transport, url, classified: classifyDouyinResponseUrl(url) },
+        window.location.origin,
+      );
+    } catch {
+      // best effort
+    }
+  }
+  // Whenever we see a sec_user_id in the URL, broadcast it. The
+  // isolated-world content script needs sec_uid to drive the
+  // API-driven scope harvester; we can't get it from /user/self
+  // (Douyin doesn't redirect that to the canonical sec_uid path).
+  const m = url.match(/[?&]sec_user_id=(MS4w[\w-]+)/);
+  if (m && m[1] && m[1] !== _detectedSecUid) {
+    _detectedSecUid = m[1];
+    try {
+      window.postMessage(
+        { type: SEC_UID_DETECTED_TYPE, secUid: m[1] },
+        window.location.origin,
+      );
+    } catch {
+      // best effort
+    }
   }
 }
 
@@ -374,6 +393,161 @@ function replayInstallStatusPing(status: "installed" | "skipped_no_sdk"): void {
   setTimeout(fire, 1_000);
 }
 
+// ---------------------------------------------------------------------------
+// API-driven harvester — Douyin user-tab endpoints, cursor pagination
+// ---------------------------------------------------------------------------
+//
+// Replaces UI-scrolling for scope harvest. The MAIN-world fetch is
+// already wrapped by webmssdk.js (waitForDouyinSdk above), so calls
+// to window.fetch get X-Bogus / a_bogus / msToken auto-signed.
+//
+// Endpoints + cursor key per F2 (Apache-2.0 reference):
+//   dy_post:    /aweme/v1/web/aweme/post/      max_cursor / has_more
+//   dy_collect: /aweme/v1/web/aweme/favorite/  max_cursor / has_more
+//   dy_like:    /aweme/v1/web/aweme/like/      max_cursor / has_more
+//   dy_follow:  /aweme/v1/web/user/follow/list/  max_time / has_more
+//
+// Isolated-world content script invokes this via postMessage:
+//   request:  { type: "OPENBILICLAW_DOUYIN_API_REQUEST",
+//               requestId, scope, secUid, maxItems }
+//   response: { type: "OPENBILICLAW_DOUYIN_API_RESPONSE",
+//               requestId, items, error?, pages_fetched }
+
+const API_REQUEST_TYPE = "OPENBILICLAW_DOUYIN_API_REQUEST";
+const API_RESPONSE_TYPE = "OPENBILICLAW_DOUYIN_API_RESPONSE";
+
+const SCOPE_ENDPOINT: Record<DouyinScope, string> = {
+  dy_post: "/aweme/v1/web/aweme/post/",
+  dy_collect: "/aweme/v1/web/aweme/favorite/",
+  dy_like: "/aweme/v1/web/aweme/like/",
+  dy_follow: "/aweme/v1/web/user/follow/list/",
+};
+
+function buildScopeApiUrl(
+  scope: DouyinScope,
+  secUid: string,
+  cursor: number,
+): string {
+  const params = new URLSearchParams({
+    device_platform: "webapp",
+    aid: "6383",
+    channel: "channel_pc_web",
+    pc_client_type: "1",
+    sec_user_id: secUid,
+    count: scope === "dy_follow" ? "20" : "18",
+    publish_video_strategy_type: "2",
+    update_version_code: "170400",
+    version_code: "170400",
+    version_name: "17.4.0",
+    cookie_enabled: "true",
+  });
+  if (scope === "dy_follow") {
+    params.set("max_time", String(cursor));
+    params.set("min_time", "0");
+    params.set("with_fstatus", "1");
+    params.set("source_type", "1");
+  } else {
+    params.set("max_cursor", String(cursor));
+    params.set("min_cursor", "0");
+    params.set("whale_cut_token", "");
+    params.set("cut_version", "1");
+  }
+  return `${SCOPE_ENDPOINT[scope]}?${params.toString()}`;
+}
+
+interface ScopeApiResult {
+  items: DouyinBootstrapItem[];
+  pages_fetched: number;
+}
+
+async function harvestScopeViaApi(
+  target: Window,
+  scope: DouyinScope,
+  secUid: string,
+  maxItems: number,
+): Promise<ScopeApiResult> {
+  const w = target as unknown as { fetch: FetchLike };
+  const items: DouyinBootstrapItem[] = [];
+  const seen = new Set<string>();
+  let cursor = 0;
+  let pages = 0;
+  const cap = Math.max(0, Math.floor(maxItems));
+  const MAX_PAGES = 50; // safety
+  for (let page = 0; page < MAX_PAGES && items.length < cap; page += 1) {
+    const url = buildScopeApiUrl(scope, secUid, cursor);
+    let json: unknown;
+    try {
+      const resp = await w.fetch(url, { credentials: "include" });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      json = (await resp.json()) as unknown;
+    } catch (err) {
+      if (page === 0) throw err;
+      break;
+    }
+    pages += 1;
+    const batch =
+      scope === "dy_follow"
+        ? parseUserFollowListResponse(json)
+        : parseAwemeListResponse(json, scope);
+    for (const item of batch) {
+      const key = scope === "dy_follow" ? item.creator_sec_uid : item.aweme_id;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      items.push(item);
+      if (items.length >= cap) break;
+    }
+    const root = json as Record<string, unknown>;
+    const hasMore = Boolean(root.has_more);
+    if (!hasMore) break;
+    const nextCursor =
+      scope === "dy_follow"
+        ? (typeof root.min_time === "number" ? root.min_time : 0)
+        : (typeof root.max_cursor === "number" ? root.max_cursor : 0);
+    if (!nextCursor || nextCursor === cursor) break;
+    cursor = nextCursor;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return { items, pages_fetched: pages };
+}
+
+function installApiHarvester(target: Window): void {
+  target.addEventListener("message", (event: MessageEvent) => {
+    const data = (event?.data ?? null) as Record<string, unknown> | null;
+    if (!data || typeof data !== "object") return;
+    if (data.type !== API_REQUEST_TYPE) return;
+    const requestId = String(data.requestId ?? "");
+    const scope = data.scope as DouyinScope;
+    const secUid = String(data.secUid ?? "");
+    const maxItems = Number(data.maxItems ?? 0);
+    if (!requestId || !scope || !secUid) return;
+    void (async () => {
+      try {
+        const result = await harvestScopeViaApi(target, scope, secUid, maxItems);
+        target.postMessage(
+          {
+            type: API_RESPONSE_TYPE,
+            requestId,
+            items: result.items,
+            pages_fetched: result.pages_fetched,
+          },
+          target.location.origin,
+        );
+      } catch (err) {
+        target.postMessage(
+          {
+            type: API_RESPONSE_TYPE,
+            requestId,
+            items: [],
+            pages_fetched: 0,
+            error: String(err instanceof Error ? err.message : err),
+          },
+          target.location.origin,
+        );
+      }
+    })();
+  });
+}
+
 if (typeof window !== "undefined" && typeof document !== "undefined") {
   // Generous timeout: real e2e probe (2026-05-08) showed
   // skipped_no_sdk on slow page-bundle loads even when the user was
@@ -395,8 +569,9 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     };
     installFetchTap(window, postItems);
     installXhrTap(window, postItems);
+    installApiHarvester(window);
     replayInstallStatusPing("installed");
     // eslint-disable-next-line no-console
-    console.debug("[OpenBiliClaw] dy fetch-tap installed (MAIN world)");
+    console.debug("[OpenBiliClaw] dy fetch-tap + API harvester installed (MAIN world)");
   });
 }
