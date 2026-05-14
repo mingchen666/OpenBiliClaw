@@ -959,6 +959,45 @@ class Database:
             counts[source_family] += 1
         return dict(counts)
 
+    def get_pool_distribution_counts(self) -> dict[str, dict[str, int]]:
+        """Return fresh pool counts grouped by topic, style, and franchise."""
+        cursor = self.conn.execute(
+            """
+            SELECT bvid, topic_group, style_key, franchise_key, source, source_platform, content_url
+            FROM content_cache
+            WHERE COALESCE(pool_status, 'fresh') = 'fresh'
+              AND COALESCE(feedback_type, '') != 'dislike'
+              AND COALESCE(pool_expression, '') != ''
+              AND COALESCE(pool_topic_label, '') != ''
+              AND NOT EXISTS (
+                SELECT 1
+                FROM recommendations AS r
+                WHERE r.bvid = content_cache.bvid
+              )
+            """
+        )
+        viewed_bvids = self.get_recent_viewed_bvids()
+        counts: dict[str, dict[str, int]] = {
+            "topic_group": defaultdict(int),
+            "style_key": defaultdict(int),
+            "franchise_key": defaultdict(int),
+        }
+        for row in cursor.fetchall():
+            bvid = str(row["bvid"]).strip()
+            if not bvid or bvid in viewed_bvids:
+                continue
+            if not _is_linkable_pool_source(
+                row["source"],
+                row["source_platform"],
+                row["content_url"],
+            ):
+                continue
+            for axis in ("topic_group", "style_key", "franchise_key"):
+                value = str(row[axis] or "").strip()
+                if value:
+                    counts[axis][value] += 1
+        return {axis: dict(axis_counts) for axis, axis_counts in counts.items()}
+
     def canonicalize_topic_groups(self, canonical_map: dict[str, str]) -> int:
         """Rewrite ``content_cache.topic_group`` to canonical form per map.
 
