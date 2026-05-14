@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import pytest
 
 from openbiliclaw.discovery.engine import DiscoveryConcurrencyController
+from openbiliclaw.discovery.pool_snapshot import PoolDistributionSnapshot
 from openbiliclaw.soul.profile import (
     InterestTag,
     PreferenceLayer,
@@ -174,6 +175,33 @@ async def test_search_strategy_passes_style_preferences_to_query_prompt() -> Non
     assert '"humor_preference": 0.85' in user_input
     assert '"depth_preference": 0.25' in user_input
     assert llm_service.calls
+
+
+@pytest.mark.asyncio
+async def test_search_strategy_passes_pool_snapshot_to_query_prompt() -> None:
+    from openbiliclaw.discovery.strategies.strategies import SearchStrategy
+
+    llm_service = FakeLLMService('{"queries": ["人物纪录 审美体验"]}')
+    snapshot = PoolDistributionSnapshot(
+        pool_target_count=100,
+        pool_available_count=80,
+        source_targets={"search": 25},
+        source_counts={"search": 20},
+        source_deficits={"search": 5},
+        saturated_topics=("AI 编程",),
+        saturated_styles=("deep_dive",),
+        undercovered_axes=("人物纪录",),
+    )
+    strategy = SearchStrategy(
+        llm_service=llm_service,
+        bilibili_client=FakeBilibiliClient({}),
+        llm_evaluation=False,
+    )
+
+    await strategy.discover(_build_profile(), limit=20, pool_snapshot=snapshot)
+
+    user_input = str(llm_service.calls[0]["user_input"])
+    assert "pool_distribution_hints" in user_input
 
 
 @pytest.mark.asyncio

@@ -52,7 +52,13 @@ class SearchStrategy(DiscoveryStrategy):
     def name(self) -> str:
         return "search"
 
-    async def discover(self, profile: SoulProfile, limit: int = 20) -> list[DiscoveredContent]:
+    async def discover(
+        self,
+        profile: SoulProfile,
+        limit: int = 20,
+        *,
+        pool_snapshot: object | None = None,
+    ) -> list[DiscoveredContent]:
         """Generate search queries based on user soul and execute them.
 
         Strategy:
@@ -64,11 +70,12 @@ class SearchStrategy(DiscoveryStrategy):
         Args:
             profile: User soul profile.
             limit: Maximum results.
+            pool_snapshot: Optional current pool distribution summary.
 
         Returns:
             Discovered content list.
         """
-        queries = await self._generate_queries(profile)
+        queries = await self._generate_queries(profile, pool_snapshot=pool_snapshot)
         self.last_intermediates = {"queries": list(queries)}
         anchor_list = interest_anchors(profile)
         candidates: list[DiscoveredContent] = []
@@ -297,9 +304,17 @@ class SearchStrategy(DiscoveryStrategy):
                 consecutive_empty = 0
         return gathered
 
-    async def _generate_queries(self, profile: SoulProfile) -> list[str]:
+    async def _generate_queries(
+        self,
+        profile: SoulProfile,
+        *,
+        pool_snapshot: object | None = None,
+    ) -> list[str]:
+        to_prompt_hints = getattr(pool_snapshot, "to_prompt_hints", None)
+        pool_hints = to_prompt_hints() if callable(to_prompt_hints) else None
         prompt_messages = build_search_queries_prompt(
-            profile_summary=self._profile_summary(profile)
+            profile_summary=self._profile_summary(profile),
+            pool_hints=pool_hints,
         )
         try:
             response = await self.llm_service.complete_structured_task(

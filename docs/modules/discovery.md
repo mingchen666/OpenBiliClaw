@@ -647,6 +647,7 @@ strategy = SearchStrategy(
 )
 
 items = await strategy.discover(profile, limit=20)
+items = await strategy.discover(profile, limit=20, pool_snapshot=snapshot)
 
 # 运行后可取中间产物
 queries = strategy.last_intermediates.get("queries", [])
@@ -655,6 +656,7 @@ queries = strategy.last_intermediates.get("queries", [])
 行为说明：
 
 - 优先通过 `LLMService.complete_structured_task()` 生成 5 到 10 个 B 站搜索词
+- 如果传入 `pool_snapshot`，会把 `to_prompt_hints()` 写入 query prompt，引导模型软避让已拥挤的 topic/style，并优先补欠覆盖方向；这只是分布提示，不会要求生成脱离用户画像的 query
 - LLM 返回坏 JSON 或空结果时，回退到本地兴趣标签 query
 - 正常模式默认抓每个 query 的第一页；backfill 变体会放大 query 数和页数
 - 对多个 query 的搜索结果按 `bvid` 去重

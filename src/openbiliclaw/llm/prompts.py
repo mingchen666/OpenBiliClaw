@@ -647,6 +647,7 @@ def build_insight_prompt(
 def build_search_queries_prompt(
     *,
     profile_summary: dict[str, object],
+    pool_hints: dict[str, object] | None = None,
 ) -> list[dict[str, str]]:
     """Build a structured prompt for search query generation."""
     system_prompt = """
@@ -685,6 +686,9 @@ def build_search_queries_prompt(
      不能因为画像深就只发硬 query；用户硬不代表 24 小时都想看硬内容。
 6. 所有 query 的核心主题词（第一个实词）必须两两不同，
    禁止同一概念换皮出现多次。
+9. 如果 user 消息包含 <pool_distribution_hints>，这些是当前推荐池已经拥挤或欠覆盖的方向。
+   avoid_topics / avoid_styles 是软避让信号；prefer_axes 是优先补货方向。
+   不要为了避让而生成与用户画像无关的 query。
 </rules>
 
 <output_schema>
@@ -723,13 +727,25 @@ def build_search_queries_prompt(
 - "科技 深度 解析" + "历史 深度 解读" + "哲学 深度 讨论"（全部偏学术，风格单一）
 </examples>
 """.strip()
-    user_prompt = "\n\n".join(
-        [
-            "<profile_summary>",
-            json.dumps(profile_summary, ensure_ascii=False, indent=2),
-            "</profile_summary>",
-        ]
-    )
+    user_sections = [
+        "<profile_summary>",
+        json.dumps(profile_summary, ensure_ascii=False, indent=2),
+        "</profile_summary>",
+    ]
+    compact_pool_hints = {
+        key: value
+        for key, value in (pool_hints or {}).items()
+        if value not in (None, "", [], {}, ())
+    }
+    if compact_pool_hints:
+        user_sections.extend(
+            [
+                "<pool_distribution_hints>",
+                json.dumps(compact_pool_hints, ensure_ascii=False, indent=2),
+                "</pool_distribution_hints>",
+            ]
+        )
+    user_prompt = "\n\n".join(user_sections)
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
