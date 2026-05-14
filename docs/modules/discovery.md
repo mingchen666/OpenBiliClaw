@@ -24,6 +24,7 @@
 - **TrendingStrategy** — 从全站榜和相关分区榜中筛选高匹配热点内容
 - **RelatedChainStrategy** — 从近期高价值视频种子出发，沿相关推荐链扩展候选内容
 - **ExploreStrategy** — 推断"高相关的远域探索方向"，寻找更有陌生感但仍可解释的内容
+- **PoolDistributionSnapshot** — runtime 在补池前构建的候选池分布快照，给 discovery 提供当前供给拥挤/缺口的软信号
 - **SourceAdapter 协议** — 多源适配层（`sources/`），在上述 4 个 B 站策略之外挂载非 B 站内容源（小红书、抖音初始化画像信号与 search / hot / feed discovery、知乎、V2EX 等）
 
 ## 多源适配层
@@ -199,6 +200,8 @@ discovery 不是“把整个找片过程都交给 LLM”。当前实现里，LLM
 - 解析 JSON 失败就放弃这轮 LLM 结果
 - query 去重
 - 最多取配置允许的前几条
+- 如果收到 `PoolDistributionSnapshot`，会把 `to_prompt_hints()` 注入 prompt 的 `<pool_distribution_hints>`，让模型把 `avoid_topics` / `avoid_styles` / `avoid_franchises` / `prefer_axes` 当作软指导；这些信号不能覆盖画像相关性，也不能把 `source_deficits` 里的平台名当成搜索主题
+- 如果 snapshot hint 构造失败，会记录异常并回退到普通 query 生成
 - 如果 LLM 完全不可用，就回退到“兴趣名 / 核心特质”直接拼出的本地 query
 
 ### 2. 排行榜分区选择 prompt
@@ -515,7 +518,7 @@ assert 0.0 <= score <= 1.0
 - `discover()` 现在会并发执行多个已注册 strategy
 - discovery 的受控并发 controller 会按当前 `asyncio` event loop 重新创建内部 semaphore，适配 CLI 里多次 `asyncio.run(...)` 的分阶段调用
 - `discover(..., strategy_limits={...})` 可让调用方限制每个 strategy 的单独拉取量；最终 `limit` 仍控制合并后的返回 / 缓存数量，`strategy_limits` 只负责避免 grouped refresh 把同一个平台缺口放大到每个策略
-- `discover(..., pool_snapshot=...)` 可接收可选的 `PoolDistributionSnapshot`；引擎只会把它传给签名兼容的 strategy，保留旧版 `discover(profile, limit=...)` 签名不变。
+- `discover(..., pool_snapshot=...)` 可接收可选的 `PoolDistributionSnapshot`；引擎只会把它传给签名兼容的 primary strategy 和 backfill strategy，保留旧版 `discover(profile, limit=...)` 签名不变。
 - 同一 `bvid` 若被多个策略命中，保留 `relevance_score` 更高的版本
 - 主候选少于目标数量时，会依次尝试策略 backfill 和历史缓存 backfill；策略 backfill 同样会收到兼容转发的 `pool_snapshot`
 - 当调用方只需要少量候选时，策略会先把送入 LLM 评估的候选窗口压到 `max(6, limit*2)`，仍保留过采样缓冲，但不再用固定 90 条窗口浪费评估调用
@@ -578,7 +581,10 @@ assert result.source_counts.get("dy-plugin-feed", 0) >= 0
 ### PoolDistributionSnapshot
 
 ```python
-from openbiliclaw.discovery.pool_snapshot import build_pool_distribution_snapshot
+from openbiliclaw.discovery.pool_snapshot import (
+    PoolDistributionSnapshot,
+    build_pool_distribution_snapshot,
+)
 
 snapshot = build_pool_distribution_snapshot(
     database,
@@ -590,10 +596,13 @@ hints = snapshot.to_prompt_hints()
 
 行为说明：
 
-- `PoolDistributionSnapshot` 是冻结 dataclass，记录 `pool_available_count`、各平台族当前数量 / 缺口，以及已饱和的 `topic_group`、`style_key`、`franchise_key`。
-- `to_prompt_hints()` 输出面向后续 prompt 的轻量 dict：`avoid_topics`、`avoid_styles`、`avoid_franchises`、`prefer_axes` 和 `source_deficits`。
+- `PoolDistributionSnapshot` 是冻结 dataclass，记录 `pool_target_count`、`pool_available_count`、各平台族目标数量 / 当前数量 / 缺口，以及已饱和的 `topic_group`、`style_key`、`franchise_key`。
+- `source_deficits` 只表示平台 / 来源族缺口，例如 `bilibili`、`xiaohongshu`、`douyin` 距离目标配比还差多少；它和内容轴分开处理，不会被解释成“应该搜索某个平台名”。
+- `to_prompt_hints()` 输出面向后续 prompt 的轻量 dict：`avoid_topics`、`avoid_styles`、`avoid_franchises`、`prefer_axes` 和 `source_deficits`。其中 `avoid_*`、`prefer_axes` 都是软信号，只影响 query 生成和引擎层软重排，不是硬过滤条件。
+- 当前 runtime 构建的 snapshot 不会把平台缺口自动合成内容 `prefer_axes`；`undercovered_axes` / `prefer_axes` 保留给手动传入或未来更细的内容轴缺口判断。
 - 统计口径复用候选池可见性：只看 fresh、非 dislike、未推荐、已预生成 pool copy 且可打开的候选。
 - runtime refresh 会在每次 B 站 discovery 前构建 snapshot，并通过 `ContentDiscoveryEngine.discover(..., pool_snapshot=...)` 传入；构建失败只记录日志，不阻塞补货。
+- 引擎层会在最终压缩前应用 snapshot 软重排：饱和 topic/style/franchise 分别轻微降权，显式 undercovered topic 轻微加权，强相关候选仍保留优先级，且调整分只用于本轮排序，不会持久化覆盖 `relevance_score`。
 
 ### Runtime pool source balance
 
@@ -631,6 +640,7 @@ distribution_counts = database.get_pool_distribution_counts()
 - 小红书 producer 会把小红书平台缺口传给关键词生成：只缺 2 条时只生成 2 个搜索关键词，不再固定生成 5 个关键词再让插件慢慢消化。
 - 小红书候选必须带可打开的 `xsec_token` URL 才计入可用池子；裸 URL 仍不会参与候选池计数或复活。
 - `Database.get_pool_distribution_counts()` 按同一可见性口径返回 `topic_group`、`style_key`、`franchise_key` 计数，供 `PoolDistributionSnapshot` 判断哪些方向已接近饱和。
+- pool snapshot 是 discovery 的输入上下文，不改变后续 recommendation serving 的读取路径；推荐层仍然从 `content_cache` 中消费已入池、已预生成文案的候选。
 
 ### SearchStrategy
 
