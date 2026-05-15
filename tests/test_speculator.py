@@ -85,6 +85,80 @@ def test_probe_novelty_guard_matches_recent_probe_history():
     assert guard.is_duplicate_domain("城市漫游路线") is True
 
 
+def _profile_with_ai_specifics():
+    from openbiliclaw.soul.profile import (
+        InterestDomain,
+        InterestLayer,
+        InterestSpecific,
+        OnionProfile,
+    )
+
+    return OnionProfile(
+        interest=InterestLayer(
+            likes=[
+                InterestDomain(
+                    domain="AI",
+                    specifics=[
+                        InterestSpecific(name="ComfyUI工作流"),
+                        InterestSpecific(name="图像生成实战"),
+                    ],
+                )
+            ]
+        )
+    )
+
+
+async def test_speculator_generate_drops_duplicate_profile_interest():
+    class _FakeLLMService:
+        async def complete_structured_task(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "speculations": [
+                            {
+                                "domain": "ComfyUI工作流拆解",
+                                "category": "AI",
+                                "reason": (
+                                    "你已经在图像生成方向有持续观看，这个方向只是更具体的工作流拆解。"
+                                ),
+                                "confidence": 0.5,
+                                "experience_mode": "knowledge",
+                                "entry_load": "heavy",
+                                "specifics": ["ComfyUI工作流", "节点搭建技巧"],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        speculator = InterestSpeculator(
+            llm_service=_FakeLLMService(),
+            data_dir=Path(tmpdir),
+        )
+
+        result = await speculator.force_tick(_profile_with_ai_specifics())
+
+        assert result.generated == []
+
+
+def test_speculator_ingest_seed_skips_existing_profile_interest():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        speculator = InterestSpeculator(
+            llm_service=None,
+            data_dir=Path(tmpdir),
+        )
+
+        added = speculator.ingest_seeds(
+            [{"name": "ComfyUI工作流拆解", "category": "AI", "weight": 0.5}],
+            profile=_profile_with_ai_specifics(),
+        )
+
+        assert added == 0
+
+
 # ---------------------------------------------------------------------------
 # Event matching
 # ---------------------------------------------------------------------------

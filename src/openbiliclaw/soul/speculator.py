@@ -735,6 +735,9 @@ class InterestSpeculator:
     def ingest_seeds(
         self,
         seeds: list[dict[str, Any]],
+        *,
+        profile: OnionProfile | None = None,
+        probed_domains: set[str] | None = None,
     ) -> int:
         """Ingest speculative interests from PreferenceAnalyzer as seed candidates."""
         if not seeds:
@@ -746,12 +749,19 @@ class InterestSpeculator:
 
         existing_domains = {s.domain.lower() for s in state.active}
         cooldown_domains = {c.domain.lower() for c in state.cooldown}
+        novelty_guard = ProbeNoveltyGuard.from_profile_and_state(
+            profile,
+            state,
+            probed_domains=probed_domains,
+        )
 
         for seed in seeds:
             domain = str(seed.get("domain") or seed.get("name", "")).strip()
             if not domain:
                 continue
             if domain.lower() in existing_domains or domain.lower() in cooldown_domains:
+                continue
+            if novelty_guard.is_duplicate_domain(domain):
                 continue
             if len(state.active) >= self._max_active:
                 break
@@ -949,6 +959,7 @@ class InterestSpeculator:
             for d in getattr(profile.interest, "likes", [])
             if str(getattr(d, "domain", "")).strip()
         }
+        novelty_guard = ProbeNoveltyGuard.from_profile_and_state(profile, state)
 
         candidates: list[SpeculativeInterest] = []
         rejected_reasons: list[str] = []
@@ -977,7 +988,13 @@ class InterestSpeculator:
             if domain.lower() in like_domain_set:
                 rejected_reasons.append(f"{domain} (domain shadows existing like)")
                 continue
+            # Skip probes that restate profile/active/cooldown coverage.
+            if novelty_guard.is_duplicate_domain(domain):
+                rejected_reasons.append(f"{domain} (duplicate coverage)")
+                continue
             # Skip probes with no actionable specifics.
+            filtered_specific_names = novelty_guard.filter_specifics([s.name for s in specifics])
+            specifics = [SpeculativeSpecific(name=name) for name in filtered_specific_names]
             if len(specifics) < 2:
                 rejected_reasons.append(f"{domain} (specifics<2)")
                 continue
