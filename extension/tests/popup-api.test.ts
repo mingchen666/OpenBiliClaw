@@ -5,9 +5,12 @@ import {
   appendRecommendations,
   fetchPendingDelight,
   fetchActivityFeed,
+  fetchChatTurn,
+  fetchChatTurns,
   fetchConfig,
   fetchProfileSummary,
   reshuffleRecommendations,
+  startChatTurn,
   updateConfig,
 } from "../popup/popup-api.js";
 
@@ -319,4 +322,99 @@ test("updateConfig sends PUT with embedding config", async () => {
 
   assert.equal(result.ok, true);
   assert.equal(result.reloaded, true);
+});
+
+test("startChatTurn posts durable chat turn metadata", async () => {
+  const calls: Array<{ url: string; options: any }> = [];
+  globalThis.fetch = async (url: any, options: any) => {
+    calls.push({ url, options });
+    return {
+      ok: true,
+      async json() {
+        return {
+          turn_id: "turn-abc",
+          session: "popup",
+          scope: "delight",
+          subject_id: "BV1DL",
+          subject_title: "复杂系统入门",
+          message: "我想聊聊这条",
+          reply: "",
+          status: "pending",
+          error: "",
+          created_at: "2026-05-15 10:00:00",
+          updated_at: "2026-05-15 10:00:00",
+        };
+      },
+    };
+  };
+
+  const result = await startChatTurn({
+    turnId: "turn-abc",
+    session: "popup",
+    scope: "delight",
+    subjectId: "BV1DL",
+    subjectTitle: "复杂系统入门",
+    message: "我想聊聊这条",
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "http://127.0.0.1:8420/api/chat/turns");
+  assert.equal(calls[0].options.method, "POST");
+  assert.equal(calls[0].options.headers["Content-Type"], "application/json");
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    turn_id: "turn-abc",
+    session: "popup",
+    scope: "delight",
+    subject_id: "BV1DL",
+    subject_title: "复杂系统入门",
+    message: "我想聊聊这条",
+  });
+  assert.equal(result.status, "pending");
+});
+
+test("fetchChatTurn and fetchChatTurns read durable chat state", async () => {
+  const calls: Array<{ url: string; options: any }> = [];
+  globalThis.fetch = async (url: any, options: any) => {
+    calls.push({ url, options });
+    return {
+      ok: true,
+      async json() {
+        if (String(url).endsWith("/api/chat/turns/turn-abc")) {
+          return {
+            turn_id: "turn-abc",
+            session: "popup",
+            scope: "chat",
+            message: "你好",
+            reply: "你好，我在。",
+            status: "completed",
+          };
+        }
+        return {
+          items: [
+            {
+              turn_id: "turn-abc",
+              session: "popup",
+              scope: "chat",
+              message: "你好",
+              reply: "你好，我在。",
+              status: "completed",
+            },
+          ],
+        };
+      },
+    };
+  };
+
+  const turn = await fetchChatTurn("turn-abc");
+  const history = await fetchChatTurns({ session: "popup", scope: "chat", limit: 10 });
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8420/api/chat/turns/turn-abc");
+  assert.equal(calls[0].options.method, "GET");
+  assert.equal(
+    calls[1].url,
+    "http://127.0.0.1:8420/api/chat/turns?session=popup&scope=chat&limit=10",
+  );
+  assert.equal(calls[1].options.method, "GET");
+  assert.equal(turn.reply, "你好，我在。");
+  assert.equal(history.items[0].turn_id, "turn-abc");
 });

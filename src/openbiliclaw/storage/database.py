@@ -114,6 +114,26 @@ CREATE TABLE IF NOT EXISTS recommendations (
     FOREIGN KEY (bvid) REFERENCES content_cache(bvid)
 );
 
+-- Durable popup chat turns.  These let the side panel recover in-flight
+-- and completed replies after Chrome reloads or discards the panel page.
+CREATE TABLE IF NOT EXISTS chat_turns (
+    turn_id       TEXT PRIMARY KEY,
+    session       TEXT NOT NULL DEFAULT 'popup',
+    scope         TEXT NOT NULL DEFAULT 'chat',
+    subject_id    TEXT NOT NULL DEFAULT '',
+    subject_title TEXT NOT NULL DEFAULT '',
+    message       TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'pending',
+    reply         TEXT NOT NULL DEFAULT '',
+    error         TEXT NOT NULL DEFAULT '',
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_chat_turns_session_created
+    ON chat_turns(session, created_at, turn_id);
+CREATE INDEX IF NOT EXISTS idx_chat_turns_scope_subject
+    ON chat_turns(scope, subject_id, created_at);
+
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY
@@ -196,6 +216,7 @@ class Database:
         self._ensure_source_recipes_table()
         self._ensure_xhs_observed_urls_table()
         self._ensure_llm_usage_cache_columns()
+        self._ensure_chat_turns_table()
 
         # Set schema version
         self._conn.execute(
@@ -299,6 +320,118 @@ class Database:
         """
         cursor = self.conn.execute(
             "SELECT * FROM events ORDER BY created_at DESC LIMIT ?", (limit,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Durable popup chat turns
+    # ------------------------------------------------------------------
+
+    def create_chat_turn(
+        self,
+        *,
+        turn_id: str,
+        message: str,
+        session: str = "popup",
+        scope: str = "chat",
+        subject_id: str = "",
+        subject_title: str = "",
+    ) -> dict[str, Any]:
+        """Create a pending popup chat turn if it does not already exist."""
+        self._execute_write(
+            """
+            INSERT OR IGNORE INTO chat_turns (
+                turn_id, session, scope, subject_id, subject_title, message, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'pending')
+            """,
+            (
+                turn_id,
+                session or "popup",
+                scope or "chat",
+                subject_id or "",
+                subject_title or "",
+                message,
+            ),
+        )
+        row = self.get_chat_turn(turn_id)
+        if row is None:
+            raise RuntimeError(f"Failed to create chat turn {turn_id!r}")
+        return row
+
+    def complete_chat_turn(self, turn_id: str, *, reply: str) -> None:
+        """Mark a pending popup chat turn as completed."""
+        self._execute_write(
+            """
+            UPDATE chat_turns
+            SET status = 'completed',
+                reply = ?,
+                error = '',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE turn_id = ?
+            """,
+            (reply, turn_id),
+        )
+
+    def fail_chat_turn(self, turn_id: str, *, error: str, reply: str = "") -> None:
+        """Mark a popup chat turn as failed while preserving visible copy."""
+        self._execute_write(
+            """
+            UPDATE chat_turns
+            SET status = 'failed',
+                reply = ?,
+                error = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE turn_id = ?
+            """,
+            (reply, error, turn_id),
+        )
+
+    def get_chat_turn(self, turn_id: str) -> dict[str, Any] | None:
+        """Return one durable popup chat turn by id."""
+        self._ensure_fresh_read()
+        cursor = self.conn.execute(
+            """
+            SELECT turn_id, session, scope, subject_id, subject_title, message,
+                   status, reply, error, created_at, updated_at
+            FROM chat_turns
+            WHERE turn_id = ?
+            """,
+            (turn_id,),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def list_chat_turns(
+        self,
+        *,
+        session: str = "popup",
+        scope: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return recent popup chat turns in display order."""
+        self._ensure_fresh_read()
+        clauses = ["session = ?"]
+        params: list[Any] = [session or "popup"]
+        if scope:
+            clauses.append("scope = ?")
+            params.append(scope)
+        params.append(max(1, int(limit)))
+        cursor = self.conn.execute(
+            f"""
+            SELECT turn_id, session, scope, subject_id, subject_title, message,
+                   status, reply, error, created_at, updated_at
+            FROM (
+                SELECT turn_id, session, scope, subject_id, subject_title, message,
+                       status, reply, error, created_at, updated_at
+                FROM chat_turns
+                WHERE {" AND ".join(clauses)}
+                ORDER BY created_at DESC, turn_id DESC
+                LIMIT ?
+            )
+            ORDER BY created_at ASC, turn_id ASC
+            """,
+            params,
         )
         return [dict(row) for row in cursor.fetchall()]
 
@@ -2448,6 +2581,28 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_xhs_observed_urls_url
                 ON xhs_observed_urls (url);
+        """)
+
+    def _ensure_chat_turns_table(self) -> None:
+        """Create durable popup chat-turn storage for existing databases."""
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS chat_turns (
+                turn_id       TEXT PRIMARY KEY,
+                session       TEXT NOT NULL DEFAULT 'popup',
+                scope         TEXT NOT NULL DEFAULT 'chat',
+                subject_id    TEXT NOT NULL DEFAULT '',
+                subject_title TEXT NOT NULL DEFAULT '',
+                message       TEXT NOT NULL DEFAULT '',
+                status        TEXT NOT NULL DEFAULT 'pending',
+                reply         TEXT NOT NULL DEFAULT '',
+                error         TEXT NOT NULL DEFAULT '',
+                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_chat_turns_session_created
+                ON chat_turns(session, created_at, turn_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_turns_scope_subject
+                ON chat_turns(scope, subject_id, created_at);
         """)
 
     # ── XHS observed URL ingest ───────────────────────────────────

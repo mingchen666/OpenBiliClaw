@@ -456,6 +456,44 @@ class ChatResponse(BaseModel):
     reply: str
 
 
+class ChatTurnIn(BaseModel):
+    """Durable popup chat turn request.
+
+    The popup uses this endpoint for lifecycle-safe chat.  The POST
+    returns quickly with a pending turn; the backend completes it in the
+    background and the popup polls by ``turn_id`` after reloads.
+    """
+
+    message: str
+    turn_id: str = ""
+    session: str = "popup"
+    scope: str = "chat"
+    subject_id: str = ""
+    subject_title: str = ""
+
+
+class ChatTurnOut(BaseModel):
+    """One durable popup chat turn."""
+
+    turn_id: str
+    session: str = "popup"
+    scope: str = "chat"
+    subject_id: str = ""
+    subject_title: str = ""
+    message: str = ""
+    reply: str = ""
+    status: str = "pending"
+    error: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class ChatTurnListResponse(BaseModel):
+    """Durable popup chat history."""
+
+    items: list[ChatTurnOut]
+
+
 # --- Configuration API models ---
 
 

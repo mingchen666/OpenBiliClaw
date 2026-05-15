@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from contextlib import suppress
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +19,9 @@ from openbiliclaw.api.models import (
     BilibiliCookieIn,
     BilibiliCookieResponse,
     ChatIn,
+    ChatTurnIn,
+    ChatTurnListResponse,
+    ChatTurnOut,
     CognitionUpdateSeenIn,
     CognitionUpdateSeenResponse,
     CognitionUpdateSummary,
@@ -266,6 +270,132 @@ def create_app(
                     await ingest(signal)
         except Exception:
             logger.exception("Failed to ingest source task events into profile pipeline")
+
+    chat_turn_lock = asyncio.Lock()
+    fallback_chat_turns: dict[str, dict[str, Any]] = {}
+    running_chat_turn_tasks: set[str] = set()
+
+    def _normalize_chat_scope(scope: str) -> str:
+        normalized = scope.strip().lower()
+        if normalized in {"chat", "delight", "probe"}:
+            return normalized
+        return "chat"
+
+    def _normalize_chat_turn(row: dict[str, Any]) -> ChatTurnOut:
+        return ChatTurnOut(
+            turn_id=str(row.get("turn_id", "")),
+            session=str(row.get("session", "popup") or "popup"),
+            scope=_normalize_chat_scope(str(row.get("scope", "chat"))),
+            subject_id=str(row.get("subject_id", "") or ""),
+            subject_title=str(row.get("subject_title", "") or ""),
+            message=str(row.get("message", "") or ""),
+            reply=str(row.get("reply", "") or ""),
+            status=str(row.get("status", "pending") or "pending"),
+            error=str(row.get("error", "") or ""),
+            created_at=str(row.get("created_at", "") or ""),
+            updated_at=str(row.get("updated_at", "") or ""),
+        )
+
+    def _chat_db_method(name: str) -> Any | None:
+        method = getattr(ctx.database, name, None)
+        return method if callable(method) else None
+
+    def _get_chat_turn_row(turn_id: str) -> dict[str, Any] | None:
+        get_chat_turn = _chat_db_method("get_chat_turn")
+        if get_chat_turn is not None:
+            return cast("dict[str, Any] | None", get_chat_turn(turn_id))
+        row = fallback_chat_turns.get(turn_id)
+        return dict(row) if row else None
+
+    def _list_chat_turn_rows(
+        *,
+        session: str = "popup",
+        scope: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        list_chat_turns = _chat_db_method("list_chat_turns")
+        if list_chat_turns is not None:
+            return cast(
+                "list[dict[str, Any]]",
+                list_chat_turns(session=session, scope=scope, limit=limit),
+            )
+        rows = [
+            dict(row)
+            for row in fallback_chat_turns.values()
+            if row.get("session") == session and (not scope or row.get("scope") == scope)
+        ]
+        rows.sort(key=lambda row: (str(row.get("created_at", "")), str(row.get("turn_id", ""))))
+        return rows[-max(1, int(limit)) :]
+
+    def _create_chat_turn_row(payload: ChatTurnIn, *, turn_id: str) -> dict[str, Any]:
+        create_chat_turn = _chat_db_method("create_chat_turn")
+        if create_chat_turn is not None:
+            return cast(
+                "dict[str, Any]",
+                create_chat_turn(
+                    turn_id=turn_id,
+                    session=payload.session.strip() or "popup",
+                    scope=_normalize_chat_scope(payload.scope),
+                    subject_id=payload.subject_id.strip(),
+                    subject_title=payload.subject_title.strip(),
+                    message=payload.message.strip(),
+                ),
+            )
+
+        from datetime import datetime
+
+        now = datetime.now().isoformat(sep=" ")
+        fallback_chat_turns.setdefault(
+            turn_id,
+            {
+                "turn_id": turn_id,
+                "session": payload.session.strip() or "popup",
+                "scope": _normalize_chat_scope(payload.scope),
+                "subject_id": payload.subject_id.strip(),
+                "subject_title": payload.subject_title.strip(),
+                "message": payload.message.strip(),
+                "status": "pending",
+                "reply": "",
+                "error": "",
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        return dict(fallback_chat_turns[turn_id])
+
+    def _complete_chat_turn_row(turn_id: str, *, reply: str) -> None:
+        complete_chat_turn = _chat_db_method("complete_chat_turn")
+        if complete_chat_turn is not None:
+            complete_chat_turn(turn_id, reply=reply)
+            return
+        if turn_id in fallback_chat_turns:
+            from datetime import datetime
+
+            fallback_chat_turns[turn_id].update(
+                {
+                    "status": "completed",
+                    "reply": reply,
+                    "error": "",
+                    "updated_at": datetime.now().isoformat(sep=" "),
+                }
+            )
+
+    def _fail_chat_turn_row(turn_id: str, *, error: str, reply: str = "") -> None:
+        fail_chat_turn = _chat_db_method("fail_chat_turn")
+        if fail_chat_turn is not None:
+            fail_chat_turn(turn_id, error=error, reply=reply)
+            return
+        if turn_id in fallback_chat_turns:
+            from datetime import datetime
+
+            fallback_chat_turns[turn_id].update(
+                {
+                    "status": "failed",
+                    "reply": reply,
+                    "error": error,
+                    "updated_at": datetime.now().isoformat(sep=" "),
+                }
+            )
 
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -1615,6 +1745,149 @@ def create_app(
         except Exception:
             logger.info("Sentiment LLM for '%s' failed, trying keywords", domain)
             return "neutral"
+
+    def _contextual_chat_message(turn: ChatTurnOut) -> str:
+        if turn.scope == "delight":
+            label = turn.subject_title or turn.subject_id or "这条惊喜推荐"
+            return f"[关于惊喜推荐「{label}」的反馈] {turn.message}"
+        if turn.scope == "probe":
+            label = turn.subject_title or turn.subject_id or "这个方向"
+            return f"[关于猜测兴趣「{label}」的反馈] {turn.message}"
+        return turn.message
+
+    async def _generate_durable_chat_reply(turn: ChatTurnOut) -> str:
+        if ctx.dialogue is None:
+            return "对话引擎暂不可用。"
+
+        concurrency = getattr(ctx.discovery_engine, "_concurrency", None)
+        if concurrency is not None:
+            concurrency.chat_active = True
+            await asyncio.sleep(3)
+        try:
+            async with chat_turn_lock:
+                reply = await asyncio.wait_for(
+                    ctx.dialogue.respond(_contextual_chat_message(turn)),
+                    timeout=120,
+                )
+                reply = str(reply)
+        except TimeoutError:
+            return "后台正忙，等一下再聊。"
+        except Exception:
+            logger.exception("Durable chat turn failed: %s", turn.turn_id)
+            return "聊天出了点问题，稍后再试。"
+        finally:
+            if concurrency is not None:
+                concurrency.chat_active = False
+
+        if turn.scope == "delight":
+            label = turn.subject_title or turn.subject_id
+            _record_probe_cognition(
+                f"关于惊喜推荐「{label}」你说：{turn.message}",
+                turn.subject_id or label,
+                "delight_chat",
+                detail=f"你的反馈：{turn.message}\n阿b的回复：{reply}",
+            )
+            await _publish_probe_event(
+                "delight.chat",
+                f"关于「{label}」你说：{turn.message}",
+                turn.subject_id or label,
+            )
+        elif turn.scope == "probe":
+            domain = turn.subject_id or turn.subject_title
+            sentiment = await _judge_probe_sentiment(turn.message, reply, domain)
+            speculator = getattr(ctx.soul_engine, "_speculator", None)
+            if sentiment == "negative":
+                if speculator is not None:
+                    with suppress(Exception):
+                        speculator.user_reject_speculation(domain, cooldown_days=14)
+                summary = f"你对「{domain}」的反馈偏负面（{turn.message}），已暂时搁置 14 天。"
+            elif sentiment == "positive":
+                if speculator is not None:
+                    with suppress(Exception):
+                        speculator.observe(
+                            [
+                                {
+                                    "event_type": "dialogue",
+                                    "title": domain,
+                                    "metadata": {
+                                        "user_message": turn.message,
+                                        "source": "probe_chat",
+                                    },
+                                }
+                            ]
+                        )
+                summary = f"你对「{domain}」表示了兴趣，确认度 +1。"
+            else:
+                summary = f"关于「{domain}」你说：{turn.message}"
+            _record_probe_cognition(
+                summary,
+                domain,
+                "chat",
+                detail=f"你的反馈：{turn.message}\n阿b的回复：{reply}",
+            )
+            await _publish_probe_event("interest.chat", summary, domain)
+
+        return reply
+
+    async def _complete_durable_chat_turn(turn_id: str) -> None:
+        if turn_id in running_chat_turn_tasks:
+            return
+        running_chat_turn_tasks.add(turn_id)
+        try:
+            row = _get_chat_turn_row(turn_id)
+            if row is None:
+                return
+            turn = _normalize_chat_turn(row)
+            if turn.status != "pending":
+                return
+            reply = await _generate_durable_chat_reply(turn)
+            _complete_chat_turn_row(turn_id, reply=reply)
+        except Exception as exc:
+            logger.exception("Failed to complete durable chat turn %s", turn_id)
+            _fail_chat_turn_row(turn_id, error=str(exc), reply="聊天出了点问题，稍后再试。")
+        finally:
+            running_chat_turn_tasks.discard(turn_id)
+
+    @app.post("/api/chat/turns", response_model=ChatTurnOut)
+    async def start_chat_turn(payload: ChatTurnIn) -> ChatTurnOut:
+        message = payload.message.strip()
+        if not message:
+            raise HTTPException(status_code=422, detail="Chat message is required.")
+        raw_turn_id = payload.turn_id.strip()
+        turn_id = raw_turn_id or f"turn-{uuid.uuid4().hex}"
+        existing = _get_chat_turn_row(turn_id)
+        if existing is not None:
+            turn = _normalize_chat_turn(existing)
+            if turn.status == "pending":
+                asyncio.create_task(_complete_durable_chat_turn(turn.turn_id))
+            return turn
+        row = _create_chat_turn_row(payload, turn_id=turn_id)
+        asyncio.create_task(_complete_durable_chat_turn(turn_id))
+        return _normalize_chat_turn(row)
+
+    @app.get("/api/chat/turns", response_model=ChatTurnListResponse)
+    async def list_chat_turns(
+        session: str = "popup",
+        scope: str = "",
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> ChatTurnListResponse:
+        normalized_scope = _normalize_chat_scope(scope) if scope else ""
+        rows = _list_chat_turn_rows(
+            session=session.strip() or "popup",
+            scope=normalized_scope,
+            limit=limit,
+        )
+        return ChatTurnListResponse(items=[_normalize_chat_turn(row) for row in rows])
+
+    @app.get("/api/chat/turns/{turn_id}", response_model=ChatTurnOut)
+    async def get_chat_turn(turn_id: str) -> ChatTurnOut:
+        row = _get_chat_turn_row(turn_id.strip())
+        if row is None:
+            raise HTTPException(status_code=404, detail="Chat turn not found.")
+        turn = _normalize_chat_turn(row)
+        if turn.status == "pending":
+            asyncio.create_task(_complete_durable_chat_turn(turn.turn_id))
+        return turn
 
     @app.post("/api/interest-probes/trigger")
     async def trigger_interest_probe() -> dict[str, Any]:

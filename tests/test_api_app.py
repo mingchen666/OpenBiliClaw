@@ -1962,6 +1962,140 @@ class TestBackendAPI:
         ]
         assert soul_engine._speculator.rejected == [("城市漫游路线", 30)]
 
+    def test_chat_turn_endpoint_persists_pending_turn_until_reply(
+        self, tmp_path: Path
+    ) -> None:
+        import asyncio
+        import time
+
+        from fastapi.testclient import TestClient
+
+        from openbiliclaw.storage.database import Database
+
+        class FakeDialogue:
+            def __init__(self) -> None:
+                self.messages: list[str] = []
+
+            async def respond(self, user_message: str) -> str:
+                self.messages.append(user_message)
+                await asyncio.sleep(0.05)
+                return "你更在意的是它背后的逻辑。"
+
+        db = Database(tmp_path / "openbiliclaw.db")
+        db.initialize()
+        dialogue = FakeDialogue()
+        app = create_app(
+            memory_manager=object(),
+            database=db,
+            soul_engine=object(),
+            dialogue=dialogue,
+        )
+
+        with TestClient(app) as client:
+            start = client.post(
+                "/api/chat/turns",
+                json={
+                    "turn_id": "turn-test-1",
+                    "session": "popup",
+                    "scope": "chat",
+                    "message": "我最近总在看国际新闻",
+                },
+            )
+
+            assert start.status_code == 200
+            assert start.json()["turn_id"] == "turn-test-1"
+            assert start.json()["status"] == "pending"
+
+            turn = start.json()
+            for _ in range(20):
+                time.sleep(0.02)
+                turn = client.get("/api/chat/turns/turn-test-1").json()
+                if turn["status"] == "completed":
+                    break
+
+            assert turn["status"] == "completed"
+            assert turn["reply"] == "你更在意的是它背后的逻辑。"
+            assert dialogue.messages == ["我最近总在看国际新闻"]
+
+            history = client.get("/api/chat/turns", params={"session": "popup"}).json()
+            assert history["items"] == [turn]
+
+        # Re-open the app on the same database to simulate a popup/backend
+        # client lifecycle boundary: completed turns must be recoverable.
+        app2 = create_app(
+            memory_manager=object(),
+            database=db,
+            soul_engine=object(),
+            dialogue=dialogue,
+        )
+        client2 = TestClient(app2)
+        restored = client2.get("/api/chat/turns", params={"session": "popup"}).json()
+
+        assert restored["items"][0]["turn_id"] == "turn-test-1"
+        assert restored["items"][0]["status"] == "completed"
+        assert restored["items"][0]["reply"] == "你更在意的是它背后的逻辑。"
+
+    def test_chat_turn_endpoint_records_delight_scope_context(self, tmp_path: Path) -> None:
+        import asyncio
+        import time
+
+        from fastapi.testclient import TestClient
+
+        from openbiliclaw.storage.database import Database
+
+        class FakeDialogue:
+            def __init__(self) -> None:
+                self.messages: list[str] = []
+
+            async def respond(self, user_message: str) -> str:
+                self.messages.append(user_message)
+                await asyncio.sleep(0.01)
+                return "这条像是从另一个角度补上你的问题。"
+
+        db = Database(tmp_path / "openbiliclaw.db")
+        db.initialize()
+        dialogue = FakeDialogue()
+        app = create_app(
+            memory_manager=object(),
+            database=db,
+            soul_engine=object(),
+            dialogue=dialogue,
+        )
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/chat/turns",
+                json={
+                    "turn_id": "turn-delight-1",
+                    "session": "popup",
+                    "scope": "delight",
+                    "subject_id": "BV1DL",
+                    "subject_title": "复杂系统入门",
+                    "message": "我想知道它为什么会推荐给我",
+                },
+            )
+            assert response.status_code == 200
+
+            turn = response.json()
+            for _ in range(20):
+                time.sleep(0.02)
+                turn = client.get("/api/chat/turns/turn-delight-1").json()
+                if turn["status"] == "completed":
+                    break
+
+            assert turn["status"] == "completed"
+            assert turn["scope"] == "delight"
+            assert turn["subject_id"] == "BV1DL"
+            assert "关于惊喜推荐「复杂系统入门」的反馈" in dialogue.messages[0]
+
+            delight_history = client.get(
+                "/api/chat/turns",
+                params={"session": "popup", "scope": "delight"},
+            ).json()
+            assert [item["turn_id"] for item in delight_history["items"]] == [
+                "turn-delight-1"
+            ]
+
     def test_recommendation_click_endpoint_ingests_strong_signal(self) -> None:
         """POST /api/recommendation-click should push a strong signal through the pipeline."""
         from fastapi.testclient import TestClient
