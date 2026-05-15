@@ -1875,6 +1875,93 @@ class TestBackendAPI:
 
         assert response.status_code == 422
 
+    def test_interest_probe_reject_records_feedback_history(self) -> None:
+        from types import SimpleNamespace
+
+        from fastapi.testclient import TestClient
+
+        class FakeMemoryManager:
+            def __init__(self) -> None:
+                self.runtime_state: dict[str, object] = {
+                    "probed_domains": {},
+                    "probed_axes": {},
+                    "probe_feedback_history": [],
+                }
+                self.cognition_updates: list[dict[str, object]] = []
+
+            def load_discovery_runtime_state(self) -> dict[str, object]:
+                return dict(self.runtime_state)
+
+            def save_discovery_runtime_state(self, state: dict[str, object]) -> None:
+                self.runtime_state = dict(state)
+
+            def load_cognition_updates(self) -> list[dict[str, object]]:
+                return list(self.cognition_updates)
+
+            def save_cognition_updates(self, updates: list[dict[str, object]]) -> None:
+                self.cognition_updates = list(updates)
+
+        class FakeSpeculator:
+            def __init__(self) -> None:
+                self.rejected: list[tuple[str, int]] = []
+                self._active = [
+                    SimpleNamespace(
+                        domain="城市漫游路线",
+                        category="生活方式",
+                        reason="用户最近对城市空间和徒步路线表现出探索意愿。",
+                        experience_mode="wander_observe",
+                        entry_load="light",
+                        specifics=[SimpleNamespace(name="老街路线")],
+                    )
+                ]
+
+            def get_active_speculations(self) -> list[object]:
+                return list(self._active)
+
+            def user_reject_speculation(
+                self,
+                domain: str,
+                cooldown_days: int = 30,
+            ) -> bool:
+                self.rejected.append((domain, cooldown_days))
+                self._active = []
+                return True
+
+        class FakeSoulEngine:
+            def __init__(self) -> None:
+                self._speculator = FakeSpeculator()
+
+        memory = FakeMemoryManager()
+        soul_engine = FakeSoulEngine()
+        app = create_app(
+            memory_manager=memory,
+            database=object(),
+            soul_engine=soul_engine,
+        )
+        client = TestClient(app)
+
+        response = client.post(
+            "/api/interest-probes/respond",
+            json={"domain": "城市漫游路线", "response": "reject"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["action"] == "rejected"
+        history = memory.runtime_state["probe_feedback_history"]
+        assert isinstance(history, list)
+        assert history == [
+            {
+                "domain": "城市漫游路线",
+                "response": "reject",
+                "axis": "wander_observe|light",
+                "category": "生活方式",
+                "reason": "用户最近对城市空间和徒步路线表现出探索意愿。",
+                "specifics": ["老街路线"],
+                "created_at": history[0]["created_at"],
+            }
+        ]
+        assert soul_engine._speculator.rejected == [("城市漫游路线", 30)]
+
     def test_recommendation_click_endpoint_ingests_strong_signal(self) -> None:
         """POST /api/recommendation-click should push a strong signal through the pipeline."""
         from fastapi.testclient import TestClient

@@ -1445,6 +1445,78 @@ def create_app(
                 }
             )
 
+    def _probe_metadata_from_active_speculation(
+        speculator: Any,
+        domain: str,
+    ) -> dict[str, object]:
+        """Read active probe metadata before confirm/reject mutates state."""
+        from openbiliclaw.soul.speculator import build_probe_axis
+
+        get_active = getattr(speculator, "get_active_speculations", None)
+        if not callable(get_active):
+            return {"domain": domain}
+        try:
+            active_specs = list(get_active())
+        except Exception:
+            logger.debug("Failed to read active probe metadata", exc_info=True)
+            return {"domain": domain}
+
+        for spec in active_specs:
+            spec_domain = str(getattr(spec, "domain", "")).strip()
+            if spec_domain.lower() != domain.lower():
+                continue
+            specifics = [
+                str(getattr(item, "name", "")).strip()
+                for item in getattr(spec, "specifics", [])
+                if str(getattr(item, "name", "")).strip()
+            ]
+            axis = build_probe_axis(
+                experience_mode=getattr(spec, "experience_mode", ""),
+                entry_load=getattr(spec, "entry_load", ""),
+            )
+            metadata: dict[str, object] = {
+                "domain": spec_domain or domain,
+                "category": str(getattr(spec, "category", "")).strip(),
+                "reason": str(getattr(spec, "reason", "")).strip(),
+            }
+            if axis:
+                metadata["axis"] = axis
+            if specifics:
+                metadata["specifics"] = specifics
+            return metadata
+        return {"domain": domain}
+
+    def _record_probe_feedback_history(
+        domain: str,
+        response: str,
+        *,
+        speculator: Any,
+        message: str = "",
+    ) -> None:
+        """Persist explicit user feedback for future probe novelty checks."""
+        from openbiliclaw.soul.speculator import append_probe_feedback_history
+
+        memory_manager = getattr(ctx, "memory_manager", None)
+        if memory_manager is None:
+            memory_manager = getattr(ctx.runtime_controller, "memory_manager", None)
+        load_state = getattr(memory_manager, "load_discovery_runtime_state", None)
+        save_state = getattr(memory_manager, "save_discovery_runtime_state", None)
+        if not callable(load_state) or not callable(save_state):
+            return
+        try:
+            state = load_state()
+            entry = _probe_metadata_from_active_speculation(speculator, domain)
+            entry["response"] = response
+            if message:
+                entry["message"] = message
+            state["probe_feedback_history"] = append_probe_feedback_history(
+                state.get("probe_feedback_history", []),
+                entry,
+            )
+            save_state(state)
+        except Exception:
+            logger.exception("Failed to record probe feedback history")
+
     async def _judge_probe_sentiment(
         user_message: str,
         ai_reply: str,
@@ -1583,6 +1655,11 @@ def create_app(
             raise HTTPException(status_code=503, detail="Speculator not available")
 
         if response_type == "confirm":
+            _record_probe_feedback_history(
+                domain,
+                "confirm",
+                speculator=speculator,
+            )
             ok = speculator.user_confirm_speculation(domain)
             if ok:
                 # Force_tick generates 5 new probes via LLM (~30-60s).
@@ -1598,10 +1675,32 @@ def create_app(
                     async def _bg_force_tick() -> None:
                         try:
                             profile = await ctx.soul_engine.get_profile()
+                            feedback_history: object = []
+                            load_runtime_state = getattr(
+                                ctx.memory_manager,
+                                "load_discovery_runtime_state",
+                                None,
+                            )
+                            if callable(load_runtime_state):
+                                runtime_state = load_runtime_state()
+                                if isinstance(runtime_state, dict):
+                                    feedback_history = runtime_state.get(
+                                        "probe_feedback_history",
+                                        [],
+                                    )
                             if asyncio.iscoroutinefunction(tick_fn):
-                                await tick_fn(profile)
+                                try:
+                                    await tick_fn(
+                                        profile,
+                                        feedback_history=feedback_history,
+                                    )
+                                except TypeError:
+                                    await tick_fn(profile)
                             else:
-                                tick_fn(profile)
+                                try:
+                                    tick_fn(profile, feedback_history=feedback_history)
+                                except TypeError:
+                                    tick_fn(profile)
                         except Exception:
                             logger.exception("Background force_tick after confirm failed")
 
@@ -1621,6 +1720,11 @@ def create_app(
             return {"ok": ok, "action": "confirmed", "domain": domain}
 
         if response_type == "reject":
+            _record_probe_feedback_history(
+                domain,
+                "reject",
+                speculator=speculator,
+            )
             ok = speculator.user_reject_speculation(domain)
             if ok:
                 _record_probe_cognition(
@@ -1674,6 +1778,16 @@ def create_app(
         finally:
             if concurrency is not None:
                 concurrency.chat_active = False
+
+        chat_response = (
+            f"chat_{sentiment}" if sentiment in {"positive", "negative"} else "chat_neutral"
+        )
+        _record_probe_feedback_history(
+            domain,
+            chat_response,
+            speculator=speculator,
+            message=raw_message,
+        )
 
         if sentiment == "negative":
             speculator.user_reject_speculation(domain, cooldown_days=14)

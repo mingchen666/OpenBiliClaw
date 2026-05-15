@@ -411,7 +411,26 @@ class RuntimeContext:
                 profile = await self.soul_engine.get_profile()
                 speculator = getattr(self.soul_engine, "_speculator", None)
                 if speculator is not None:
-                    await speculator.force_tick(profile)
+                    feedback_history: object = []
+                    load_runtime_state = getattr(
+                        self.memory_manager,
+                        "load_discovery_runtime_state",
+                        None,
+                    )
+                    if callable(load_runtime_state):
+                        runtime_state = load_runtime_state()
+                        if isinstance(runtime_state, dict):
+                            feedback_history = runtime_state.get(
+                                "probe_feedback_history",
+                                [],
+                            )
+                    try:
+                        await speculator.force_tick(
+                            profile,
+                            feedback_history=feedback_history,
+                        )
+                    except TypeError:
+                        await speculator.force_tick(profile)
             except Exception:
                 pass  # Profile not initialized yet — skip silently
 

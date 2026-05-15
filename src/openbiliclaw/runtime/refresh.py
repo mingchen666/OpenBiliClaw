@@ -1328,6 +1328,7 @@ class ContinuousRefreshController:
             specs,
             probed_domains=set(probed),
             probed_axes=set(probed_axes),
+            feedback_history=state.get("probe_feedback_history", []),
         )
         if top is None:
             return  # All active specs were probed recently
