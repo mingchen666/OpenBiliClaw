@@ -859,3 +859,34 @@ async def test_get_next_probe_prefers_fresher_experience_axis() -> None:
 
     assert result.probe is not None
     assert result.probe.domain == "城市漫游"
+
+
+@pytest.mark.asyncio
+async def test_get_next_probe_records_history_and_avoids_repeat() -> None:
+    adapter, soul_engine, memory_manager, *_ = _build_adapter()
+    soul_engine._speculator = _FakeSpeculator(specs=[
+        _FakeSpeculativeInterest(
+            domain="量子物理",
+            confirmation_count=0,
+            weight=0.9,
+            experience_mode="knowledge",
+            entry_load="heavy",
+        ),
+        _FakeSpeculativeInterest(
+            domain="城市漫游",
+            confirmation_count=0,
+            weight=0.5,
+            experience_mode="wander_observe",
+            entry_load="light",
+        ),
+    ])
+
+    first = await adapter.get_next_probe()
+    second = await adapter.get_next_probe()
+
+    assert first.probe is not None
+    assert second.probe is not None
+    assert first.probe.domain == "量子物理"
+    assert second.probe.domain == "城市漫游"
+    assert "量子物理" in memory_manager.runtime_state["probed_domains"]
+    assert "knowledge|heavy" in memory_manager.runtime_state["probed_axes"]
