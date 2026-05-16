@@ -10,11 +10,25 @@ import pytest
 
 from openbiliclaw.discovery.engine import DiscoveryConcurrencyController
 from openbiliclaw.discovery.pool_snapshot import PoolDistributionSnapshot
+from openbiliclaw.discovery.strategies._utils import build_profile_summary
 from openbiliclaw.soul.profile import (
+    MBTI,
+    AwarenessNote,
+    ContextMode,
+    CoreLayer,
+    InsightHypothesis,
+    InterestDomain,
+    InterestLayer,
+    InterestSpecific,
     InterestTag,
+    MBTIDimension,
+    OnionProfile,
     PreferenceLayer,
+    RoleLayer,
     SoulProfile,
     StylePreference,
+    SurfaceLayer,
+    ValuesLayer,
 )
 
 
@@ -30,6 +44,112 @@ def _build_profile() -> SoulProfile:
             favorite_up_users=["影视飓风"],
         ),
     )
+
+
+def test_build_profile_summary_includes_full_profile_context() -> None:
+    profile = OnionProfile(
+        personality_portrait="重视结构与证据的人。",
+        core=CoreLayer(
+            core_traits=["理性", "谨慎", "好奇"],
+            deep_needs=["确定性", "掌控感"],
+            mbti=MBTI(
+                type="INTJ",
+                confidence=0.76,
+                dimensions={"EI": MBTIDimension(pole="I", strength=0.8)},
+                inferred_from=["长期观看模式"],
+            ),
+        ),
+        values_layer=ValuesLayer(
+            values=["真实", "自主"],
+            motivational_drivers=["理解底层逻辑", "减少噪声"],
+        ),
+        interest=InterestLayer(
+            likes=[
+                InterestDomain(
+                    domain="国际局势",
+                    weight=0.9,
+                    specifics=[InterestSpecific(name="中东局势", weight=0.8)],
+                    first_seen="2026-01-01",
+                    last_seen="2026-05-01",
+                    source="behavior",
+                )
+            ],
+            dislikes=[
+                InterestDomain(
+                    domain="标题党",
+                    weight=0.9,
+                    specifics=[InterestSpecific(name="低质混剪", weight=0.8)],
+                )
+            ],
+            favorite_up_users=["小约翰可汗"],
+        ),
+        role=RoleLayer(life_stage="工作稳定期", current_phase="重新整理信息源"),
+        surface=SurfaceLayer(
+            cognitive_style=["喜欢结构化拆解", "先看证据再下判断"],
+            style=StylePreference(
+                preferred_duration="long",
+                preferred_pace="moderate",
+                quality_sensitivity=0.82,
+                humor_preference=0.2,
+                depth_preference=0.9,
+            ),
+            context=ContextMode(session_type="deep_dive"),
+            exploration_openness=0.66,
+        ),
+        source_platform_mix={"bilibili": 0.7, "youtube": 0.3},
+        recent_awareness=[
+            AwarenessNote(
+                date="2026-05-17",
+                observation="最近避开标题党内容。",
+                trend="更偏向可信来源。",
+                emotion_guess="可能在降噪。",
+            )
+        ],
+        active_insights=[
+            InsightHypothesis(
+                hypothesis="用户最近在主动收敛信息源。",
+                evidence=["连续 dislike 低质混剪"],
+                confidence=0.83,
+                validated=True,
+            )
+        ],
+    )
+
+    summary = build_profile_summary(profile)
+
+    assert summary["cognitive_style"] == ["喜欢结构化拆解", "先看证据再下判断"]
+    assert summary["values"] == ["真实", "自主"]
+    assert summary["motivational_drivers"] == ["理解底层逻辑", "减少噪声"]
+    assert summary["current_phase"] == "重新整理信息源"
+    assert summary["life_stage"] == "工作稳定期"
+    assert summary["source_platform_mix"] == {"bilibili": 0.7, "youtube": 0.3}
+    assert summary["style"]["quality_sensitivity"] == 0.82
+    assert summary["disliked_topics"] == ["标题党", "低质混剪"]
+    assert summary["mbti"] == {
+        "type": "INTJ",
+        "confidence": 0.76,
+        "dimensions": {"EI": {"pole": "I", "strength": 0.8}},
+        "inferred_from": ["长期观看模式"],
+    }
+    assert summary["recent_awareness"] == [
+        {
+            "date": "2026-05-17",
+            "observation": "最近避开标题党内容。",
+            "trend": "更偏向可信来源。",
+            "emotion_guess": "可能在降噪。",
+        }
+    ]
+    assert summary["active_insights"] == [
+        {
+            "hypothesis": "用户最近在主动收敛信息源。",
+            "evidence": ["连续 dislike 低质混剪"],
+            "confidence": 0.83,
+            "validated": True,
+        }
+    ]
+    assert summary["interest_domains"][0]["source"] == "behavior"
+    assert summary["interest_domains"][0]["first_seen"] == "2026-01-01"
+    assert summary["interests"][0]["name"] == "国际局势"
 
 
 @dataclass
