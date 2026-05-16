@@ -330,10 +330,12 @@ npm run build
 插件现在走独立 release 通道：
 
 - 发布 tag：`extension-vX.Y.Z`
-- Release 资产：`openbiliclaw-extension-vX.Y.Z.zip`
+- Release 资产：
+  - Chrome / Edge / Brave / 其他 Chromium 浏览器：`openbiliclaw-extension-vX.Y.Z.zip`
+  - Firefox 140+：`openbiliclaw-extension-vX.Y.Z-firefox.zip`
 - 下载入口：GitHub Releases 页面中查找最新的 `extension-v*` release
 - Chrome / Edge / Brave 打包脚本会先删除同名旧 zip，再重新压缩 `manifest.json`、`dist/`、`icons/`、`popup/`，避免重复打包带入残留文件
-- Firefox 140+ 当前走本地构建 / 临时加载：`npm run build:firefox` 生成 `dist-firefox/`，`npm run package:firefox` 生成 `openbiliclaw-extension-vX.Y.Z-firefox.zip`；Firefox 打包脚本同样会先删除同名旧 zip
+- `extension-v*` GitHub Actions release workflow 会同时运行 Chrome / Firefox 两条打包脚本并上传两个 zip；Firefox 140+ 也可本地构建 / 临时加载：`npm run build:firefox` 生成 `dist-firefox/`，`npm run package:firefox` 生成 `openbiliclaw-extension-vX.Y.Z-firefox.zip`；Firefox 打包脚本同样会先删除同名旧 zip
 
 后端桌面包不再和插件共用同一个 release 语义；后端改由 `backend-v*` 通道单独发布。
 

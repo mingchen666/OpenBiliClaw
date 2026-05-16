@@ -23,6 +23,7 @@
 
 - **🔌 浏览器插件后端端口可配置** —— 设置页新增「后端端口」（默认 `8420`，仅接受 `1-65535` 的完整整数），适合 Windows Hyper-V / WSL / Docker 占用默认端口时改用 `18080` / `19090` 等高位端口，并用 `openbiliclaw start --port <同一端口>` 启动后端。
 - **🧩 插件全链路走统一后端 endpoint** —— popup、service worker、cookie 同步、XHS / Douyin / YouTube 任务派发和调试中继都通过共享 helper 解析当前端口；manifest 本地权限同步放宽到 `127.0.0.1/*` / `localhost/*`。
+- **🦊 Release 同步提供 Firefox 包** —— `extension-v*` release 现在同时上传 Chromium zip 和 `openbiliclaw-extension-v*-firefox.zip`，Firefox 140+ 用户不用再从源码本地打包。
 - **🙏 致谢社区贡献** —— 感谢 [@addtion99](https://github.com/addtion99) 在 [#8](https://github.com/whiteguo233/OpenBiliClaw/pull/8) 提出端口可配置需求并给出 popup 侧实现思路。
 
 完整变更详见 [docs/changelog.md](docs/changelog.md)。
@@ -123,16 +124,19 @@
 插件基于 Manifest V3，支持所有兼容 Chrome 插件的浏览器，包括 **Chrome、Edge、Brave、Arc、Vivaldi、Opera** 等。
 
 1. 打开 [OpenBiliClaw Releases](https://github.com/whiteguo233/OpenBiliClaw/releases)，找到最新的 `extension-v*`
-2. 下载 `openbiliclaw-extension-v*.zip`
+2. Chrome / Edge / Brave 下载 `openbiliclaw-extension-v*.zip`；Firefox 下载 `openbiliclaw-extension-v*-firefox.zip`
 3. 打开扩展管理页面（Chrome：`chrome://extensions/` · Edge：`edge://extensions/` · Brave：`brave://extensions/`），开启右上角「开发者模式」
 4. 将下载的 `.zip` 文件拖入页面安装
 
 <details>
-<summary>Firefox 用户：本地构建临时加载（Firefox 140+）</summary>
+<summary>Firefox 用户：下载 Firefox 包临时加载（Firefox 140+）</summary>
 
-Firefox 用 `sidebar_action` 而不是 Chrome 的 `sidePanel`，需要单独构建。Firefox manifest 会声明本地后端同步所需的数据收集类别。Release 里暂时只提供 Chrome 包，Firefox 走本地构建 + `about:debugging` 临时加载：
+Firefox 用 `sidebar_action` 而不是 Chrome 的 `sidePanel`，所以 release 会提供独立的 `openbiliclaw-extension-v*-firefox.zip`。下载后先解压，再通过 `about:debugging` 临时加载；也可以从源码本地构建同一个 Firefox 包：
 
 ```bash
+unzip openbiliclaw-extension-v*-firefox.zip -d openbiliclaw-firefox
+
+# 或从源码构建
 git clone https://github.com/whiteguo233/OpenBiliClaw.git
 cd OpenBiliClaw/extension
 npm install
@@ -144,7 +148,7 @@ npm run build:firefox          # 产出 dist-firefox/
 
 1. 打开 `about:debugging#/runtime/this-firefox`
 2. 点「Load Temporary Add-on…」
-3. 选 `extension/dist-firefox/manifest.json`
+3. 选解压目录里的 `manifest.json`（或源码构建后的 `extension/dist-firefox/manifest.json`）
 
 注意：Firefox 临时加载在浏览器重启后会失效；正式签名 / AMO 上架仍在规划中。
 

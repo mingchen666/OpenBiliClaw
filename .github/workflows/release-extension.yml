@@ -46,20 +46,32 @@ jobs:
         run: npm ci
         working-directory: extension
 
-      - name: Build extension release archive
+      - name: Build Chrome-compatible extension release archive
         run: npm run package
         working-directory: extension
 
-      - name: Verify extension release archive
+      - name: Build Firefox extension release archive
+        run: npm run package:firefox
+        working-directory: extension
+
+      - name: Verify extension release archives
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          shopt -s nullglob
-          archives=(extension/openbiliclaw-extension-v*.zip)
-          if [ "${#archives[@]}" -ne 1 ]; then
-            echo "expected exactly one extension archive, got: ${archives[*]}"
+          expected="${RELEASE_TAG#extension-v}"
+          chrome_archive="extension/openbiliclaw-extension-v${expected}.zip"
+          firefox_archive="extension/openbiliclaw-extension-v${expected}-firefox.zip"
+          if [ ! -f "$chrome_archive" ]; then
+            echo "missing Chrome-compatible extension archive: $chrome_archive"
             exit 1
           fi
-          echo "verified release archive: ${archives[0]}"
+          if [ ! -f "$firefox_archive" ]; then
+            echo "missing Firefox extension archive: $firefox_archive"
+            exit 1
+          fi
+          echo "verified Chrome-compatible release archive: $chrome_archive"
+          echo "verified Firefox release archive: $firefox_archive"
 
       - name: Upload packaged extension artifact
         uses: actions/upload-artifact@v4
@@ -80,16 +92,24 @@ jobs:
           name: extension-package
           path: release-artifacts
 
-      - name: Verify downloaded extension artifact
+      - name: Verify downloaded extension artifacts
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          shopt -s nullglob
-          archives=(release-artifacts/openbiliclaw-extension-v*.zip)
-          if [ "${#archives[@]}" -ne 1 ]; then
-            echo "expected exactly one extension archive, got: ${archives[*]}"
+          expected="${RELEASE_TAG#extension-v}"
+          chrome_archive="release-artifacts/openbiliclaw-extension-v${expected}.zip"
+          firefox_archive="release-artifacts/openbiliclaw-extension-v${expected}-firefox.zip"
+          if [ ! -f "$chrome_archive" ]; then
+            echo "missing Chrome-compatible extension archive: $chrome_archive"
             exit 1
           fi
-          echo "release artifact ready: ${archives[0]}"
+          if [ ! -f "$firefox_archive" ]; then
+            echo "missing Firefox extension archive: $firefox_archive"
+            exit 1
+          fi
+          echo "Chrome-compatible release artifact ready: $chrome_archive"
+          echo "Firefox release artifact ready: $firefox_archive"
 
       - name: Create GitHub Release and upload extension package
         uses: softprops/action-gh-release@v2

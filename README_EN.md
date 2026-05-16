@@ -21,6 +21,7 @@
 
 - **🔌 Configurable extension backend port** — the settings page now has a "backend port" field (default `8420`, complete integers only, `1-65535`) for Windows Hyper-V / WSL / Docker setups where the default local port is already reserved. Pick a high port such as `18080` or `19090`, then start the backend with `openbiliclaw start --port <same port>`.
 - **🧩 One backend endpoint path across the extension** — popup requests, service worker requests, cookie sync, XHS / Douyin / YouTube task dispatchers, and debug relays all resolve the current port through shared helpers; local manifest permissions now cover `127.0.0.1/*` and `localhost/*`.
+- **🦊 Firefox release package included** — `extension-v*` releases now upload both the Chromium zip and `openbiliclaw-extension-v*-firefox.zip`, so Firefox 140+ users no longer need to package from source.
 - **🙏 Community credit** — thanks to [@addtion99](https://github.com/addtion99) for proposing configurable backend ports and the popup-side implementation idea in [#8](https://github.com/whiteguo233/OpenBiliClaw/pull/8).
 
 Full changelog: [docs/changelog.md](docs/changelog.md).
@@ -67,16 +68,19 @@ The extension is the main interface. It shows the sidebar on Bilibili, Xiaohongs
 Built on Manifest V3, the extension works in any Chrome-compatible browser — **Chrome, Edge, Brave, Arc, Vivaldi, Opera**, and more.
 
 1. Open [OpenBiliClaw Releases](https://github.com/whiteguo233/OpenBiliClaw/releases) and find the latest `extension-v*`
-2. Download `openbiliclaw-extension-v*.zip`
+2. Chrome / Edge / Brave users download `openbiliclaw-extension-v*.zip`; Firefox users download `openbiliclaw-extension-v*-firefox.zip`
 3. Open the extensions page (Chrome: `chrome://extensions/` · Edge: `edge://extensions/` · Brave: `brave://extensions/`), enable "Developer mode" in the top right
 4. Drag the downloaded `.zip` file into the page to install
 
 <details>
-<summary>Firefox users: build locally and sideload (Firefox 140+)</summary>
+<summary>Firefox users: download the Firefox package and sideload (Firefox 140+)</summary>
 
-Firefox uses `sidebar_action` instead of Chrome's `sidePanel`, so it needs a separate build. The Firefox manifest declares the data-collection categories needed for local backend sync. Releases ship only the Chrome zip for now; on Firefox you build locally and load the addon temporarily via `about:debugging`:
+Firefox uses `sidebar_action` instead of Chrome's `sidePanel`, so releases ship a separate `openbiliclaw-extension-v*-firefox.zip`. Download and unzip it, then load it temporarily via `about:debugging`; you can also build the same Firefox package from source:
 
 ```bash
+unzip openbiliclaw-extension-v*-firefox.zip -d openbiliclaw-firefox
+
+# Or build from source
 git clone https://github.com/whiteguo233/OpenBiliClaw.git
 cd OpenBiliClaw/extension
 npm install
@@ -88,7 +92,7 @@ Then:
 
 1. Open `about:debugging#/runtime/this-firefox`
 2. Click "Load Temporary Add-on…"
-3. Pick `extension/dist-firefox/manifest.json`
+3. Pick `manifest.json` from the unzipped directory, or `extension/dist-firefox/manifest.json` after a source build
 
 Caveat: temporary add-ons disappear on Firefox restart; signed AMO distribution is still on the roadmap.
 

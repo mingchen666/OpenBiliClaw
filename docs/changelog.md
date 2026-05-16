@@ -10,7 +10,7 @@
 - 新增 `extension/src/shared/backend-endpoint.ts` + `extension/popup/popup-backend-config.js` 共用 helper。`apiUrl()` / `wsUrl()` / `getBackendBaseUrl()` 在每次调用时解析当前端口，所以保存新端口后无需重载插件即可生效；service worker 通过 `chrome.storage.onChanged` 收到端口变更后会立即关闭旧 `runtime-stream` WebSocket 并按新 origin 重连。
 - 同步收敛了之前散在 ~10 处的硬编码 `127.0.0.1:8420`：service worker、cookie 同步、xhs / dy / yt 任务派发、`_debug/log` 中继、抖音内容脚本现在都走 `apiUrl()` 统一解析。
 - `manifest.json` / `manifest.firefox.json` 的 `host_permissions` 从固定 `127.0.0.1:8420/*` 放宽到 `127.0.0.1/*` + `localhost/*`，否则浏览器会在 manifest 层直接 block 非 `8420` 端口的请求；其他平台的 `*.bilibili.com` / `*.xiaohongshu.com` / `*.douyin.com` / `*.youtube.com` 权限完全不变。
-- 浏览器插件版本提升到 v0.3.24，Chrome / Edge / Brave 走 `openbiliclaw-extension-v0.3.24.zip`，Firefox 140+ 走 `openbiliclaw-extension-v0.3.24-firefox.zip`。
+- 浏览器插件版本提升到 v0.3.24，Chrome / Edge / Brave 走 `openbiliclaw-extension-v0.3.24.zip`，Firefox 140+ 走 `openbiliclaw-extension-v0.3.24-firefox.zip`；`extension-v*` release workflow 现在会同时构建并上传这两个资产，避免 Firefox 用户只能从源码本地打包。
 - 致谢 [@addtion99 #8](https://github.com/whiteguo233/OpenBiliClaw/pull/8) 提出端口可配置的需求并给出 popup 侧实现思路；本次以最小回归方式重做，扩展到 service-worker / dispatcher 全链路并补齐 manifest 权限。
 
 ---
