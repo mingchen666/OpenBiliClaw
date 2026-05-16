@@ -9,6 +9,7 @@
 
 import { createBehaviorEvent, isTrackableCardElement } from "../shared/behavior.js";
 import type { BehaviorEvent, PlatformAdapter } from "../shared/types.js";
+import { VideoDwellTracker } from "./video-dwell-tracker.js";
 
 const HOVER_DELAY_MS = 800;
 const SCROLL_DEBOUNCE_MS = 600;
@@ -28,6 +29,48 @@ export function startCollector(adapter: PlatformAdapter): void {
   let lastHoverCheckAt = 0;
   const hoverTimers = new WeakMap<Element, number>();
   const trackedVideos = new WeakSet<HTMLVideoElement>();
+
+  // v0.3.x event-satisfaction signal: track video-page dwell so the
+  // backend can tell meaningful_dwell vs quick_exit on every visit.
+  // The kernel only knows when the URL changes; it asks the adapter
+  // whether a URL is a video page and reads <video>.duration when
+  // available, then hands the lifecycle off to the pure tracker.
+  const dwellTracker = new VideoDwellTracker({
+    now: () => performance.now(),
+    emit: (event) => sendEvent(event),
+    buildEvent: (previousUrl, metadata) => ({
+      type: "click",
+      url: previousUrl,
+      title: document.title || "",
+      timestamp: Date.now(),
+      source_platform: adapter.sourcePlatform,
+      context: {
+        pageType: adapter.detectPageType(previousUrl),
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        scrollPosition: window.scrollY,
+      },
+      metadata: {
+        ...adapter.buildEventMetadata(previousUrl),
+        ...metadata,
+      },
+    }),
+  });
+
+  const isVideoPage = (url: string): boolean =>
+    adapter.detectPageType(url) === "video";
+
+  const readVideoDuration = (): number | null => {
+    const selector = adapter.videoSelector;
+    if (!selector) return null;
+    const video = document.querySelector(selector);
+    if (!(video instanceof HTMLVideoElement)) return null;
+    return Number.isFinite(video.duration) ? Number(video.duration.toFixed(2)) : null;
+  };
+
+  const enterDwellIfVideoPage = (url: string): void => {
+    if (!isVideoPage(url)) return;
+    dwellTracker.enter(url, readVideoDuration());
+  };
 
   const createEvent = (
     type: string,
@@ -186,6 +229,13 @@ export function startCollector(adapter: PlatformAdapter): void {
         }),
       );
     });
+    // Backfill the dwell tracker once the <video> element has loaded
+    // its metadata — many SPAs render the player after the route change.
+    video.addEventListener("loadedmetadata", () => {
+      if (Number.isFinite(video.duration)) {
+        dwellTracker.updateDuration(Number(video.duration.toFixed(2)));
+      }
+    });
 
     trackedVideos.add(video);
   };
@@ -204,8 +254,15 @@ export function startCollector(adapter: PlatformAdapter): void {
       const result = original.apply(this, args);
       const nextUrl = window.location.href;
       if (nextUrl !== currentUrl) {
+        // Flush dwell BEFORE currentUrl is reassigned so the tracker
+        // sees the previous URL — the buildEvent adapter uses that URL
+        // to compose the click event.
+        dwellTracker.flush(`navigation:${methodName}`);
         currentUrl = nextUrl;
-        window.setTimeout(() => rebindPageObservers(`navigation:${methodName}`), 0);
+        window.setTimeout(() => {
+          rebindPageObservers(`navigation:${methodName}`);
+          enterDwellIfVideoPage(nextUrl);
+        }, 0);
       }
       return result;
     };
@@ -217,8 +274,16 @@ export function startCollector(adapter: PlatformAdapter): void {
     window.addEventListener("popstate", () => {
       const nextUrl = window.location.href;
       if (nextUrl === currentUrl) return;
+      dwellTracker.flush("navigation:popstate");
       currentUrl = nextUrl;
-      window.setTimeout(() => rebindPageObservers("navigation:popstate"), 0);
+      window.setTimeout(() => {
+        rebindPageObservers("navigation:popstate");
+        enterDwellIfVideoPage(nextUrl);
+      }, 0);
+    });
+    // Final quick-exit signal when the user closes the tab.
+    window.addEventListener("pagehide", () => {
+      dwellTracker.flush("pagehide");
     });
   };
 
@@ -228,4 +293,5 @@ export function startCollector(adapter: PlatformAdapter): void {
   observeHover();
   observeNavigation();
   rebindPageObservers("initial-load");
+  enterDwellIfVideoPage(currentUrl);
 }
