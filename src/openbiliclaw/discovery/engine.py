@@ -464,6 +464,12 @@ class ContentDiscoveryEngine:
         self._target_primary_count = max(1, target_primary_count)
         self._backfill_target_count = max(self._target_primary_count, backfill_target_count)
         self._eval_cache: dict[str, tuple[float, str, str, str, str]] = {}
+        # v0.3.x negative-anchors cache: (timestamp, latest_event_id,
+        # exemplars). Refreshes when either the latest event id changes
+        # (new negative classified) or 5 minutes have elapsed.
+        self._negative_exemplars_cache: (
+            tuple[float, int | None, list[dict[str, object]]] | None
+        ) = None
 
     def register_strategy(self, strategy: DiscoveryStrategy) -> None:
         """Register a discovery strategy."""
@@ -1052,6 +1058,40 @@ class ContentDiscoveryEngine:
 
         return scores
 
+    def _get_negative_exemplars(self) -> list[dict[str, object]] | None:
+        """Return recent negative exemplars, refreshing the cache when stale.
+
+        Cache key: (latest_event_id, time bucket). 5-minute TTL keeps the
+        I/O flat across batches; latest-event-id invalidation picks up
+        fresh negatives as soon as the user records one. Storage failures
+        return None so the eval-batch always runs.
+        """
+        if self._database is None:
+            return None
+
+        from openbiliclaw.soul.negative_exemplars import recent_negative_exemplars
+
+        try:
+            latest_id: int | None = self._database.get_latest_event_id()
+        except Exception:
+            logger.debug("negative_exemplars: get_latest_event_id failed", exc_info=True)
+            latest_id = None
+
+        cached = self._negative_exemplars_cache
+        if cached is not None:
+            cached_ts, cached_latest_id, cached_exemplars = cached
+            if cached_latest_id == latest_id and (time.monotonic() - cached_ts) < 300:
+                return cached_exemplars
+
+        try:
+            exemplars = recent_negative_exemplars(self._database)
+        except Exception:
+            logger.debug("negative_exemplars: refresh failed", exc_info=True)
+            return None
+
+        self._negative_exemplars_cache = (time.monotonic(), latest_id, exemplars)
+        return exemplars
+
     async def _evaluate_batch(
         self,
         batch: list[DiscoveredContent],
@@ -1074,11 +1114,17 @@ class ContentDiscoveryEngine:
             }
             for c in batch
         ]
+        negative_examples = self._get_negative_exemplars()
+        # Treat empty list as "no examples" so the user-message stays
+        # byte-identical to the no-examples shape on cold-start users.
+        if not negative_examples:
+            negative_examples = None
         messages = build_batch_content_evaluation_prompt(
             profile_summary=profile_data,
             content_items=content_items,
             source_context=source_context or (batch[0].source_strategy if batch else ""),
             source_platform=(batch[0].source_platform or "bilibili") if batch else "bilibili",
+            negative_examples=negative_examples,
         )
 
         valid_styles = {

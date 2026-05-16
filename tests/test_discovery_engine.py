@@ -1587,3 +1587,152 @@ def test_count_pool_by_franchise_returns_lowercased_groups(tmp_path: Path) -> No
     assert counts.get("张雪机车") == 2
     assert counts.get("风犬少年的天空") == 1
     assert "" not in counts
+
+
+# ----------------------------------------------------------------------
+# v0.3.x eval-batch negative-anchors wiring.
+
+
+class _StubNegativeExemplarsDatabase:
+    """Minimal database stub for the negative-exemplars wiring tests."""
+
+    def __init__(
+        self,
+        rows: list[dict[str, object]],
+        *,
+        latest_event_id: int = 1,
+    ) -> None:
+        self._rows = rows
+        self._latest_event_id = latest_event_id
+        self.query_calls = 0
+
+    def get_latest_event_id(self) -> int:
+        return self._latest_event_id
+
+    def bump_latest_event_id(self) -> None:
+        self._latest_event_id += 1
+
+    def query_events(self, **kwargs: object) -> list[dict[str, object]]:
+        self.query_calls += 1
+        return list(self._rows)
+
+
+def _negative_row(idx: int, title: str) -> dict[str, object]:
+    from datetime import datetime
+
+    return {
+        "id": idx,
+        "title": title,
+        "inferred_satisfaction": "negative",
+        "satisfaction_reason": "quick_exit",
+        "created_at": datetime(2026, 5, 16, 12, 0, 0).isoformat(sep=" "),
+    }
+
+
+class _RecordingBatchLLMService:
+    """Captures the user_input sent to the batch evaluator for assertions."""
+
+    def __init__(self, response: str = '[{"score": 0.7, "reason": "ok", "style_key": "deep_dive"}]') -> None:
+        self.response = response
+        self.user_inputs: list[str] = []
+
+    async def complete_structured_task(
+        self,
+        *,
+        system_instruction: str,
+        user_input: str,
+        history: list[dict[str, str]] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        caller: str = "",
+        reasoning_effort: str | None = None,
+    ) -> object:
+        self.user_inputs.append(user_input)
+        return _SlowResponse(self.response)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_batch_includes_negative_exemplars_in_user_prompt() -> None:
+    """When the event store has negative rows, the eval batch user
+    message must include the <negative_examples> block."""
+    db = _StubNegativeExemplarsDatabase(
+        rows=[_negative_row(1, "震惊！我刚发现的神器")]
+    )
+    llm = _RecordingBatchLLMService()
+    engine = ContentDiscoveryEngine(llm_service=llm, database=db)
+    batch = [DiscoveredContent(bvid="BVx", title="候选", up_name="u", source_strategy="search")]
+
+    await engine._evaluate_batch(batch, _build_profile())
+
+    assert llm.user_inputs, "LLM should have been called once"
+    user = llm.user_inputs[0]
+    assert "<negative_examples>" in user
+    assert "震惊！我刚发现的神器" in user
+
+
+@pytest.mark.asyncio
+async def test_evaluate_batch_omits_block_with_no_negative_rows() -> None:
+    db = _StubNegativeExemplarsDatabase(rows=[])
+    llm = _RecordingBatchLLMService()
+    engine = ContentDiscoveryEngine(llm_service=llm, database=db)
+    batch = [DiscoveredContent(bvid="BVx", title="候选", up_name="u", source_strategy="search")]
+
+    await engine._evaluate_batch(batch, _build_profile())
+
+    user = llm.user_inputs[0]
+    assert "<negative_examples>" not in user
+
+
+@pytest.mark.asyncio
+async def test_evaluate_batch_runs_when_exemplar_helper_raises() -> None:
+    """Storage failure inside _get_negative_exemplars must not abort the batch."""
+
+    class _BrokenDatabase:
+        def get_latest_event_id(self) -> int:
+            raise RuntimeError("database is locked")
+
+        def query_events(self, **kwargs: object) -> list[dict[str, object]]:
+            raise RuntimeError("database is locked")
+
+    llm = _RecordingBatchLLMService()
+    engine = ContentDiscoveryEngine(llm_service=llm, database=_BrokenDatabase())
+    batch = [DiscoveredContent(bvid="BVx", title="候选", up_name="u", source_strategy="search")]
+
+    scores = await engine._evaluate_batch(batch, _build_profile())
+
+    assert scores == [0.7], "batch should still produce a score"
+    assert "<negative_examples>" not in llm.user_inputs[0]
+
+
+@pytest.mark.asyncio
+async def test_evaluate_batch_caches_exemplars_across_back_to_back_calls() -> None:
+    """Two batches with the same latest_event_id should share one query."""
+    db = _StubNegativeExemplarsDatabase(
+        rows=[_negative_row(1, "震惊！我刚发现的神器")]
+    )
+    llm = _RecordingBatchLLMService()
+    engine = ContentDiscoveryEngine(llm_service=llm, database=db)
+    batch = [DiscoveredContent(bvid="BVx", title="候选", up_name="u", source_strategy="search")]
+
+    await engine._evaluate_batch(batch, _build_profile())
+    first_query_count = db.query_calls
+
+    await engine._evaluate_batch(batch, _build_profile())
+    assert db.query_calls == first_query_count, "cache hit, no second query"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_batch_refreshes_exemplars_on_new_event_id() -> None:
+    """A new negative classified row should bust the cache on the next batch."""
+    db = _StubNegativeExemplarsDatabase(
+        rows=[_negative_row(1, "震惊！我刚发现的神器")]
+    )
+    llm = _RecordingBatchLLMService()
+    engine = ContentDiscoveryEngine(llm_service=llm, database=db)
+    batch = [DiscoveredContent(bvid="BVx", title="候选", up_name="u", source_strategy="search")]
+
+    await engine._evaluate_batch(batch, _build_profile())
+    db.bump_latest_event_id()
+    await engine._evaluate_batch(batch, _build_profile())
+
+    assert db.query_calls >= 2, "new event id must invalidate the cache"
