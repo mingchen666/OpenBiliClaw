@@ -537,6 +537,12 @@ OpenBiliClaw 的目标是做你的**全网个性化内容入口**——从 B 站
 - **更智能的发现** — 跨平台关联推荐（"你在小红书关注了咖啡器具，B 站有个手冲咖啡纪录片你可能喜欢"，或用抖音 feed 口味补足短视频兴趣）
 - **社区生态** — 用户自定义 SourceAdapter、共享发现策略、贡献平台适配器
 
+## 💬 用户交流群
+
+<p align="center">
+  <img src="docs/images/user-community-qrcode.png" width="260" alt="用户交流群二维码" />
+</p>
+
 ## 🤝 贡献
 
 欢迎贡献！请查看 [开发指南](docs/contributing.md) 了解如何参与。
