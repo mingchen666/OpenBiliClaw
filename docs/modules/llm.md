@@ -20,6 +20,8 @@
 | 2.2 Provider Registry | ✅ | 自动注册 + fallback + health check |
 | 2.3 Prompt 管理与 Service | ✅ | Prompt 构建器 + LLMService 门面 |
 | 4.5 核心记忆加载 | ✅ | 统一 core memory 注入入口，覆盖 Soul 全链路 |
+| v0.3.74 Per-module LLM 路由生效 | ✅ | `LLMService` 按 caller bucket 路由 `[llm.soul/discovery/recommendation/evaluation]`，通过 `LLMRegistry.complete_provider()` 精确调用 chat-capable provider；provider 错误不 spill 到 default，拼错 provider INFO 一次后降级 |
+| v0.3.74 Provider per-call model | ✅ | OpenAI / Claude / Gemini / DeepSeek / Ollama / OpenRouter 的 `complete(..., model=...)` 支持单次模型覆盖，不修改 provider 实例默认 `_model` |
 | 体验优化：B站动态语气 | ✅ | 推荐、画像总结和聊天 prompt 统一接入 `ToneProfile`，在“老B友”基础上按用户画像微调语气 |
 | v0.3.0 Ollama embedding 兜底 | ✅ | `OllamaProvider.embed()` 走原生 `/api/embeddings`，配合 `bge-m3` 模型可在 Mac/Win/Linux CPU 跑相似度计算，不需要额外的 embedding API Key |
 | v0.3.0 EmbeddingService 双层缓存 | ✅ | L1 内存 + L2 SQLite 持久化；`build_embedding_service` 按 provider 自动选默认 model（gemini→gemini-embedding-001 / openai→text-embedding-3-small / ollama→bge-m3） |
@@ -57,6 +59,12 @@ print(response.content)  # str
 print(response.provider)  # "openai"
 print(response.usage)     # {"prompt_tokens": N, "completion_tokens": N, "total_tokens": N}
 
+# 单次调用覆盖模型；不会写回 provider._model
+response = await provider.complete(
+    [{"role": "user", "content": "hello"}],
+    model="gpt-4.1-mini",
+)
+
 # 健康检查
 available = await provider.health_check()  # bool
 
@@ -86,6 +94,14 @@ print(registry.default_provider)     # "openai"
 # 带 fallback 的调用（默认 provider 失败时自动尝试下一个）
 response = await registry.complete([{"role": "user", "content": "hi"}])
 
+# 精确调用某个 chat-capable provider，不走 fallback；用于 per-module override
+response = await registry.complete_provider(
+    "deepseek",
+    [{"role": "user", "content": "hi"}],
+    model="deepseek-v4-flash",
+)
+assert registry.is_chat_capable("ollama") in (True, False)
+
 # 全量健康检查
 results = await registry.health_check_all()
 # {"openai": HealthCheckResult(available=True, is_default=True), ...}
@@ -95,8 +111,13 @@ results = await registry.health_check_all()
 
 ```python
 from openbiliclaw.llm import LLMService
+from openbiliclaw.llm.service import module_overrides_from_config
 
-service = LLMService(registry=registry, memory=memory_manager)
+service = LLMService(
+    registry=registry,
+    memory=memory_manager,
+    module_overrides=module_overrides_from_config(config),
+)
 response = await service.complete_socratic_dialogue(
     user_message="我最近喜欢看纪录片",
     history=[...],
@@ -147,6 +168,24 @@ tag 解析优先级,longest-prefix 命中:
 数字越小越先服务。无竞争时 free passthrough 不增加开销。维护者新增
 caller tag 时无需在意优先级——默认 priority=3 不会插队挤掉已知的
 priority≤2 任务。
+
+#### 分模块路由(v0.3.74+)
+
+`LLMService` 的 `module_overrides` 来自 `module_overrides_from_config(config)`。
+路由不使用 caller 第一段朴素判断，而是内置 bucket：
+
+| caller 前缀 | module bucket |
+|---|---|
+| `soul.*` | `soul` |
+| `discovery.search/explore/trending/related.*`、`yt_search.*`、`sources.xhs.*` | `discovery` |
+| `recommendation.delight_score`、`recommendation.evaluate_batch`、`discovery.evaluate*`、`eval.*` | `evaluation` |
+| 其他 `recommendation.*` | `recommendation` |
+
+命中 override 后走 `registry.complete_provider(provider, ..., model=model)`：
+
+- override provider 错误 / rate-limit：直接报错，不自动 spill 到 default。
+- override provider 未注册或不是 chat-capable：按 `(bucket, provider)` INFO 一次，然后走默认 fallback 链。
+- 只填 `model` 不填 `provider`：使用 `registry.default_provider` + per-call model。
 
 ### 异常体系
 
@@ -214,3 +253,4 @@ x_title = "OpenBiliClaw"
 9. **Prompt 风格集中收口**：推荐、画像和聊天的“老B友”语气由共享 `ToneProfile` 驱动，不允许各模块各自发散成不同人格
 10. **Prompt-cache 约定**：高频结构化 builder 的 system prompt 必须保持静态；user prompt 按“画像 / 长期偏好 / 来源上下文 / 本批内容”从稳定到易变排序，并使用确定性 JSON，便于 DeepSeek / Claude / OpenAI / Gemini 的 provider-side prompt cache 复用前缀
 11. **结构化输出只在 helper 处放宽**：业务模块不再各自手写 JSON 截取逻辑；容错集中在 `json_utils.py`，模块侧用 predicate 收紧语义，避免一个 provider 的异常 shape 修复污染其他任务。
+12. **分模块 override 不隐式改意图**：`[llm.<module>]` 命中时必须精确调用用户指定的 chat provider；只有 provider 拼错或不是 chat-capable 时才降级到默认链并 INFO 一次。模型覆盖通过 per-call `model=` 完成，避免污染 provider 实例状态或影响其他模块。

@@ -19,10 +19,10 @@
 
 ## 📌 v0.3.74 Highlights (2026-05-17)
 
-- **🧯 Config deadlock recovery** — `/api/config` now validates before writing, rolls back failed hot reloads, and degraded boot still lets the popup settings page save recovery config.
+- **🧯 Config saves no longer hang** — `/api/config` validates before writing and rolls back failed hot reloads; post-reload speculator ticks now run in the background, and extension saves have a 60s timeout fallback.
+- **🎛️ Per-module LLM overrides now take effect** — `[llm.soul]` / `[llm.discovery]` / `[llm.recommendation]` / `[llm.evaluation]` route by caller bucket and can set provider/model per call.
 - **🧷 Settings no longer erase config** — masked keys and non-empty model/base URL/header/reasoning fields are preserved; only explicit reset can clear allowlisted API keys.
 - **🧩 Unified MiMo / non-OpenAI JSON tolerance** — recommendation, discovery, delight, awareness, and insight share structured-output parsing for wrappers, fenced JSON, JSONL, and schema echo.
-- **⬆️ Backend auto-update actually works** — auto-update now filters by `backend-v*` git tags and stops misreading extension releases as "Already up-to-date"; from this version onward, daemons with auto-update enabled will catch up to new backend releases (already-stuck deployments need one manual `pip install -U openbiliclaw` to bridge).
 
 Full changelog: [docs/changelog.md](docs/changelog.md).
 
