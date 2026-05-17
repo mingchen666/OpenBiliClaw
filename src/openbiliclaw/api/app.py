@@ -285,6 +285,7 @@ def create_app(
             database=database,
             event_hub=runtime_event_hub,
         )
+    app.state.runtime_context = ctx
 
     async def _run_post_feedback_tasks() -> None:
         with suppress(Exception):
@@ -701,47 +702,80 @@ def create_app(
             await websocket.close()
             return
         queue = await subscribe()
-        client_name = str(websocket.query_params.get("client", "") or "").strip().lower()
-        if client_name in {"background", "extension", "service-worker"}:
-            from openbiliclaw.bilibili.auth import resolve_runtime_cookie
-            from openbiliclaw.sources.douyin_auth import resolve_douyin_cookie
+        connected = False
 
-            runtime_config = getattr(ctx, "config", None) or config
-            with suppress(Exception):
-                cookie = resolve_runtime_cookie(
-                    data_dir=runtime_config.data_path,
-                    configured_cookie=runtime_config.bilibili.cookie,
-                )
-                if not str(cookie or "").strip():
-                    await websocket.send_json(
-                        {
-                            "type": "bilibili_cookie_sync_requested",
-                            "reason": "missing_cookie",
-                            "source": "runtime-stream",
-                        }
-                    )
-            with suppress(Exception):
-                dy_cfg = getattr(runtime_config.sources, "douyin", None)
-                if dy_cfg is not None and bool(getattr(dy_cfg, "enabled", False)):
-                    dy_cookie = resolve_douyin_cookie(
+        async def _send_runtime_events() -> None:
+            while True:
+                event = await queue.get()
+                await websocket.send_json(event)
+
+        async def _receive_until_disconnect() -> None:
+            while True:
+                message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    raise WebSocketDisconnect
+
+        try:
+            ctx.presence.on_connect()
+            connected = True
+            client_name = str(websocket.query_params.get("client", "") or "").strip().lower()
+            if client_name in {"background", "extension", "service-worker"}:
+                from openbiliclaw.bilibili.auth import resolve_runtime_cookie
+                from openbiliclaw.sources.douyin_auth import resolve_douyin_cookie
+
+                runtime_config = getattr(ctx, "config", None) or config
+                with suppress(Exception):
+                    cookie = resolve_runtime_cookie(
                         data_dir=runtime_config.data_path,
-                        cookie_env=str(getattr(dy_cfg, "cookie_env", "OPENBILICLAW_DOUYIN_COOKIE")),
+                        configured_cookie=runtime_config.bilibili.cookie,
                     )
-                    if not str(dy_cookie or "").strip():
+                    if not str(cookie or "").strip():
                         await websocket.send_json(
                             {
-                                "type": "douyin_cookie_sync_requested",
+                                "type": "bilibili_cookie_sync_requested",
                                 "reason": "missing_cookie",
                                 "source": "runtime-stream",
                             }
                         )
-        try:
-            while True:
-                event = await queue.get()
-                await websocket.send_json(event)
+                with suppress(Exception):
+                    dy_cfg = getattr(runtime_config.sources, "douyin", None)
+                    if dy_cfg is not None and bool(getattr(dy_cfg, "enabled", False)):
+                        dy_cookie = resolve_douyin_cookie(
+                            data_dir=runtime_config.data_path,
+                            cookie_env=str(
+                                getattr(dy_cfg, "cookie_env", "OPENBILICLAW_DOUYIN_COOKIE")
+                            ),
+                        )
+                        if not str(dy_cookie or "").strip():
+                            await websocket.send_json(
+                                {
+                                    "type": "douyin_cookie_sync_requested",
+                                    "reason": "missing_cookie",
+                                    "source": "runtime-stream",
+                                }
+                            )
+
+            writer = asyncio.create_task(_send_runtime_events())
+            reader = asyncio.create_task(_receive_until_disconnect())
+            done, pending = await asyncio.wait(
+                {writer, reader},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            for task in pending:
+                with suppress(asyncio.CancelledError):
+                    await task
+            for task in done:
+                with suppress(WebSocketDisconnect):
+                    task.result()
         except WebSocketDisconnect:
             pass
+        except Exception:
+            logger.debug("runtime-stream closed after handler exception", exc_info=True)
         finally:
+            if connected:
+                ctx.presence.on_disconnect()
             await unsubscribe(queue)
 
     @app.on_event("startup")
