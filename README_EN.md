@@ -22,7 +22,7 @@
 - **🧯 Config deadlock recovery** — `/api/config` now validates before writing, rolls back failed hot reloads, and degraded boot still lets the popup settings page save recovery config.
 - **🧷 Settings no longer erase config** — masked keys and non-empty model/base URL/header/reasoning fields are preserved; only explicit reset can clear allowlisted API keys.
 - **🧩 Unified MiMo / non-OpenAI JSON tolerance** — recommendation, discovery, delight, awareness, and insight share structured-output parsing for wrappers, fenced JSON, JSONL, and schema echo.
-- **🔇 Ollama embedding and log diagnostics** — local Ollama embedding with empty credentials no longer emits fallback warnings; file traceback preservation is locked by tests.
+- **⬆️ Backend auto-update actually works** — auto-update now filters by `backend-v*` git tags and stops misreading extension releases as "Already up-to-date", so daemons silently stuck on old versions will catch up.
 
 Full changelog: [docs/changelog.md](docs/changelog.md).
 
