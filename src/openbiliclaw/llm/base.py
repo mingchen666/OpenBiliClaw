@@ -217,6 +217,11 @@ class LLMRegistry:
         """Name of the default provider."""
         return self._default
 
+    def is_chat_capable(self, name: str) -> bool:
+        """Return whether *name* is registered for chat completions."""
+        target = name.strip().lower()
+        return bool(target and target in self._providers and target not in self._chat_disabled)
+
     async def complete(
         self,
         messages: list[dict[str, str]],
@@ -265,6 +270,51 @@ class LLMRegistry:
         raise LLMFallbackError(
             f"All providers failed ({attempted_list}). Last error: {last_error}"
         ) from last_error
+
+    async def complete_provider(
+        self,
+        provider_name: str,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        json_mode: bool = False,
+        reasoning_effort: str | None = None,
+        model: str | None = None,
+    ) -> LLMResponse:
+        """Execute a completion against one exact chat-capable provider.
+
+        Unlike ``complete()``, this method intentionally has no fallback
+        chain. It is used for explicit per-module overrides where
+        falling back to a different provider would violate user intent.
+        """
+        target = provider_name.strip().lower()
+        if not self.is_chat_capable(target):
+            available = ", ".join(self._fallback_order())
+            raise LLMFallbackError(
+                f"LLM provider '{target or provider_name}' is not registered "
+                f"or not chat-capable. Chat-capable providers: {available}"
+            )
+        if self._provider_on_cooldown(target):
+            logger.warning("Provider %s is cooling down after rate limit.", target)
+            raise LLMRateLimitError(f"Provider {target} is cooling down after rate limit.")
+
+        provider = self.get(target)
+        try:
+            response = await provider.complete(
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                json_mode=json_mode,
+                reasoning_effort=reasoning_effort,
+                model=model,
+            )
+            self._rate_limited_until.pop(target, None)
+            return response
+        except LLMRateLimitError:
+            self._mark_rate_limited(target)
+            logger.warning("Provider %s rate-limited exact routed call.", target)
+            raise
 
     async def health_check_all(self) -> dict[str, HealthCheckResult]:
         """Run health checks for all registered providers."""

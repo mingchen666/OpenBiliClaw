@@ -8,6 +8,7 @@ import pytest
 
 from openbiliclaw.config import Config, LLMConfig, LLMProviderConfig
 from openbiliclaw.llm.base import (
+    LLMFallbackError,
     LLMProvider,
     LLMProviderError,
     LLMRateLimitError,
@@ -32,6 +33,7 @@ class FakeProvider(LLMProvider):
     errors: list[Exception] = field(default_factory=list)
     health: bool = True
     call_count: int = 0
+    models: list[str | None] = field(default_factory=list)
 
     @property
     def name(self) -> str:
@@ -45,8 +47,10 @@ class FakeProvider(LLMProvider):
         max_tokens: int = 4096,
         json_mode: bool = False,
         reasoning_effort: str | None = None,
+        model: str | None = None,
     ) -> LLMResponse:
         self.call_count += 1
+        self.models.append(model)
         if self.errors:
             raise self.errors.pop(0)
         if self.responses:
@@ -170,9 +174,7 @@ def test_openai_compatible_can_serve_as_embedding_provider(tmp_path) -> None:
     assert service._provider.name == "openai_compatible"
     assert service._model == "bge-large-en-v1.5"
     # Built against the embedding-section base_url, not [llm.openai].
-    assert str(service._provider._client.base_url).rstrip("/") == (
-        "http://localhost:8000/v1"
-    )
+    assert str(service._provider._client.base_url).rstrip("/") == ("http://localhost:8000/v1")
     assert service._provider._client.api_key == "vllm-token"
 
 
@@ -563,9 +565,7 @@ def test_embedding_uses_dedicated_credentials_over_chat_block(
     # SDK client because OpenAIProvider doesn't re-expose api_key.
     assert service._provider._client.api_key == "dedicated-embedding-key"
     # AsyncOpenAI normalises base_url with a trailing slash.
-    assert str(service._provider._client.base_url).rstrip("/") == (
-        "https://embed.example.com/v1"
-    )
+    assert str(service._provider._client.base_url).rstrip("/") == ("https://embed.example.com/v1")
 
 
 def test_embedding_provider_independent_from_chat_provider(
@@ -821,6 +821,63 @@ async def test_registry_temporarily_cools_down_rate_limited_provider(
     assert second.provider == "claude"
     assert third.provider == "openai"
     assert openai.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_registry_complete_provider_uses_exact_provider_and_model() -> None:
+    openai = FakeProvider("openai")
+    claude = FakeProvider("claude", responses=[LLMResponse(content="ok", provider="claude")])
+    registry = LLMRegistry()
+    registry.register(openai, default=True)
+    registry.register(claude)
+
+    response = await registry.complete_provider(
+        "CLAUDE",
+        [{"role": "user", "content": "hi"}],
+        model="claude-sonnet-4.5",
+    )
+
+    assert response.provider == "claude"
+    assert openai.call_count == 0
+    assert claude.call_count == 1
+    assert claude.models == ["claude-sonnet-4.5"]
+
+
+@pytest.mark.asyncio
+async def test_registry_complete_provider_refuses_embedding_only_provider() -> None:
+    registry = LLMRegistry()
+    registry.register(FakeProvider("openai"), default=True)
+    ollama = FakeProvider("ollama")
+    registry.register(ollama, chat_capable=False)
+
+    assert registry.is_chat_capable("ollama") is False
+    assert registry.is_chat_capable("missing") is False
+    with pytest.raises(LLMFallbackError):
+        await registry.complete_provider("ollama", [{"role": "user", "content": "hi"}])
+
+    assert ollama.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_registry_complete_provider_rate_limit_does_not_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 100.0}
+    monkeypatch.setattr("openbiliclaw.llm.base.time.monotonic", lambda: clock["now"])
+
+    openai = FakeProvider("openai")
+    claude = FakeProvider("claude", errors=[LLMRateLimitError("limited")])
+    registry = LLMRegistry()
+    registry.register(openai, default=True)
+    registry.register(claude)
+
+    with pytest.raises(LLMRateLimitError):
+        await registry.complete_provider("claude", [{"role": "user", "content": "hi"}])
+    with pytest.raises(LLMRateLimitError):
+        await registry.complete_provider("claude", [{"role": "user", "content": "again"}])
+
+    assert openai.call_count == 0
+    assert claude.call_count == 1
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import heapq
 import itertools
+import logging
+from collections.abc import Mapping
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar, Protocol
@@ -14,6 +16,8 @@ from openbiliclaw.soul.tone import ToneProfile, build_tone_profile
 
 from .base import LLMProviderError
 from .prompts import build_socratic_dialogue_prompt
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -26,6 +30,9 @@ if TYPE_CHECKING:
 class SupportsComplete(Protocol):
     """Protocol for providers or registries with a complete method."""
 
+    @property
+    def default_provider(self) -> str: ...
+
     async def complete(
         self,
         messages: list[dict[str, str]],
@@ -35,6 +42,20 @@ class SupportsComplete(Protocol):
         json_mode: bool = False,
         reasoning_effort: str | None = None,
     ) -> LLMResponse: ...
+
+    async def complete_provider(
+        self,
+        provider_name: str,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        json_mode: bool = False,
+        reasoning_effort: str | None = None,
+        model: str | None = None,
+    ) -> LLMResponse: ...
+
+    def is_chat_capable(self, name: str) -> bool: ...
 
 
 class LLMServiceError(Exception):
@@ -47,6 +68,14 @@ class LLMResponseContentError(LLMServiceError):
 
 class LLMProviderExecutionError(LLMServiceError):
     """Raised when the underlying provider or registry call fails."""
+
+
+@dataclass(frozen=True)
+class ModuleOverride:
+    """Per-module LLM route override."""
+
+    provider: str = ""
+    model: str = ""
 
 
 class PrioritySemaphore:
@@ -141,6 +170,21 @@ class LLMService:
         "xhs": 2,
     }
     _DEFAULT_PRIORITY: ClassVar[int] = 3
+    _ROUTE_BUCKET_PREFIXES: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("recommendation.delight_score", "evaluation"),
+        ("recommendation.evaluate_batch", "evaluation"),
+        ("discovery.evaluate", "evaluation"),
+        ("discovery.eval", "evaluation"),
+        ("eval", "evaluation"),
+        ("discovery.search", "discovery"),
+        ("discovery.explore", "discovery"),
+        ("discovery.trending", "discovery"),
+        ("discovery.related", "discovery"),
+        ("yt_search", "discovery"),
+        ("sources.xhs", "discovery"),
+        ("recommendation", "recommendation"),
+        ("soul", "soul"),
+    )
 
     registry: SupportsComplete
     memory: MemoryManager
@@ -150,6 +194,7 @@ class LLMService:
     # preserves prior behaviour for tests / standalone callers that
     # don't care about cost tracking.
     usage_recorder: object | None = None
+    module_overrides: Mapping[str, ModuleOverride] = field(default_factory=dict)
     # v0.3.63+: lazy-initialised priority gate. ``init=False`` so existing
     # callers ``LLMService(registry=..., memory=...)`` continue to work
     # without passing this in. The semaphore must be constructed inside
@@ -158,6 +203,9 @@ class LLMService:
     # first acquire).
     _priority_sem: PrioritySemaphore = field(
         default_factory=_build_priority_semaphore, init=False, repr=False
+    )
+    _logged_unknown_override_keys: set[tuple[str, str]] = field(
+        default_factory=set, init=False, repr=False
     )
 
     @classmethod
@@ -177,6 +225,53 @@ class LLMService:
                 if best is None or length > best[0]:
                     best = (length, priority)
         return best[1] if best is not None else cls._DEFAULT_PRIORITY
+
+    @classmethod
+    def _route_bucket_for_caller(cls, caller: str) -> str | None:
+        """Map a concrete caller tag to a module override bucket."""
+        tag = caller.strip()
+        if not tag:
+            return None
+        for prefix, bucket in cls._ROUTE_BUCKET_PREFIXES:
+            if cls._caller_matches_route_prefix(tag, prefix):
+                return bucket
+        return None
+
+    @staticmethod
+    def _caller_matches_route_prefix(caller: str, prefix: str) -> bool:
+        return (
+            caller == prefix or caller.startswith(prefix + ".") or caller.startswith(prefix + "_")
+        )
+
+    def _resolve_module_override(self, caller: str) -> tuple[str, str | None] | None:
+        bucket = self._route_bucket_for_caller(caller)
+        if bucket is None:
+            return None
+        override = self.module_overrides.get(bucket)
+        if override is None:
+            return None
+
+        provider = override.provider.strip().lower()
+        model = override.model.strip()
+        if not provider and not model:
+            return None
+        if not provider:
+            provider = self.registry.default_provider.strip().lower()
+        if not provider:
+            return None
+
+        if not self.registry.is_chat_capable(provider):
+            log_key = (bucket, provider)
+            if log_key not in self._logged_unknown_override_keys:
+                self._logged_unknown_override_keys.add(log_key)
+                logger.info(
+                    "LLM module override ignored: bucket=%s provider=%s "
+                    "is not registered or chat-capable; using default provider.",
+                    bucket,
+                    provider,
+                )
+            return None
+        return provider, model or None
 
     async def complete_with_core_memory(
         self,
@@ -217,13 +312,26 @@ class LLMService:
         priority = self._resolve_priority(caller)
         try:
             async with self._priority_sem.slot(priority):
-                response = await self.registry.complete(
-                    messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    json_mode=json_mode,
-                    reasoning_effort=reasoning_effort,
-                )
+                routed = self._resolve_module_override(caller)
+                if routed is None:
+                    response = await self.registry.complete(
+                        messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        json_mode=json_mode,
+                        reasoning_effort=reasoning_effort,
+                    )
+                else:
+                    provider, model = routed
+                    response = await self.registry.complete_provider(
+                        provider,
+                        messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        json_mode=json_mode,
+                        reasoning_effort=reasoning_effort,
+                        model=model,
+                    )
         except LLMProviderError as exc:
             raise LLMProviderExecutionError(str(exc)) from exc
         if not response.content.strip():
