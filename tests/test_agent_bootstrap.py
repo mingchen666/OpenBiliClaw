@@ -70,9 +70,10 @@ def test_init_decisions_required_when_source_and_embedding_were_not_explicit(
 
     decisions = bootstrap.detect_init_decisions(tmp_path, args, embedding_touched=False)
 
-    assert decisions["missing"] == ["embedding", "xhs", "douyin"]
+    assert decisions["missing"] == ["embedding", "xhs", "douyin", "youtube"]
     assert decisions["xhs"]["policy"] == "pending"
     assert decisions["douyin"]["policy"] == "pending"
+    assert decisions["youtube"]["policy"] == "pending"
     assert decisions["embedding"]["source"] == "missing"
 
 
@@ -88,6 +89,7 @@ def test_init_decisions_accept_explicit_source_and_embedding_choices(tmp_path: P
             "bge-m3",
             "--no-xhs",
             "--yes-douyin",
+            "--no-youtube",
         ]
     )
 
@@ -96,6 +98,7 @@ def test_init_decisions_accept_explicit_source_and_embedding_choices(tmp_path: P
     assert decisions["missing"] == []
     assert decisions["xhs"]["policy"] == "disabled"
     assert decisions["douyin"]["policy"] == "enabled"
+    assert decisions["youtube"]["policy"] == "disabled"
     assert decisions["embedding"]["source"] == "flags"
 
 
@@ -105,12 +108,14 @@ def test_init_decisions_accept_existing_embedding_but_still_require_sources(tmp_
 
     decisions = bootstrap.detect_init_decisions(tmp_path, args, embedding_touched=False)
 
-    assert decisions["missing"] == ["xhs", "douyin"]
+    assert decisions["missing"] == ["xhs", "douyin", "youtube"]
     assert decisions["embedding"]["source"] == "config"
 
 
 def test_build_init_command_appends_explicit_source_flags_for_docker(tmp_path: Path) -> None:
-    command = bootstrap.build_init_command("docker", tmp_path, "--yes-xhs", "--yes-douyin")
+    command = bootstrap.build_init_command(
+        "docker", tmp_path, "--yes-xhs", "--yes-douyin", "--no-youtube"
+    )
 
     assert command == [
         "docker",
@@ -121,6 +126,7 @@ def test_build_init_command_appends_explicit_source_flags_for_docker(tmp_path: P
         "init",
         "--yes-xhs",
         "--yes-douyin",
+        "--no-youtube",
     ]
 
 
@@ -167,3 +173,10 @@ def test_parser_rejects_conflicting_douyin_flags(tmp_path: Path) -> None:
 
     with pytest.raises(SystemExit):
         parser.parse_args(["--project-dir", str(tmp_path), "--yes-douyin", "--no-douyin"])
+
+
+def test_parser_rejects_conflicting_youtube_flags(tmp_path: Path) -> None:
+    parser = bootstrap.build_arg_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--project-dir", str(tmp_path), "--yes-youtube", "--no-youtube"])

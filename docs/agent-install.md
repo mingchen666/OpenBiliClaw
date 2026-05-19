@@ -77,12 +77,13 @@ If the block says `Status: needs_decisions`, credentials are present
 but init has deliberately not run. Ask the listed init choices, then
 re-run the printed `agent_bootstrap.py` command with explicit
 `--embedding-*`, `--yes-xhs` / `--no-xhs`, and
-`--yes-douyin` / `--no-douyin`.
+`--yes-douyin` / `--no-douyin`, and
+`--yes-youtube` / `--no-youtube`.
 
 ### After init succeeds — relay the per-source signal counts
 
 When `openbiliclaw init` finishes, the CLI prints a "初始化摘要" key-
-value table with explicit B 站 + 小红书 + 抖音 breakdowns (v0.3.67+). The
+value table with explicit B 站 + 小红书 + 抖音 + YouTube breakdowns. The
 agent **must summarise these numbers in the user-facing reply** so
 the user knows what fed their soul profile. Render approximately:
 
@@ -90,6 +91,7 @@ the user knows what fed their soul profile. Render approximately:
 >   - 📺 B 站:观看历史 N 条 / 收藏 M 条 / 关注 K 个 UP → **入库 X 条事件**
 >   - 📕 小红书:收藏 P 条 / 点赞 Q 条 / 浏览记录 R 条 → **入库 Y 条事件**
 >   - 🎵 抖音:发布 A 条 / 收藏 B 条 / 点赞 C 条 / 关注 D 人 → **入库 E 条事件**
+>   - 🌐 YouTube:观看历史 H 条 / 订阅 S 个 / 点赞 L 条 → **入库 T 条事件**
 >   - 📊 画像建模总事件:Z 条
 >   - 🔍 首轮发现内容池:D 条
 > 现在可以打开扩展 popup 看推荐了。」
@@ -197,16 +199,18 @@ less likely to silently expire — a one-line "我用了 v0.3.x 那次留下
 ## Handling missing credentials
 
 When `Missing` is non-empty, or the final status is
-`needs_decisions`, you (the AI agent) walk the user through **five
+`needs_decisions`, you (the AI agent) walk the user through **six
 questions, in order**: pick an LLM, pick an embedding service, get a
 B 站 cookie, ask whether Xiaohongshu likes/favorites may be used, then
-ask whether Douyin post/favorite/like/follow signals may be used.
+ask whether Douyin post/favorite/like/follow signals may be used, then
+ask whether YouTube history/subscriptions/likes may be used.
 Each question must have a clear default — most users will accept it.
 
 `agent_bootstrap.py` is intentionally non-interactive. If credentials
 are already present but you did not pass an explicit embedding choice
 and explicit source choices (`--yes-xhs` / `--no-xhs` plus
-`--yes-douyin` / `--no-douyin`), it returns
+`--yes-douyin` / `--no-douyin` plus
+`--yes-youtube` / `--no-youtube`), it returns
 `status=needs_decisions` and **does not run init**. Ask the missing
 questions, then re-run bootstrap with those flags.
 
@@ -216,9 +220,9 @@ Tell the user, in plain Chinese (or the conversation's language):
 
 > 「OpenBiliClaw 需要一个语言模型来理解你的兴趣、写推荐文案。你可以选:」
 
-Present **three top-level options** (the OpenAI-compatible gateway path
-is folded into "Advanced" further down — do **not** put it in the
-user's main menu unless they explicitly mention having a gateway):
+Present **seven top-level options**. Keep Base URL / model-name details
+inside option 2's submenu; do not ask those advanced fields unless the
+user chooses an OpenAI-compatible gateway / preset path.
 
 > 模型清单以 **2026-05 当前线上**为准,各家在更新。
 
@@ -302,7 +306,7 @@ under ¥1 for most users. That's the actual zero-friction path. Ollama
 remains a first-class option for people who genuinely want offline /
 no-key setups, but should not be sold as "新手友好".
 
-**Hardware caveat for option 3 (Ollama)**: tell the user upfront —
+**Hardware caveat for option 7 (Ollama)**: tell the user upfront —
 "本地模型的首次响应会比较慢（CPU 推理），内存建议 16GB 以上。如果你介意等待，
 选 1 或 2 更顺。" Don't wave them into Ollama if they have a 4-core
 Windows laptop with 8 GB.
@@ -347,7 +351,7 @@ flags from Step 3. DeepSeek has no embeddings endpoint; if the user
 chooses "follow primary" (`--embedding-provider ""`), bootstrap will
 wire local Ollama bge-m3 and pull it in the same run.
 
-#### Option 2 (OpenAI 官方 / Gemini / Claude / OpenRouter):
+#### Options 3-6 (OpenAI 官方 / Gemini / Claude / OpenRouter):
 
 Substitute the right vendor name and Key URL:
 
@@ -527,6 +531,11 @@ Then ask separately:
 > 但会让扩展打开抖音页面执行拉取；扩展也会把 douyin.com Cookie 同步给后续 discovery，search / hot / feed discovery 则优先复用登录浏览器插件签名桥。
 > 默认不启用；你明确说要用我才开。」
 
+Then ask separately:
+
+> 「要把你的 YouTube 观看历史 / 订阅 / 点赞也混进初始画像吗？这会让长视频口味进入画像，
+> 但会让扩展打开 YouTube 页面执行拉取。默认不启用；你明确说要用我才开。」
+
 Map each answer to exactly one bootstrap flag:
 
 | 源 | 用户回答 | 命令行参数 |
@@ -535,8 +544,10 @@ Map each answer to exactly one bootstrap flag:
 | 小红书 | 拒绝 / 没有小红书 / 不确定 / 没回答 | `--no-xhs` |
 | 抖音 | 明确同意 | `--yes-douyin` |
 | 抖音 | 拒绝 / 没有抖音 / 不确定 / 没回答 | `--no-douyin` |
+| YouTube | 明确同意 | `--yes-youtube` |
+| YouTube | 拒绝 / 没有 YouTube / 不确定 / 没回答 | `--no-youtube` |
 
-Do not omit these flags. Omitting either source means the agent never asked; bootstrap
+Do not omit these flags. Omitting any source means the agent never asked; bootstrap
 will pause with `status=needs_decisions` instead of running init.
 
 ### Putting it all together — example commands
@@ -553,7 +564,8 @@ python3 scripts/agent_bootstrap.py \
   --embedding-provider ollama \
   --embedding-model bge-m3 \
   --no-xhs \
-  --no-douyin
+  --no-douyin \
+  --no-youtube
 ```
 
 Pass embedding flags explicitly because the user actively picked option 1 —
@@ -571,7 +583,8 @@ python3 scripts/agent_bootstrap.py \
   --embedding-provider gemini \
   --embedding-model gemini-embedding-001 \
   --no-xhs \
-  --no-douyin
+  --no-douyin \
+  --no-youtube
 ```
 
 Note: no `--embedding-api-key` because the same Gemini API key the
@@ -587,7 +600,8 @@ python3 scripts/agent_bootstrap.py \
   --embedding-provider ollama \
   --embedding-model bge-m3 \
   --no-xhs \
-  --no-douyin
+  --no-douyin \
+  --no-youtube
 ```
 
 **"我不想想这个,跟随主 LLM" 路径** (选项 3 / 用户跳过)：
@@ -598,7 +612,8 @@ python3 scripts/agent_bootstrap.py \
   --llm-api-key sk-... \
   --embedding-provider "" \
   --no-xhs \
-  --no-douyin
+  --no-douyin \
+  --no-youtube
 ```
 
 When no `--embedding-*` flag is passed AND the primary is Claude /
@@ -619,7 +634,8 @@ python3 scripts/agent_bootstrap.py \
   --embedding-provider ollama \
   --embedding-model bge-m3 \
   --no-xhs \
-  --no-douyin
+  --no-douyin \
+  --no-youtube
 ```
 
 Embedding explicitly pinned to local Ollama because most self-hosted
@@ -628,9 +644,10 @@ the runtime fallback would still work but adds a startup warning.
 
 > ⚠️ **Do NOT pass `--skip-init`** here. The point of running the
 > bootstrap with credentials is to reach a usable state. When all
-> credentials are present, `--skip-init` is absent, and both init
+> credentials are present, `--skip-init` is absent, and all init
 > decisions are explicit (`--embedding-*` plus source flags:
-> `--yes-xhs` / `--no-xhs` and `--yes-douyin` / `--no-douyin`),
+> `--yes-xhs` / `--no-xhs`, `--yes-douyin` / `--no-douyin`,
+> and `--yes-youtube` / `--no-youtube`),
 > `agent_bootstrap.py` will automatically run `openbiliclaw init` after
 > the backend is healthy: it pulls the user's Bilibili history,
 > generates the soul profile, and runs the first content discovery
@@ -643,18 +660,18 @@ After running, **always**:
 2. Report the final state to the user, including:
    - "✅ 后端已启动，监听 http://127.0.0.1:8420"
    - "✅ 配置已写入"
-   - "✅ 初始化已完成 —— 已拉取你的 B 站历史，按你的同意混入小红书 / 抖音信号，生成画像并跑了首轮内容发现"
+   - "✅ 初始化已完成 —— 已拉取你的 B 站历史，按你的同意混入小红书 / 抖音 / YouTube 信号，生成画像并跑了首轮内容发现"
    - "👉 下一步：装浏览器扩展（链接）来看推荐"
 
 **`init` takes 2-5 minutes on first run** (real LLM calls + real
-Bilibili / optional Xiaohongshu / optional Douyin fetches). Tell the user upfront so they don't think it's
+Bilibili / optional Xiaohongshu / optional Douyin / optional YouTube fetches). Tell the user upfront so they don't think it's
 hung. The bootstrap streams init's stdout so progress is visible, and
 also emits `BOOTSTRAP_STATUS` events with `status=progress` and
 `message=init_progress` for key milestones (`1/4`, `2/4`, `3/4`,
 `4/4`, discovery refill progress). AI agents must relay those progress
 events to the user instead of staying silent until `init_complete`.
 
-### Init 期间会问用户:小红书 / 抖音数据是否加入
+### Init 期间会问用户:小红书 / 抖音 / YouTube 数据是否加入
 
 `openbiliclaw init` 在拉 B 站数据**之前**会弹一个交互式问题:是否把
 小红书的收藏 / 点赞混进画像。三种状态:
@@ -685,6 +702,18 @@ events to the user instead of staying silent until `init_complete`.
 - **通过 `agent_bootstrap.py` 自动 init**:bootstrap 会强制要求
   `--yes-douyin` / `--no-douyin` 二选一。
 
+最后 `init` 会单独问 YouTube 观看历史 / 订阅 / 点赞是否加入画像：
+
+- **`openbiliclaw init --no-youtube`**:跳过提问 + 跳过 enqueue,只用
+  B 站(+其他已启用源)数据建画像。
+- **`openbiliclaw init --yes-youtube`**:跳过提问直接启用,适合脚本化。
+- **`OPENBILICLAW_NO_YOUTUBE=1` 环境变量**:同 `--no-youtube`,用于永久跳过。
+- **直接调用 `openbiliclaw init` 的非交互式终端(管道 / CI)**:
+  CLI 默认跳过 YouTube；脚本化安装仍必须传 `--yes-youtube` 或
+  `--no-youtube` 让行为可审计。
+- **通过 `agent_bootstrap.py` 自动 init**:bootstrap 会强制要求
+  `--yes-youtube` / `--no-youtube` 二选一。
+
 **关键:接入会前台抢焦点**。`max_scroll_rounds=15`(v0.3.64+ CLI 默认,
 v0.3.22 ~ v0.3.63 是 3)触发滚动模式,扩展会在用户浏览器里
 `chrome.tabs.create({active: true})` 打开一个前台 tab(URL:
@@ -706,10 +735,15 @@ https://www.xiaohongshu.com/explore),自动跳到用户 profile 页向下滚动
 分批回传结果。默认只在用户明确同意时启用；不登录或触发风控时
 可能 0 条，但 init 会继续完成。
 
+YouTube 接入同样会前台抢焦点。扩展会打开 YouTube 观看历史 /
+订阅 / 点赞页面并从 DOM 读取条目。默认只在用户明确同意时启用；
+不登录、页面语言/布局变化或任务仍在后台跑时可能 0 条，但 init
+会继续完成。
+
 AI agent 视角:**不要省略这些问题**。一句话安装走的是
 `agent_bootstrap.py` 的非交互路径,不会有交互式 prompt 替你兜底。
-用户明确同意才传 `--yes-xhs` / `--yes-douyin`;其余情况传
-`--no-xhs` / `--no-douyin`。
+用户明确同意才传 `--yes-xhs` / `--yes-douyin` / `--yes-youtube`;
+其余情况传 `--no-xhs` / `--no-douyin` / `--no-youtube`。
 
 ### Per-module overrides（高级，默认不要问）
 

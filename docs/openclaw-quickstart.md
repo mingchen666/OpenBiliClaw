@@ -30,7 +30,7 @@
 - 目标机器可用 Python 3.11+
 - 可以访问当前配置所需的 LLM provider
 - B 站登录态：v0.3.12+ 推荐**装浏览器扩展自动同步**（[下载](https://github.com/whiteguo233/OpenBiliClaw/releases)），不再需要 F12 贴 Cookie。也可以用交互式终端现场粘
-- 小红书 / 抖音登录态：只有在你明确选择把这些源加入初始化画像或 discovery 时需要；后端不代爬账号，依赖同一个浏览器扩展里的登录会话执行任务
+- 小红书 / 抖音 / YouTube 登录态：只有在你明确选择把这些源加入初始化画像或 discovery 时需要；后端不代爬账号，依赖同一个浏览器扩展里的登录会话执行任务
 - 如果走 Docker 路径，目标机器上还需要可用的 Docker / Docker Compose
 
 ## 方案 A：Docker 优先
@@ -105,18 +105,24 @@ docker exec -it openbiliclaw-backend openbiliclaw init
 > - 不想加就回 N，只用 B 站和已同意的其他源建画像
 > - 脚本化场景用 `--no-douyin` 跳过 / `--yes-douyin` 强制启用 / `OPENBILICLAW_NO_DOUYIN=1` 环境变量永久跳过
 
+> 🌐 **YouTube 数据是否加入**：随后会单独询问是否把 YouTube 观看历史 / 订阅 / 点赞混进画像。
+> - 想加就回 Y，需要已安装扩展并在同一浏览器登录 `https://www.youtube.com`；扩展会打开 YouTube 页面执行 bootstrap_profile 任务
+> - 不想加就回 N，只用 B 站和已同意的其他源建画像
+> - 脚本化场景用 `--no-youtube` 跳过 / `--yes-youtube` 强制启用 / `OPENBILICLAW_NO_YOUTUBE=1` 环境变量永久跳过
+
 最后进入真正的 init 阶段：
 
 1. （可选）拉取小红书收藏 / 点赞 —— 仅在上面同意时执行；与 B 站拉取并行跑
 2. （可选）拉取抖音发布 / 收藏 / 点赞 / 关注 —— 仅在上面同意时执行
-3. 拉取 B 站历史 / 收藏 / 关注（≈ 20–60s）
-4. 分析偏好（LLM 调用，≈ 30–90s）
-5. 生成初始画像（LLM 调用，≈ 30–60s）—— 若有小红书 / 抖音数据会一并喂入
-6. 自动补首轮内容池（多策略并发 + LLM 评估，≈ 1–3 分钟）
+3. （可选）拉取 YouTube 观看历史 / 订阅 / 点赞 —— 仅在上面同意时执行
+4. 拉取 B 站历史 / 收藏 / 关注（≈ 20–60s）
+5. 分析偏好（LLM 调用，≈ 30–90s）
+6. 生成初始画像（LLM 调用，≈ 30–60s）—— 若有小红书 / 抖音 / YouTube 数据会一并喂入
+7. 自动补首轮内容池（多策略并发 + LLM 评估，≈ 1–3 分钟）
 
 跑完后可以用 `openbiliclaw cost` 查看本次 init 在 LLM 上花了多少钱（v0.3.26+ 计费台账）。
 
-如果当前终端**不是**交互式（CI / 服务器脚本），`init` 不会等待输入，而是直接报错——这是为了避免把脚本挂死。这时改用 `python3 scripts/agent_bootstrap.py --provider ... --llm-api-key ... --bilibili-cookie ... --yes-xhs/--no-xhs --yes-douyin/--no-douyin`（详见 [docs/agent-install.md](agent-install.md)）。
+如果当前终端**不是**交互式（CI / 服务器脚本），`init` 不会等待输入，而是直接报错——这是为了避免把脚本挂死。这时改用 `python3 scripts/agent_bootstrap.py --provider ... --llm-api-key ... --bilibili-cookie ... --yes-xhs/--no-xhs --yes-douyin/--no-douyin --yes-youtube/--no-youtube`（详见 [docs/agent-install.md](agent-install.md)）。
 
 ### 3. 给 OpenClaw 保留一个本地 workspace
 
@@ -160,7 +166,7 @@ cp config.example.toml config.toml
 openbiliclaw init
 ```
 
-> ⏱  **首次运行预计 2–5 分钟**。同 Docker 路径，触发同一份配置向导（LLM → Embedding → Cookie → Per-module 覆盖），然后弹小红书 / 抖音可选问题，最后跑实际 init（可选拉小红书 / 抖音 → 拉 B 站历史 → 生成画像 → 首轮发现）。
+> ⏱  **首次运行预计 2–5 分钟**。同 Docker 路径，触发同一份配置向导（LLM → Embedding → Cookie → Per-module 覆盖），然后弹小红书 / 抖音 / YouTube 可选问题，最后跑实际 init（可选拉小红书 / 抖音 / YouTube → 拉 B 站历史 → 生成画像 → 首轮发现）。
 
 如果你想跳过交互式向导（自动化场景），用 `scripts/agent_bootstrap.py` 的命令行 flag 一次性把所有字段传进去——见 [docs/agent-install.md](agent-install.md)。
 

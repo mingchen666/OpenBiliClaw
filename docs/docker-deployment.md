@@ -41,7 +41,8 @@ OpenBiliClaw 不爬登录态——它复用**你**当前浏览器的登录会话
 - **B 站**：浏览器里登录 https://www.bilibili.com 即可。v0.3.12+ 扩展会自动把 Cookie 推到容器里的 `/api/bilibili/cookie`，免 F12
 - **小红书**：必须在浏览器里登录 https://www.xiaohongshu.com。后端不直接抓小红书，所有发现/详情都通过扩展以你的登录态执行——大部分任务(search / creator 抓取)在隐藏 tab 里跑;但 v0.3.22+ 起 `init` 期间的 **bootstrap_profile 滚动任务会临时打开一个前台 tab**(后台 tab 在小红书上无法触发瀑布流懒加载),会抢一次焦点 10-30 秒,完成后自动关闭。**不登录 = 完全没有小红书内容**
 - **抖音**：如果要启用 `init --yes-douyin`、`fetch-douyin` 或 `discover --source douyin`，必须在装了扩展的宿主机浏览器里登录 https://www.douyin.com。后端不直接抓抖音；初始化只接收扩展回传的发布 / 收藏 / 点赞 / 关注信号。search / hot / feed discovery 优先走登录浏览器插件签名桥；Cookie 可用环境变量覆盖或由扩展同步到容器 volume 的 `data/douyin_cookie.json`。不登录或触发风控时会返回 0 条并让 init 继续。
-- **CDP 说明**：小红书和抖音当前都走 Chrome 插件任务链路，不需要额外启动 CDP 调试 Chrome。`[sources.browser].cdp_url` 只保留给通用 Web / 自定义网页源的浏览器抓取场景。
+- **YouTube**：如果要启用 `init --yes-youtube` 或 `fetch-youtube`，必须在装了扩展的宿主机浏览器里登录 https://www.youtube.com。后端不直接抓 YouTube；初始化只接收扩展回传的观看历史 / 订阅 / 点赞信号。不登录、页面布局变化或任务仍在后台跑时会返回 0 条并让 init 继续。
+- **CDP 说明**：小红书、抖音和 YouTube 当前都走 Chrome 插件任务链路，不需要额外启动 CDP 调试 Chrome。`[sources.browser].cdp_url` 只保留给通用 Web / 自定义网页源的浏览器抓取场景。
 
 详见 [配置参考 / sources.browser 段](modules/config.md#sourcesbrowser)。
 
@@ -106,6 +107,13 @@ AI agent 一句话部署时，`agent_bootstrap.py` 会在 auto-init 期间额外
 > - 脚本化场景直接传 flag:`docker exec -it openbiliclaw-backend openbiliclaw init --no-douyin` 跳过 / `--yes-douyin` 强制启用
 > - AI agent 的 `agent_bootstrap.py` auto-init 同样要求 `--yes-douyin` 或 `--no-douyin` 二选一
 > - 想永久跳过:在 docker-compose.yml 里加 `OPENBILICLAW_NO_DOUYIN=1` 环境变量
+
+> 🌐 **YouTube 数据是否加入**:init 也会单独问是否把 YouTube 观看历史 / 订阅 / 点赞混进画像。
+> - 想加就回 Y，会提示你装扩展 + 登录 YouTube。注意扩展仍在宿主机浏览器里执行，Docker 容器只通过 8420 端口收结果
+> - 不想加就回 N；非交互式终端默认跳过 YouTube
+> - 脚本化场景直接传 flag:`docker exec -it openbiliclaw-backend openbiliclaw init --no-youtube` 跳过 / `--yes-youtube` 强制启用
+> - AI agent 的 `agent_bootstrap.py` auto-init 同样要求 `--yes-youtube` 或 `--no-youtube` 二选一
+> - 想永久跳过:在 docker-compose.yml 里加 `OPENBILICLAW_NO_YOUTUBE=1` 环境变量
 
 > 💡 **AI agent 一句话部署**：把下面这句粘到 Claude Code / Codex CLI / Cursor / OpenClaw：
 > ```

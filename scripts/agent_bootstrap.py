@@ -331,6 +331,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "or has not opted in."
         ),
     )
+    youtube_group = parser.add_mutually_exclusive_group()
+    youtube_group.add_argument(
+        "--yes-youtube",
+        action="store_true",
+        help=(
+            "Explicitly opt in to YouTube history/subscription/like data during auto-init. "
+            "AI agents should only pass this after asking the user."
+        ),
+    )
+    youtube_group.add_argument(
+        "--no-youtube",
+        action="store_true",
+        help=(
+            "Explicitly skip YouTube data during auto-init. Use this when the user says no "
+            "or has not opted in."
+        ),
+    )
     parser.add_argument(
         "--skip-ollama-setup",
         action="store_true",
@@ -1262,11 +1279,35 @@ def detect_init_decisions(
             "source": "missing",
         }
 
+    if args.yes_youtube:
+        youtube = {
+            "policy": "enabled",
+            "flag": "--yes-youtube",
+            "explicit": True,
+            "source": "flag",
+        }
+    elif args.no_youtube or os.environ.get("OPENBILICLAW_NO_YOUTUBE", "").strip() == "1":
+        youtube = {
+            "policy": "disabled",
+            "flag": "--no-youtube",
+            "explicit": True,
+            "source": "env" if not args.no_youtube else "flag",
+        }
+    else:
+        missing.append("youtube")
+        youtube = {
+            "policy": "pending",
+            "flag": "",
+            "explicit": False,
+            "source": "missing",
+        }
+
     return {
         "missing": missing,
         "embedding": embedding,
         "xhs": xhs,
         "douyin": douyin,
+        "youtube": youtube,
     }
 
 
@@ -1275,6 +1316,7 @@ def build_init_command(
     project_dir: Path,
     xhs_flag: str,
     douyin_flag: str,
+    youtube_flag: str,
 ) -> list[str]:
     """Build the non-interactive init command used after bootstrap health checks."""
 
@@ -1303,6 +1345,8 @@ def build_init_command(
         init_cmd.append(xhs_flag)
     if douyin_flag:
         init_cmd.append(douyin_flag)
+    if youtube_flag:
+        init_cmd.append(youtube_flag)
     return init_cmd
 
 
@@ -1626,9 +1670,9 @@ def run(args: argparse.Namespace) -> int:
             )
         )
     elif args.provider == "openai":
-        # User picked OpenAI 官方 (option 2 in agent-install.md). If a
-        # previous run wrote a gateway URL into [llm.openai] base_url
-        # (option 4), it would silently keep routing to that gateway.
+        # User picked OpenAI 官方 without a custom base_url. If a previous
+        # run wrote a gateway URL into [llm.openai] base_url, it would
+        # silently keep routing to that gateway.
         # Reset the field to "" so the OpenAI SDK falls back to its
         # built-in https://api.openai.com/v1.
         if clear_config_value(project_dir / "config.toml", "llm.openai", "base_url"):
@@ -1881,7 +1925,10 @@ def run(args: argparse.Namespace) -> int:
             try:
                 xhs_flag = str(init_decisions["xhs"]["flag"])
                 douyin_flag = str(init_decisions["douyin"]["flag"])
-                init_cmd = build_init_command(mode, project_dir, xhs_flag, douyin_flag)
+                youtube_flag = str(init_decisions["youtube"]["flag"])
+                init_cmd = build_init_command(
+                    mode, project_dir, xhs_flag, douyin_flag, youtube_flag
+                )
                 init_returncode = run_init_streaming(init_cmd, cwd=project_dir, check=False)
                 if init_returncode != 0:
                     emit(

@@ -4,6 +4,13 @@
 
 ---
 
+## v0.3.82: 一句话安装合约对齐（2026-05-19）
+
+- 一句话安装合约补齐 YouTube opt-in：`agent_bootstrap.py` 现在像小红书 / 抖音一样要求 `--yes-youtube` / `--no-youtube`，并把该选择传给自动 `openbiliclaw init`；`install.sh` / `install.ps1` 状态块和 agent/Docker/CLI 文档同步打印 YouTube 决策，同时统一 LLM 默认推荐为 DeepSeek 并修正安装文档的模型菜单编号。
+- 后端包版本提升到 v0.3.82，准备发布 `backend-v0.3.82`。
+
+---
+
 ## v0.3.81: 推荐理由错位修复（2026-05-19）
 
 - 批量推荐文案、discovery batch 评估和源无关内容分类现在都携带并按 `bvid/content_id` 绑定 LLM 结果；provider 乱序、漏项或返回部分数组时不再把推荐理由 / 评估理由写到错误视频。
