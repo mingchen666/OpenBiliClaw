@@ -25,6 +25,7 @@ test("settings page exposes advanced config fields from backend schema", () => {
     "cfgBiliBrowserHeaded",
     "cfgSourcesBrowserCdp",
     "cfgSourcesBrowserHeaded",
+    "cfgBilibiliEnabled",
     "cfgXhsEnabled",
     "cfgXhsDailySearchBudget",
     "cfgXhsDailyCreatorBudget",
@@ -56,8 +57,7 @@ test("settings page exposes advanced config fields from backend schema", () => {
     "cfgSpeculationMaxSecondary",
     "cfgStorageDbPath",
     "cfgLogFileLevel",
-    "cfgLogDirectory",
-    "cfgLogFilename",
+    "cfgLogPath",
     "cfgLogMaxFileSize",
     "cfgLogBackupCount",
     "cfgLogAggregateBudget",
@@ -69,6 +69,46 @@ test("settings page exposes advanced config fields from backend schema", () => {
     assert.match(popupHtml, new RegExp(`id="${id}"`), `${id} should exist`);
     assert.match(popupJs, new RegExp(`"${id}"`), `${id} should be wired in popup.js`);
   }
+});
+
+test("settings source tab separates every platform into its own block", () => {
+  const popupHtml = readFileSync(resolve("popup", "popup.html"), "utf8");
+  const popupJs = readFileSync(resolve("popup", "popup.js"), "utf8");
+  const sourcesPanel =
+    popupHtml.match(/<div id="settingsPanelSources"[\s\S]*?<div id="settingsPanelGeneral"/)?.[0] ??
+    "";
+
+  for (const sourceKey of ["bilibili", "xiaohongshu", "douyin", "youtube", "browser", "pool"]) {
+    assert.match(
+      sourcesPanel,
+      new RegExp(`data-source-card="${sourceKey}"`),
+      `${sourceKey} source card should exist`,
+    );
+  }
+  assert.match(sourcesPanel, /id="cfgBilibiliEnabled"/);
+  assert.match(sourcesPanel, />启用 Bilibili discovery</);
+  assert.match(sourcesPanel, />调试：B 站登录时显示浏览器窗口</);
+  assert.match(popupJs, /bilibiliEnabled\.checked = cfg\.sources\?\.bilibili\?\.enabled !== false/);
+  assert.match(popupJs, /bilibili:\s*\{\s*enabled: checked\("cfgBilibiliEnabled", true\)/);
+});
+
+test("settings logging tab edits a single full log path", () => {
+  const popupHtml = readFileSync(resolve("popup", "popup.html"), "utf8");
+  const popupJs = readFileSync(resolve("popup", "popup.js"), "utf8");
+  const loggingPanel =
+    popupHtml.match(/<div id="settingsPanelLogging"[\s\S]*?<p class="settings-note">/)?.[0] ?? "";
+
+  assert.match(loggingPanel, /<label for="cfgLogPath">完整日志路径<\/label>/);
+  assert.match(loggingPanel, /id="cfgLogPath"[^>]*placeholder="logs\/openbiliclaw\.log"/);
+  assert.doesNotMatch(loggingPanel, /for="cfgLogDirectory"/);
+  assert.doesNotMatch(loggingPanel, /for="cfgLogFilename"/);
+  assert.match(popupJs, /setVal\("cfgLogPath", resolveLogPathFromConfig\(cfg\.logging\)\)/);
+  assert.match(
+    popupJs,
+    /const logPath = splitLogPath\(getVal\("cfgLogPath"\), state\.runtimeConfig\?\.logging\)/,
+  );
+  assert.match(popupJs, /directory: logPath\.directory/);
+  assert.match(popupJs, /filename: logPath\.filename/);
 });
 
 test("settings page organizes backend config into tabs", () => {
@@ -179,6 +219,7 @@ test("source-share suggestion button uses settings-scope helpers and form switch
   assert.doesNotMatch(populateFormBlock, /const setVal = \(id, val\) => \{/);
   assert.match(suggestionBlock, /fetchSourceShareSuggestion\(\{/);
   assert.match(suggestionBlock, /enabled_sources:\s*\{/);
+  assert.match(suggestionBlock, /bilibili:\s*checked\("cfgBilibiliEnabled", true\)/);
   assert.match(suggestionBlock, /xiaohongshu:\s*checked\("cfgXhsEnabled", true\)/);
   assert.match(suggestionBlock, /youtube:\s*checked\("cfgYoutubeEnabled"\)/);
   assert.match(suggestionBlock, /configured_shares:\s*\{/);

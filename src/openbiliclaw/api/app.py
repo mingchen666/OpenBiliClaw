@@ -20,6 +20,7 @@ from openbiliclaw.api.models import (
     BilibiliConfigOut,
     BilibiliCookieIn,
     BilibiliCookieResponse,
+    BilibiliSourceConfigOut,
     ChatIn,
     ChatTurnIn,
     ChatTurnListResponse,
@@ -3474,6 +3475,9 @@ def create_app(
                     cdp_url=cfg.sources.browser_cdp_url,
                     headed=cfg.sources.browser_headed,
                 ),
+                bilibili=BilibiliSourceConfigOut(
+                    enabled=cfg.sources.bilibili.enabled,
+                ),
                 xiaohongshu=XiaohongshuSourceConfigOut(
                     enabled=cfg.sources.xiaohongshu.enabled,
                     daily_search_budget=cfg.sources.xiaohongshu.daily_search_budget,
@@ -3525,6 +3529,7 @@ def create_app(
                 file_level=cfg.logging.file_level,
                 directory=cfg.logging.directory,
                 filename=cfg.logging.filename,
+                file_path=str(cfg.logging.file_path),
                 max_file_size_mb=cfg.logging.max_file_size_mb,
                 backup_count=cfg.logging.backup_count,
                 aggregate_budget_mb=cfg.logging.aggregate_budget_mb,
@@ -3703,6 +3708,10 @@ def create_app(
                         cfg.sources.browser_cdp_url = str(browser_data["cdp_url"])
                     if "headed" in browser_data:
                         cfg.sources.browser_headed = _as_bool(browser_data["headed"])
+
+                bilibili_data = sources_data.get("bilibili")
+                if isinstance(bilibili_data, dict) and "enabled" in bilibili_data:
+                    cfg.sources.bilibili.enabled = _as_bool(bilibili_data["enabled"])
 
                 xhs_data = sources_data.get("xiaohongshu")
                 if isinstance(xhs_data, dict):
@@ -3944,11 +3953,9 @@ def create_app(
     ) -> dict[str, bool]:
         if raw_enabled is None:
             return fallback
-        enabled = {"bilibili": True}
+        enabled: dict[str, bool] = {}
         for source in _SOURCE_SHARE_ORDER:
-            if source == "bilibili":
-                continue
-            enabled[source] = bool(raw_enabled.get(source, False))
+            enabled[source] = bool(raw_enabled.get(source, fallback.get(source, False)))
         return {source: enabled.get(source, False) for source in _SOURCE_SHARE_ORDER}
 
     def _build_source_share_suggestion_response(

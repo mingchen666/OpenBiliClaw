@@ -200,6 +200,12 @@ cdp_url = ""
 # agent-browser 回落路径是否使用 headed 模式
 headed = false
 
+# ── Bilibili discovery 开关 ──
+# 设为 false 后：B 站 search / related_chain / trending / explore 不再参与后台 discovery，
+# pool_source_shares 中的 bilibili 配额会被丢弃。
+[sources.bilibili]
+enabled = true
+
 # ── 小红书（xhs）专用配置 ──
 # 内容发现和元数据提取完全由浏览器扩展在真实登录态下完成：
 # 被动收集（用户浏览时自动提取）+ 后台标签页搜索 + 创作者订阅。

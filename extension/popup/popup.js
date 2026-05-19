@@ -4087,6 +4087,40 @@ function bindSettings() {
     return el ? el.value : "";
   };
 
+  function joinLogPath(directory, filename) {
+    const dir = String(directory || "").trim();
+    const name = String(filename || "").trim();
+    if (!dir) return name;
+    if (!name) return dir;
+    return dir.endsWith("/") || dir.endsWith("\\") ? `${dir}${name}` : `${dir}/${name}`;
+  }
+
+  function resolveLogPathFromConfig(loggingConfig) {
+    if (loggingConfig?.file_path) return loggingConfig.file_path;
+    return joinLogPath(loggingConfig?.directory || "logs", loggingConfig?.filename || "openbiliclaw.log");
+  }
+
+  function splitLogPath(rawPath, currentLogging) {
+    const fallback = { directory: "logs", filename: "openbiliclaw.log" };
+    const trimmed = String(rawPath || "").trim();
+    if (!trimmed) return fallback;
+    if (currentLogging && trimmed === resolveLogPathFromConfig(currentLogging)) {
+      return {
+        directory: currentLogging.directory || fallback.directory,
+        filename: currentLogging.filename || fallback.filename,
+      };
+    }
+    const normalized = trimmed.replaceAll("\\", "/").replace(/\/+$/, "");
+    const slashIndex = normalized.lastIndexOf("/");
+    if (slashIndex === -1) {
+      return { directory: fallback.directory, filename: normalized || fallback.filename };
+    }
+    return {
+      directory: normalized.slice(0, slashIndex) || "/",
+      filename: normalized.slice(slashIndex + 1) || fallback.filename,
+    };
+  }
+
   const getInt = (id, fallback) => {
     const raw = getVal(id);
     if (raw === "") return fallback;
@@ -4161,6 +4195,8 @@ function bindSettings() {
     setVal("cfgBiliBrowserExecutable", cfg.bilibili?.browser_executable);
     const biliBrowserHeaded = document.getElementById("cfgBiliBrowserHeaded");
     if (biliBrowserHeaded) biliBrowserHeaded.checked = cfg.bilibili?.browser_headed === true;
+    const bilibiliEnabled = document.getElementById("cfgBilibiliEnabled");
+    if (bilibiliEnabled) bilibiliEnabled.checked = cfg.sources?.bilibili?.enabled !== false;
 
     // Sources
     setVal("cfgSourcesBrowserCdp", cfg.sources?.browser?.cdp_url);
@@ -4223,8 +4259,7 @@ function bindSettings() {
     if (logLevel) logLevel.value = cfg.logging?.level || "INFO";
     const logFileLevel = document.getElementById("cfgLogFileLevel");
     if (logFileLevel) logFileLevel.value = cfg.logging?.file_level || "DEBUG";
-    setVal("cfgLogDirectory", cfg.logging?.directory);
-    setVal("cfgLogFilename", cfg.logging?.filename);
+    setVal("cfgLogPath", resolveLogPathFromConfig(cfg.logging));
     setVal("cfgLogMaxFileSize", cfg.logging?.max_file_size_mb);
     setVal("cfgLogBackupCount", cfg.logging?.backup_count);
     setVal("cfgLogAggregateBudget", cfg.logging?.aggregate_budget_mb);
@@ -4236,6 +4271,7 @@ function bindSettings() {
   }
 
   function collectForm() {
+    const logPath = splitLogPath(getVal("cfgLogPath"), state.runtimeConfig?.logging);
     return {
       language: getVal("cfgLanguage"),
       data_dir: getVal("cfgDataDir"),
@@ -4312,6 +4348,9 @@ function bindSettings() {
           cdp_url: getVal("cfgSourcesBrowserCdp"),
           headed: checked("cfgSourcesBrowserHeaded"),
         },
+        bilibili: {
+          enabled: checked("cfgBilibiliEnabled", true),
+        },
         xiaohongshu: {
           enabled: checked("cfgXhsEnabled", true),
           daily_search_budget: getInt("cfgXhsDailySearchBudget", 30),
@@ -4363,8 +4402,8 @@ function bindSettings() {
       logging: {
         level: getVal("cfgLogLevel"),
         file_level: getVal("cfgLogFileLevel"),
-        directory: getVal("cfgLogDirectory"),
-        filename: getVal("cfgLogFilename"),
+        directory: logPath.directory,
+        filename: logPath.filename,
         max_file_size_mb: getInt("cfgLogMaxFileSize", 100),
         backup_count: getInt("cfgLogBackupCount", 1),
         aggregate_budget_mb: getInt("cfgLogAggregateBudget", 500),
@@ -4422,7 +4461,7 @@ function bindSettings() {
       try {
         const suggestion = await fetchSourceShareSuggestion({
           enabled_sources: {
-            bilibili: true,
+            bilibili: checked("cfgBilibiliEnabled", true),
             xiaohongshu: checked("cfgXhsEnabled", true),
             douyin: checked("cfgDouyinEnabled"),
             youtube: checked("cfgYoutubeEnabled"),

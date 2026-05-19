@@ -4,6 +4,16 @@
 
 ---
 
+## v0.3.85 / extension v0.3.36: 插件配置页来源与日志整理（2026-05-20）
+
+- `[sources.bilibili].enabled` 新增 Bilibili discovery 开关；关闭后 B 站 search / related_chain / trending / explore 不再参与后台补池，`pool_source_shares.bilibili` 会保留但从运行时有效配比中剔除。
+- 插件设置页「平台源」tab 按 Bilibili / 小红书 / 抖音 / YouTube / 通用网页 / 候选池配比拆成独立分块，并把 B 站登录调试项文案改成「调试：B 站登录时显示浏览器窗口」。
+- `/api/config` 的 logging 响应新增只读 `file_path`，返回由 `directory` + `filename` 解析后的完整日志文件路径。
+- 浏览器插件设置页「日志」tab 将原来的「日志目录」+「日志文件名」收敛为单个「完整日志路径」输入；保存时仍拆回 `logging.directory` / `logging.filename` 写入 `config.toml`，兼容现有后端配置结构。
+- 后端包版本提升到 v0.3.85，准备发布 `backend-v0.3.85`；浏览器插件版本提升到 v0.3.36，准备发布 `extension-v0.3.36`。
+
+---
+
 ## extension v0.3.35: 插件聊天页贴底布局修复（2026-05-20）
 
 - 浏览器插件聊天 tab 激活时会隐藏底部活动栏，让聊天输入框成为 side panel 底部固定区域；聊天记录区改为独立 flex 滚动，优先占用输入框上方空间。

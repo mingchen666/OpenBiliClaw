@@ -19,12 +19,12 @@
 
 ---
 
-## 📌 extension-v0.3.35 重要更新（2026-05-20）
+## 📌 v0.3.85 / extension-v0.3.36 重要更新（2026-05-20）
 
-- **💬 插件聊天页贴底** —— side panel 聊天 tab 激活时隐藏底部活动栏，聊天记录区占满上方空间，输入框固定在底部，窄屏能多看历史。
-- **🚀 安装自动 init 收敛** —— Bash / PowerShell / Docker / AI agent 安装渠道都会在确认 embedding、B 站 Cookie 来源和小红书 / 抖音 / YouTube opt-in 后自动运行 init。
-- **🐳 Docker runtime 配置同步** —— `agent_bootstrap.py --mode docker` 会把确认后的配置同步进容器 `/app/runtime`，再触发容器内 init；手动 `docker exec ... init` 只保留为 fallback。
-- **📦 插件发布** —— 浏览器插件版本提升到 `extension-v0.3.35`；本次不发布后端包。
+- **🎛️ 来源配置分块** —— 插件设置页「平台源」按 Bilibili / 小红书 / 抖音 / YouTube / 通用网页 / 候选池占比拆开，配置边界更清楚。
+- **📺 Bilibili discovery 开关** —— 新增 `[sources.bilibili].enabled`，默认开启；关闭后 B 站 search / related_chain / trending / explore 不再参与后台补池。
+- **🪵 完整日志路径** —— 插件日志 tab 用单个「完整日志路径」编辑后端日志文件位置，保存时仍兼容 `logging.directory` / `logging.filename`。
+- **📦 双通道发布** —— 后端发布 `backend-v0.3.85`，浏览器插件发布 `extension-v0.3.36`。
 
 完整变更详见 [docs/changelog.md](docs/changelog.md)。
 
@@ -500,7 +500,7 @@ OpenBiliClaw/
 
 ## 📜 更新日志
 
-最新版本：**v0.3.78: Codex OAuth 实验认证（2026-05-19）**。README 顶部保留最新重要更新；完整历史见 [docs/changelog.md](docs/changelog.md)，发布包见 [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases)。
+最新版本：**v0.3.85 / extension v0.3.36: 插件配置页来源与日志整理（2026-05-20）**。README 顶部保留最新重要更新；完整历史见 [docs/changelog.md](docs/changelog.md)，发布包见 [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases)。
 
 ## 🗺️ 后续规划
 

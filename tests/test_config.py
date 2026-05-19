@@ -98,6 +98,11 @@ class TestConfigDefaults:
             "youtube": 1,
         }
 
+    def test_bilibili_source_enabled_defaults_true(self) -> None:
+        config = Config()
+
+        assert config.sources.bilibili.enabled is True
+
     def test_scheduler_pause_on_extension_disconnect_defaults(self) -> None:
         config = Config()
 
@@ -790,6 +795,17 @@ def test_save_config_round_trips_sources_browser_cdp_url(tmp_path: Path) -> None
     loaded = load_config(config_path)
 
     assert loaded.sources.browser_cdp_url == "http://127.0.0.1:9222"
+
+
+def test_save_config_round_trips_bilibili_source_enabled(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config = Config()
+    config.sources.bilibili.enabled = False
+
+    save_config(config, config_path)
+    loaded = load_config(config_path)
+
+    assert loaded.sources.bilibili.enabled is False
 
 
 def test_save_config_round_trips_pool_source_shares(tmp_path: Path) -> None:

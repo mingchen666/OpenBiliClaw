@@ -109,10 +109,7 @@ class _FakeDatabase:
         return dict(self.source_counts)
 
     def get_pool_distribution_counts(self) -> dict[str, dict[str, int]]:
-        return {
-            axis: dict(counts)
-            for axis, counts in self.distribution_counts.items()
-        }
+        return {axis: dict(counts) for axis, counts in self.distribution_counts.items()}
 
     def trim_explore_cluster_overflow(self, *, max_per_cluster: int = 3) -> int:
         return 0
@@ -1337,6 +1334,25 @@ def test_source_replenishment_plan_maps_bilibili_deficit_to_bilibili_strategies(
     assert controller._build_source_replenishment_plan() == [
         (["search", "related_chain", "trending", "explore"], 180)
     ]
+
+
+def test_disabled_bilibili_share_skips_bilibili_refresh_strategies() -> None:
+    controller = ContinuousRefreshController(
+        memory_manager=_FakeMemoryManager(),
+        database=_FakeDatabase(
+            [{"id": 1, "event_type": "click"}],
+            pool_count=600,
+            source_counts={"youtube": 600},
+        ),
+        soul_engine=_FakeSoulEngine(),
+        discovery_engine=_FakeDiscoveryEngine(),
+        recommendation_engine=_FakeRecommendationEngine(),
+        pool_target_count=600,
+        pool_source_shares={"youtube": 1},
+        signal_event_threshold=1,
+    )
+
+    assert controller._build_refresh_plan(_FakeMemoryManager().load_discovery_runtime_state()) == []
 
 
 async def test_refresh_controller_uses_bilibili_deficit_for_discovery_limit() -> None:

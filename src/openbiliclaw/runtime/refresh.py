@@ -976,9 +976,12 @@ class ContinuousRefreshController:
             if source_plan:
                 return source_plan
             # When Bilibili is already at its platform quota, the missing
-            # capacity belongs to smaller platform producers (xhs/douyin).
+            # capacity belongs to enabled non-Bilibili platform producers.
             # Running the Bilibili fallback here would immediately violate
             # the configured pool-source ratio.
+            return []
+
+        if "bilibili" not in self._normalized_pool_source_shares():
             return []
 
         plan: list[tuple[list[str], int]] = []

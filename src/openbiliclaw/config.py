@@ -241,13 +241,20 @@ class YoutubeSourceConfig:
 
 
 @dataclass
+class BilibiliSourceConfig:
+    """Bilibili discovery source switch."""
+
+    enabled: bool = True
+
+
+@dataclass
 class SourcesConfig:
     """Multi-source content adapters configuration.
 
-    Applies to non-Bilibili sources that use the generic web adapter
-    (Xiaohongshu, V2EX, Zhihu, ...). The browser options here are
-    independent of ``bilibili.browser`` (which controls the agent-browser
-    CLI used by Bilibili login/QR flows).
+    Contains platform-level discovery switches and the generic browser options
+    for non-Bilibili web adapters. The browser options here are independent of
+    ``bilibili.browser`` (which controls the agent-browser CLI used by
+    Bilibili login/QR flows).
     """
 
     # URL of a pre-launched Chrome DevTools endpoint, e.g.
@@ -257,6 +264,7 @@ class SourcesConfig:
     browser_cdp_url: str = ""
     # Whether to launch a headed agent-browser (fallback path only).
     browser_headed: bool = False
+    bilibili: BilibiliSourceConfig = field(default_factory=BilibiliSourceConfig)
     xiaohongshu: XiaohongshuSourceConfig = field(default_factory=XiaohongshuSourceConfig)
     douyin: DouyinSourceConfig = field(default_factory=DouyinSourceConfig)
     youtube: YoutubeSourceConfig = field(default_factory=YoutubeSourceConfig)
@@ -493,12 +501,16 @@ def _build_config(raw: dict[str, Any]) -> Config:
     )
 
     sources_browser_raw = sources_raw.get("browser", {})
+    bilibili_source_raw = sources_raw.get("bilibili", {})
     xhs_raw = sources_raw.get("xiaohongshu", {})
     douyin_raw = sources_raw.get("douyin", {})
     youtube_raw = sources_raw.get("youtube", {})
     sources = SourcesConfig(
         browser_cdp_url=sources_browser_raw.get("cdp_url", ""),
         browser_headed=sources_browser_raw.get("headed", False),
+        bilibili=BilibiliSourceConfig(
+            enabled=bool(bilibili_source_raw.get("enabled", True)),
+        ),
         xiaohongshu=XiaohongshuSourceConfig(
             enabled=bool(xhs_raw.get("enabled", True)),
             daily_search_budget=int(xhs_raw.get("daily_search_budget", 30)),
@@ -848,6 +860,9 @@ def _render_config_toml(config: Config) -> str:
             "[sources.browser]",
             f"cdp_url = {_toml_string(config.sources.browser_cdp_url)}",
             f"headed = {_toml_bool(config.sources.browser_headed)}",
+            "",
+            "[sources.bilibili]",
+            f"enabled = {_toml_bool(config.sources.bilibili.enabled)}",
             "",
             "[sources.xiaohongshu]",
             f"enabled = {_toml_bool(config.sources.xiaohongshu.enabled)}",

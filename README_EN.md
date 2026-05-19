@@ -17,12 +17,12 @@
 
 ---
 
-## 📌 extension-v0.3.35 Highlights (2026-05-20)
+## 📌 v0.3.85 / extension-v0.3.36 Highlights (2026-05-20)
 
-- **💬 Bottom-pinned extension chat** — when the side-panel Chat tab is active, the bottom activity footer is hidden, chat history owns the upper space, and the composer stays pinned to the bottom.
-- **🚀 Auto-init across install channels** — Bash, PowerShell, Docker, and AI-agent install paths confirm embedding, Bilibili cookie source, and Xiaohongshu / Douyin / YouTube opt-ins before automatically running init.
-- **🐳 Docker runtime config sync** — `agent_bootstrap.py --mode docker` copies confirmed config into the container's `/app/runtime` before triggering init; manual `docker exec ... init` remains a fallback.
-- **📦 Extension release** — the browser extension bumps to `extension-v0.3.35`; no backend package is released in this pass.
+- **🎛️ Source settings are split into cards** — the extension settings Source tab now separates Bilibili, Xiaohongshu, Douyin, YouTube, generic Web, and pool-share controls.
+- **📺 Bilibili discovery switch** — `[sources.bilibili].enabled` is now configurable and defaults to on; disabling it removes Bilibili discovery from background pool replenishment.
+- **🪵 Full log path editing** — the extension Logging tab edits one full backend log path while still saving compatible `logging.directory` / `logging.filename` values.
+- **📦 Split-channel release** — backend ships as `backend-v0.3.85`, and the browser extension ships as `extension-v0.3.36`.
 
 Full changelog: [docs/changelog.md](docs/changelog.md).
 
@@ -437,7 +437,7 @@ OpenBiliClaw/
 
 ## 📜 Release History
 
-Latest: **v0.3.78: Experimental Codex OAuth auth (2026-05-19)**. The top highlight callout keeps the current release visible; full history lives in [docs/changelog.md](docs/changelog.md), with packages on [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases).
+Latest: **v0.3.85 / extension v0.3.36: settings source cards and Bilibili discovery switch (2026-05-20)**. The top highlight callout keeps the current release visible; full history lives in [docs/changelog.md](docs/changelog.md), with packages on [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases).
 
 ## 🗺️ Roadmap
 

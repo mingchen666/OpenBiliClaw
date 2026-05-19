@@ -565,6 +565,10 @@ class SourcesBrowserConfigOut(BaseModel):
     headed: bool = False
 
 
+class BilibiliSourceConfigOut(BaseModel):
+    enabled: bool = True
+
+
 class XiaohongshuSourceConfigOut(BaseModel):
     enabled: bool = True
     daily_search_budget: int = 30
@@ -592,6 +596,7 @@ class YoutubeSourceConfigOut(BaseModel):
 
 class SourcesConfigOut(BaseModel):
     browser: SourcesBrowserConfigOut = Field(default_factory=SourcesBrowserConfigOut)
+    bilibili: BilibiliSourceConfigOut = Field(default_factory=BilibiliSourceConfigOut)
     xiaohongshu: XiaohongshuSourceConfigOut = Field(default_factory=XiaohongshuSourceConfigOut)
     douyin: DouyinSourceConfigOut = Field(default_factory=DouyinSourceConfigOut)
     youtube: YoutubeSourceConfigOut = Field(default_factory=YoutubeSourceConfigOut)
@@ -625,6 +630,7 @@ class LoggingConfigOut(BaseModel):
     file_level: str = "DEBUG"
     directory: str = "logs"
     filename: str = "openbiliclaw.log"
+    file_path: str = "logs/openbiliclaw.log"
     max_file_size_mb: int = 100
     backup_count: int = 1
     aggregate_budget_mb: int = 500

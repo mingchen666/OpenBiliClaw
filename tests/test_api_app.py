@@ -3595,6 +3595,7 @@ class TestEmbeddingAndCompatProviderE2E:
         cfg.bilibili.browser_headed = True
         cfg.sources.browser_cdp_url = "http://localhost:9222"
         cfg.sources.browser_headed = True
+        cfg.sources.bilibili.enabled = False
         cfg.sources.xiaohongshu.enabled = False
         cfg.sources.xiaohongshu.daily_search_budget = 11
         cfg.sources.xiaohongshu.daily_creator_budget = 3
@@ -3622,6 +3623,8 @@ class TestEmbeddingAndCompatProviderE2E:
         cfg.scheduler.auto_update_enabled = True
         cfg.scheduler.auto_update_check_interval_hours = 10
         cfg.logging.file_level = "WARNING"
+        cfg.logging.directory = "runtime-logs"
+        cfg.logging.filename = "backend.log"
         cfg.logging.max_file_size_mb = 123
         cfg.logging.aggregate_budget_mb = 456
         cfg.logging.unmanaged_truncate_mb = 78
@@ -3641,6 +3644,7 @@ class TestEmbeddingAndCompatProviderE2E:
         assert data["bilibili"]["browser_headed"] is True
         assert data["sources"]["browser"]["cdp_url"] == "http://localhost:9222"
         assert data["sources"]["browser"]["headed"] is True
+        assert data["sources"]["bilibili"]["enabled"] is False
         assert data["sources"]["xiaohongshu"]["enabled"] is False
         assert data["sources"]["xiaohongshu"]["daily_search_budget"] == 11
         assert data["sources"]["douyin"]["enabled"] is True
@@ -3662,6 +3666,9 @@ class TestEmbeddingAndCompatProviderE2E:
         assert data["scheduler"]["auto_update_enabled"] is True
         assert data["scheduler"]["auto_update_check_interval_hours"] == 10
         assert data["logging"]["file_level"] == "WARNING"
+        assert data["logging"]["directory"] == "runtime-logs"
+        assert data["logging"]["filename"] == "backend.log"
+        assert data["logging"]["file_path"] == str(tmp_path / "runtime-logs" / "backend.log")
         assert data["logging"]["max_file_size_mb"] == 123
         assert data["logging"]["aggregate_budget_mb"] == 456
         assert data["logging"]["unmanaged_truncate_mb"] == 78
@@ -3777,6 +3784,7 @@ class TestEmbeddingAndCompatProviderE2E:
                 },
                 "sources": {
                     "browser": {"cdp_url": "http://localhost:9222", "headed": True},
+                    "bilibili": {"enabled": False},
                     "xiaohongshu": {
                         "enabled": False,
                         "daily_search_budget": 11,
@@ -3845,6 +3853,7 @@ class TestEmbeddingAndCompatProviderE2E:
         assert cfg.bilibili.browser_headed is True
         assert cfg.sources.browser_cdp_url == "http://localhost:9222"
         assert cfg.sources.browser_headed is True
+        assert cfg.sources.bilibili.enabled is False
         assert cfg.sources.xiaohongshu.enabled is False
         assert cfg.sources.xiaohongshu.daily_search_budget == 11
         assert cfg.sources.douyin.enabled is True

@@ -3180,6 +3180,10 @@
       gap: 12px;
     }
 
+    .settings-source-card {
+      border-radius: 18px;
+    }
+
     .settings-section h3 {
       font-size: 14px;
       font-weight: 800;
@@ -3880,8 +3884,12 @@
 
       <div id="settingsPanelSources" class="settings-panel" data-settings-panel="sources" role="tabpanel" aria-labelledby="settingsTabSources" hidden>
       <!-- Bilibili -->
-      <div class="settings-section">
+      <div class="settings-section settings-source-card" data-source-card="bilibili">
         <h3><span class="section-icon">&#x1F4FA;</span> Bilibili</h3>
+        <div class="settings-field-row">
+          <input id="cfgBilibiliEnabled" type="checkbox">
+          <label for="cfgBilibiliEnabled">启用 Bilibili discovery</label>
+        </div>
         <div class="settings-field">
           <label for="cfgBiliAuth">认证方式</label>
           <select id="cfgBiliAuth">
@@ -3900,21 +3908,12 @@
         </div>
         <div class="settings-field-row">
           <input id="cfgBiliBrowserHeaded" type="checkbox">
-          <label for="cfgBiliBrowserHeaded">B 站登录浏览器显示窗口</label>
+          <label for="cfgBiliBrowserHeaded">调试：B 站登录时显示浏览器窗口</label>
         </div>
       </div>
 
-      <!-- Sources -->
-      <div class="settings-section">
-        <h3><span class="section-icon">&#x1F310;</span> 多平台源</h3>
-        <div class="settings-field">
-          <label for="cfgSourcesBrowserCdp">通用网页 CDP URL</label>
-          <input id="cfgSourcesBrowserCdp" type="text" placeholder="http://localhost:9222">
-        </div>
-        <div class="settings-field-row">
-          <input id="cfgSourcesBrowserHeaded" type="checkbox">
-          <label for="cfgSourcesBrowserHeaded">通用网页回退浏览器显示窗口</label>
-        </div>
+      <div class="settings-section settings-source-card" data-source-card="xiaohongshu">
+        <h3><span class="section-icon">&#x1F4D5;</span> 小红书</h3>
         <div class="settings-field-row">
           <input id="cfgXhsEnabled" type="checkbox">
           <label for="cfgXhsEnabled">启用小红书 discovery</label>
@@ -3931,6 +3930,10 @@
           <label for="cfgXhsTaskInterval">小红书任务间隔秒数</label>
           <input id="cfgXhsTaskInterval" type="number" min="0" step="1" placeholder="45">
         </div>
+      </div>
+
+      <div class="settings-section settings-source-card" data-source-card="douyin">
+        <h3><span class="section-icon">&#x1F3B5;</span> 抖音</h3>
         <div class="settings-field-row">
           <input id="cfgDouyinEnabled" type="checkbox">
           <label for="cfgDouyinEnabled">启用抖音 discovery</label>
@@ -3955,6 +3958,10 @@
           <label for="cfgDouyinRequestInterval">抖音 direct 请求间隔秒数</label>
           <input id="cfgDouyinRequestInterval" type="number" min="0" step="1" placeholder="2">
         </div>
+      </div>
+
+      <div class="settings-section settings-source-card" data-source-card="youtube">
+        <h3><span class="section-icon">&#x25B6;</span> YouTube</h3>
         <div class="settings-field-row">
           <input id="cfgYoutubeEnabled" type="checkbox">
           <label for="cfgYoutubeEnabled">启用 YouTube discovery</label>
@@ -3976,6 +3983,22 @@
           <input id="cfgYoutubeRequestInterval" type="number" min="0" step="1" placeholder="2">
         </div>
         <p class="settings-hint">YouTube 没有独立插件 producer；这些值会限制 yt_search / yt_trending / yt_channel 三个 discovery 策略的单轮规模。</p>
+      </div>
+
+      <div class="settings-section settings-source-card" data-source-card="browser">
+        <h3><span class="section-icon">&#x1F310;</span> 通用网页源</h3>
+        <div class="settings-field">
+          <label for="cfgSourcesBrowserCdp">通用网页 CDP URL</label>
+          <input id="cfgSourcesBrowserCdp" type="text" placeholder="http://localhost:9222">
+        </div>
+        <div class="settings-field-row">
+          <input id="cfgSourcesBrowserHeaded" type="checkbox">
+          <label for="cfgSourcesBrowserHeaded">通用网页回退浏览器显示窗口</label>
+        </div>
+      </div>
+
+      <div class="settings-section settings-source-card" data-source-card="pool">
+        <h3><span class="section-icon">&#x1F4E6;</span> 候选池来源占比</h3>
         <div class="settings-field">
           <label for="cfgPoolShareBilibili">候选池 B 站占比</label>
           <input id="cfgPoolShareBilibili" type="number" min="1" step="1" placeholder="8">
@@ -4122,12 +4145,8 @@
           </select>
         </div>
         <div class="settings-field">
-          <label for="cfgLogDirectory">日志目录</label>
-          <input id="cfgLogDirectory" type="text" placeholder="logs">
-        </div>
-        <div class="settings-field">
-          <label for="cfgLogFilename">日志文件名</label>
-          <input id="cfgLogFilename" type="text" placeholder="openbiliclaw.log">
+          <label for="cfgLogPath">完整日志路径</label>
+          <input id="cfgLogPath" type="text" placeholder="logs/openbiliclaw.log">
         </div>
         <div class="settings-field">
           <label for="cfgLogMaxFileSize">单日志文件上限 MB</label>
