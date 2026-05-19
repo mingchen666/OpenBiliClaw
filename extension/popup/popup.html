@@ -3351,7 +3351,7 @@
       <div class="tab-bar" role="tablist" aria-label="Popup views">
         <button id="tabRecommend" class="tab-button is-active" type="button" role="tab" aria-selected="true" aria-controls="viewRecommend">推荐</button>
         <button id="tabProfile" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="viewProfile">我的画像</button>
-        <button id="tabChat" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="viewChat">聊聊最近在看啥</button>
+        <button id="tabChat" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="viewChat">聊聊你的想法</button>
       </div>
     </div>
 
@@ -3520,15 +3520,15 @@
       <section id="viewChat" class="view" role="tabpanel" aria-labelledby="tabChat" hidden>
         <div class="view-intro">
           <p class="view-kicker">Chat</p>
-          <h2>最近你到底在看啥</h2>
-          <p>把你最近老点开的、会停下来的直接说说。</p>
+          <h2>说说你最近怎么想</h2>
+          <p>你是什么样的人、怎么想、喜欢什么、讨厌什么，为什么会停下来，都可以直接说。</p>
         </div>
         <div class="chat-shell">
           <div id="chatMessages" class="chat-messages"></div>
           <form id="chatForm" class="chat-form">
             <label class="chat-input-shell">
-              <span class="chat-input-label">写点你最近爱看的</span>
-              <textarea id="chatInput" class="chat-input" placeholder="比如：我最近老点开国际新闻和商业分析，想知道自己到底在找什么。"></textarea>
+              <span class="chat-input-label">写点你的想法和口味</span>
+              <textarea id="chatInput" class="chat-input" placeholder="比如：我喜欢慢慢讲清楚的长视频，讨厌标题党；最近总想看能帮我理清问题的内容。"></textarea>
             </label>
             <button id="chatSendButton" class="action-button action-primary" type="submit">发出去</button>
             <p id="chatStatus" class="chat-status" aria-live="polite"></p>

@@ -9,6 +9,8 @@
 - 后台 `AccountSyncService` 首次同步账号行为并完成 preference 分析后，如果 soul 画像层为空（典型场景：Docker 部署未跑 init），会自动触发 `build_initial_profile([])` 生成初始画像；每进程生命周期最多尝试一次，失败不影响后续同步。
 - `/api/health` 新增可选 `profile_ready` 字段，返回 soul 画像是否已生成；字段缺失时保持旧响应兼容，不影响 HTTP 状态码和 Docker healthcheck 判定。
 - Docker 部署文档和 README 补充 init 步骤提示，并新增「后端启动但无推荐」排查说明。
+- 浏览器插件 Chat 入口文案拓宽为“想法 / 口味 / 自我描述 / 近期状态”方向，保留已有 placeholder 轮播机制，不再只暗示用户聊最近爱看的内容。
+- 浏览器插件版本提升到 v0.3.33，准备发布 `extension-v0.3.33`；Chrome / Edge / Brave 走 `openbiliclaw-extension-v0.3.33.zip`，Firefox 140+ 走 `openbiliclaw-extension-v0.3.33-firefox.zip`。
 - 后端包版本提升到 v0.3.80，准备发布 `backend-v0.3.80`。
 
 ---
