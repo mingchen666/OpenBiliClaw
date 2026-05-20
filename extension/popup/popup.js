@@ -4236,9 +4236,16 @@ function bindSettings() {
     if (pauseOnDisconnect) {
       pauseOnDisconnect.checked = cfg.scheduler?.pause_on_extension_disconnect === true;
     }
-    setVal("cfgDiscoveryCron", cfg.scheduler?.discovery_cron);
+    setVal("cfgExtensionDisconnectGrace", cfg.scheduler?.extension_disconnect_grace_seconds);
     setVal("cfgPoolTarget", cfg.scheduler?.pool_target_count);
     setVal("cfgAccountSyncInterval", cfg.scheduler?.account_sync_interval_hours);
+    setVal("cfgRefreshCheckInterval", cfg.scheduler?.refresh_check_interval_seconds);
+    setVal("cfgSignalEventThreshold", cfg.scheduler?.signal_event_threshold);
+    setVal("cfgTrendingRefreshHours", cfg.scheduler?.trending_refresh_hours);
+    setVal("cfgExploreRefreshHours", cfg.scheduler?.explore_refresh_hours);
+    setVal("cfgDiscoveryLimit", cfg.scheduler?.discovery_limit);
+    setVal("cfgProactivePushInterval", cfg.scheduler?.proactive_push_interval_seconds);
+    setVal("cfgSpeculatorIdleInterval", cfg.scheduler?.speculator_idle_interval_minutes);
     const autoUpdate = document.getElementById("cfgAutoUpdate");
     if (autoUpdate) autoUpdate.checked = cfg.scheduler?.auto_update_enabled === true;
     setVal("cfgAutoUpdateInterval", cfg.scheduler?.auto_update_check_interval_hours);
@@ -4377,9 +4384,16 @@ function bindSettings() {
       scheduler: {
         enabled: !checked("cfgSchedulerEnabled"),
         pause_on_extension_disconnect: checked("cfgPauseOnDisconnect"),
-        discovery_cron: getVal("cfgDiscoveryCron"),
+        extension_disconnect_grace_seconds: getInt("cfgExtensionDisconnectGrace", 90),
         pool_target_count: getInt("cfgPoolTarget", 600),
         account_sync_interval_hours: getInt("cfgAccountSyncInterval", 6),
+        refresh_check_interval_seconds: getInt("cfgRefreshCheckInterval", 60),
+        signal_event_threshold: getInt("cfgSignalEventThreshold", 6),
+        trending_refresh_hours: getInt("cfgTrendingRefreshHours", 3),
+        explore_refresh_hours: getInt("cfgExploreRefreshHours", 12),
+        discovery_limit: getInt("cfgDiscoveryLimit", 30),
+        proactive_push_interval_seconds: getInt("cfgProactivePushInterval", 120),
+        speculator_idle_interval_minutes: getInt("cfgSpeculatorIdleInterval", 30),
         pool_source_shares: {
           bilibili: getInt("cfgPoolShareBilibili", 8),
           xiaohongshu: getInt("cfgPoolShareXhs", 1),

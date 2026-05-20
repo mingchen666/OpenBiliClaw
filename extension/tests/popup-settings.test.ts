@@ -41,6 +41,14 @@ test("settings page exposes advanced config fields from backend schema", () => {
     "cfgYoutubeDailyTrendingBudget",
     "cfgYoutubeDailyChannelBudget",
     "cfgYoutubeRequestInterval",
+    "cfgExtensionDisconnectGrace",
+    "cfgRefreshCheckInterval",
+    "cfgSignalEventThreshold",
+    "cfgTrendingRefreshHours",
+    "cfgExploreRefreshHours",
+    "cfgDiscoveryLimit",
+    "cfgProactivePushInterval",
+    "cfgSpeculatorIdleInterval",
     "cfgAccountSyncInterval",
     "cfgAutoUpdateInterval",
     "cfgPoolShareBilibili",
@@ -69,6 +77,16 @@ test("settings page exposes advanced config fields from backend schema", () => {
     assert.match(popupHtml, new RegExp(`id="${id}"`), `${id} should exist`);
     assert.match(popupJs, new RegExp(`"${id}"`), `${id} should be wired in popup.js`);
   }
+  assert.doesNotMatch(popupHtml, /id="cfgDiscoveryCron"/);
+  assert.doesNotMatch(popupJs, /discovery_cron:\s*getVal\("cfgDiscoveryCron"\)/);
+  assert.match(
+    popupJs,
+    /setVal\("cfgRefreshCheckInterval", cfg\.scheduler\?\.refresh_check_interval_seconds\)/,
+  );
+  assert.match(
+    popupJs,
+    /refresh_check_interval_seconds: getInt\("cfgRefreshCheckInterval", 60\)/,
+  );
 });
 
 test("settings source tab separates every platform into its own block", () => {
@@ -194,7 +212,6 @@ test("settings page placeholders match config example defaults", () => {
     ["cfgOllamaModel", "qwen2.5:7b"],
     ["cfgOllamaBaseUrl", "http://localhost:11434/v1"],
     ["cfgOpenrouterModel", "openai/gpt-5-nano"],
-    ["cfgDiscoveryCron", "0 */8 * * *"],
   ];
 
   for (const [id, placeholder] of expectedDefaults) {
