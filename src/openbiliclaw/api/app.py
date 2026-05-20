@@ -3509,6 +3509,13 @@ def create_app(
                 pool_target_count=cfg.scheduler.pool_target_count,
                 pool_source_shares=dict(cfg.scheduler.pool_source_shares),
                 account_sync_interval_hours=cfg.scheduler.account_sync_interval_hours,
+                refresh_check_interval_seconds=cfg.scheduler.refresh_check_interval_seconds,
+                signal_event_threshold=cfg.scheduler.signal_event_threshold,
+                trending_refresh_hours=cfg.scheduler.trending_refresh_hours,
+                explore_refresh_hours=cfg.scheduler.explore_refresh_hours,
+                discovery_limit=cfg.scheduler.discovery_limit,
+                proactive_push_interval_seconds=cfg.scheduler.proactive_push_interval_seconds,
+                speculator_idle_interval_minutes=cfg.scheduler.speculator_idle_interval_minutes,
                 speculation_interval_minutes=cfg.scheduler.speculation_interval_minutes,
                 speculation_ttl_days=cfg.scheduler.speculation_ttl_days,
                 speculation_cooldown_days=cfg.scheduler.speculation_cooldown_days,
@@ -3568,10 +3575,18 @@ def create_app(
         runtime components so the new settings take effect immediately.
         """
         from openbiliclaw.config import (
+            _DEFAULT_DISCOVERY_LIMIT,
+            _DEFAULT_EXPLORE_REFRESH_HOURS,
+            _DEFAULT_PROACTIVE_PUSH_INTERVAL_SECONDS,
+            _DEFAULT_REFRESH_CHECK_INTERVAL_SECONDS,
+            _DEFAULT_SIGNAL_EVENT_THRESHOLD,
+            _DEFAULT_SPECULATOR_IDLE_INTERVAL_MINUTES,
+            _DEFAULT_TRENDING_REFRESH_HOURS,
             _collect_config_issues,
             _default_config_path,
             _normalize_extension_disconnect_grace,
             _normalize_pool_source_shares,
+            _normalize_scheduler_int,
             load_config,
             save_config,
         )
@@ -3758,6 +3773,27 @@ def create_app(
         # Apply scheduler updates
         if "scheduler" in update:
             sdata = update["scheduler"]
+            scheduler_int_limits = {
+                "refresh_check_interval_seconds": (
+                    _DEFAULT_REFRESH_CHECK_INTERVAL_SECONDS,
+                    15,
+                    None,
+                ),
+                "signal_event_threshold": (_DEFAULT_SIGNAL_EVENT_THRESHOLD, 1, None),
+                "trending_refresh_hours": (_DEFAULT_TRENDING_REFRESH_HOURS, 1, None),
+                "explore_refresh_hours": (_DEFAULT_EXPLORE_REFRESH_HOURS, 1, None),
+                "discovery_limit": (_DEFAULT_DISCOVERY_LIMIT, 1, 60),
+                "proactive_push_interval_seconds": (
+                    _DEFAULT_PROACTIVE_PUSH_INTERVAL_SECONDS,
+                    30,
+                    None,
+                ),
+                "speculator_idle_interval_minutes": (
+                    _DEFAULT_SPECULATOR_IDLE_INTERVAL_MINUTES,
+                    5,
+                    None,
+                ),
+            }
             for key in (
                 "enabled",
                 "pause_on_extension_disconnect",
@@ -3765,6 +3801,13 @@ def create_app(
                 "discovery_cron",
                 "pool_target_count",
                 "account_sync_interval_hours",
+                "refresh_check_interval_seconds",
+                "signal_event_threshold",
+                "trending_refresh_hours",
+                "explore_refresh_hours",
+                "discovery_limit",
+                "proactive_push_interval_seconds",
+                "speculator_idle_interval_minutes",
                 "speculation_interval_minutes",
                 "speculation_ttl_days",
                 "speculation_cooldown_days",
@@ -3782,6 +3825,18 @@ def create_app(
                             cfg.scheduler,
                             key,
                             _normalize_extension_disconnect_grace(sdata[key]),
+                        )
+                    elif key in scheduler_int_limits:
+                        default, min_value, max_value = scheduler_int_limits[key]
+                        setattr(
+                            cfg.scheduler,
+                            key,
+                            _normalize_scheduler_int(
+                                sdata[key],
+                                default=default,
+                                min_value=min_value,
+                                max_value=max_value,
+                            ),
                         )
                     elif isinstance(current_val, bool):
                         setattr(cfg.scheduler, key, _as_bool(sdata[key]))

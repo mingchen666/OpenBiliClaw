@@ -3618,6 +3618,13 @@ class TestEmbeddingAndCompatProviderE2E:
             "youtube": 1,
         }
         cfg.scheduler.account_sync_interval_hours = 9
+        cfg.scheduler.refresh_check_interval_seconds = 75
+        cfg.scheduler.signal_event_threshold = 9
+        cfg.scheduler.trending_refresh_hours = 5
+        cfg.scheduler.explore_refresh_hours = 18
+        cfg.scheduler.discovery_limit = 17
+        cfg.scheduler.proactive_push_interval_seconds = 155
+        cfg.scheduler.speculator_idle_interval_minutes = 11
         cfg.scheduler.speculation_interval_minutes = 21
         cfg.scheduler.speculation_ttl_days = 8
         cfg.scheduler.auto_update_enabled = True
@@ -3661,6 +3668,13 @@ class TestEmbeddingAndCompatProviderE2E:
             "youtube": 1,
         }
         assert data["scheduler"]["account_sync_interval_hours"] == 9
+        assert data["scheduler"]["refresh_check_interval_seconds"] == 75
+        assert data["scheduler"]["signal_event_threshold"] == 9
+        assert data["scheduler"]["trending_refresh_hours"] == 5
+        assert data["scheduler"]["explore_refresh_hours"] == 18
+        assert data["scheduler"]["discovery_limit"] == 17
+        assert data["scheduler"]["proactive_push_interval_seconds"] == 155
+        assert data["scheduler"]["speculator_idle_interval_minutes"] == 11
         assert data["scheduler"]["speculation_interval_minutes"] == 21
         assert data["scheduler"]["speculation_ttl_days"] == 8
         assert data["scheduler"]["auto_update_enabled"] is True
@@ -3816,6 +3830,13 @@ class TestEmbeddingAndCompatProviderE2E:
                         "douyin": 2,
                         "youtube": 1,
                     },
+                    "refresh_check_interval_seconds": 75,
+                    "signal_event_threshold": 9,
+                    "trending_refresh_hours": 5,
+                    "explore_refresh_hours": 18,
+                    "discovery_limit": 17,
+                    "proactive_push_interval_seconds": 155,
+                    "speculator_idle_interval_minutes": 11,
                     "speculation_interval_minutes": 21,
                     "speculation_ttl_days": 8,
                     "speculation_cooldown_days": 9,
@@ -3870,6 +3891,13 @@ class TestEmbeddingAndCompatProviderE2E:
             "douyin": 2,
             "youtube": 1,
         }
+        assert cfg.scheduler.refresh_check_interval_seconds == 75
+        assert cfg.scheduler.signal_event_threshold == 9
+        assert cfg.scheduler.trending_refresh_hours == 5
+        assert cfg.scheduler.explore_refresh_hours == 18
+        assert cfg.scheduler.discovery_limit == 17
+        assert cfg.scheduler.proactive_push_interval_seconds == 155
+        assert cfg.scheduler.speculator_idle_interval_minutes == 11
         assert cfg.scheduler.speculation_interval_minutes == 21
         assert cfg.scheduler.auto_update_enabled is True
         assert cfg.scheduler.auto_update_check_interval_hours == 10
@@ -3879,6 +3907,41 @@ class TestEmbeddingAndCompatProviderE2E:
         assert cfg.logging.aggregate_budget_mb == 456
         assert cfg.logging.unmanaged_truncate_mb == 78
         assert cfg.logging.unmanaged_max_age_days == 9
+
+    def test_put_config_normalizes_invalid_scheduler_runtime_fields(
+        self,
+        monkeypatch,
+        tmp_path,
+    ) -> None:
+        from openbiliclaw.config import Config, LLMConfig, LLMProviderConfig
+
+        cfg = Config(llm=LLMConfig(openai=LLMProviderConfig(api_key="sk-openai")))
+        client = self._make_client(monkeypatch, tmp_path, cfg)
+
+        response = client.put(
+            "/api/config",
+            json={
+                "scheduler": {
+                    "refresh_check_interval_seconds": "abc",
+                    "signal_event_threshold": -1,
+                    "trending_refresh_hours": 0,
+                    "explore_refresh_hours": 0,
+                    "discovery_limit": 61,
+                    "proactive_push_interval_seconds": 29,
+                    "speculator_idle_interval_minutes": 4,
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        scheduler = response.json()["config"]["scheduler"]
+        assert scheduler["refresh_check_interval_seconds"] == 60
+        assert scheduler["signal_event_threshold"] == 6
+        assert scheduler["trending_refresh_hours"] == 3
+        assert scheduler["explore_refresh_hours"] == 12
+        assert scheduler["discovery_limit"] == 30
+        assert scheduler["proactive_push_interval_seconds"] == 120
+        assert scheduler["speculator_idle_interval_minutes"] == 30
 
     def test_source_share_suggestion_uses_event_counts(self, monkeypatch, tmp_path) -> None:
         """GET /api/config/source-share-suggestion should suggest ratios

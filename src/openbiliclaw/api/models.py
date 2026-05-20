@@ -610,6 +610,13 @@ class SchedulerConfigOut(BaseModel):
     pool_target_count: int = 600
     pool_source_shares: dict[str, int] = Field(default_factory=dict)
     account_sync_interval_hours: int = 6
+    refresh_check_interval_seconds: int = 60
+    signal_event_threshold: int = 6
+    trending_refresh_hours: int = 3
+    explore_refresh_hours: int = 12
+    discovery_limit: int = 30
+    proactive_push_interval_seconds: int = 120
+    speculator_idle_interval_minutes: int = 30
     speculation_interval_minutes: int = 10
     speculation_ttl_days: int = 3
     speculation_cooldown_days: int = 7
