@@ -75,6 +75,29 @@ const SOURCE_LABEL_MAP = {
   web: "Web",
 };
 
+const RUNTIME_TOPIC_LABEL_MAP = {
+  search: "站内搜索",
+  related_chain: "相关推荐",
+  trending: "站内热榜",
+  explore: "探索补池",
+  "xhs-extension-task": "小红书任务",
+  "xhs-extension-search": "小红书搜索",
+  "xhs-extension-profile": "小红书画像",
+  "xhs-extension-explore": "小红书探索",
+  "dy-plugin-search": "抖音搜索",
+  "dy-plugin-hot-related": "抖音热点",
+  "dy-plugin-feed": "抖音推荐流",
+  "douyin-search": "抖音搜索",
+  "douyin-hot": "抖音热点",
+  "douyin-feed": "抖音推荐流",
+  yt_search: "YouTube 搜索",
+  yt_trending: "YouTube 热榜",
+  yt_channel: "YouTube 频道",
+  youtube_search: "YouTube 搜索",
+  youtube_trending: "YouTube 热榜",
+  youtube_channel: "YouTube 频道",
+};
+
 export function normalizeSourcePlatform(item) {
   const explicit = normalizeText(item?.source_platform);
   if (explicit && SOURCE_LABEL_MAP[explicit]) return explicit;
@@ -92,6 +115,38 @@ export function normalizeSourcePlatform(item) {
 
 export function getSourceLabel(source) {
   return SOURCE_LABEL_MAP[source] || source || "Web";
+}
+
+function formatRuntimeTopicLabel(value) {
+  const text = normalizeText(value);
+  if (!text) return "";
+  const key = text.toLowerCase();
+  if (RUNTIME_TOPIC_LABEL_MAP[key]) return RUNTIME_TOPIC_LABEL_MAP[key];
+  if (key.startsWith("xhs-extension-")) return "小红书";
+  if (key.startsWith("dy-plugin-") || key.startsWith("douyin-")) return "抖音";
+  if (key.startsWith("yt-") || key.startsWith("youtube-")) return "YouTube";
+  return text;
+}
+
+function formatRuntimeTopicList(topics) {
+  const seen = new Set();
+  const labels = [];
+  for (const topic of Array.isArray(topics) ? topics : []) {
+    const label = formatRuntimeTopicLabel(topic);
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    labels.push(label);
+  }
+  return labels.slice(0, 3).join(" / ");
+}
+
+function formatCompactRuntimeTopicList(topics) {
+  const full = formatRuntimeTopicList(topics);
+  return full
+    .replace(/小红书任务 \/ 小红书探索/g, "小红书任务 / 探索")
+    .replace(/小红书搜索 \/ 小红书探索/g, "小红书搜索 / 探索")
+    .replace(/抖音搜索 \/ 抖音热点/g, "抖音搜索 / 热点")
+    .replace(/YouTube 搜索 \/ YouTube 热榜/g, "YouTube 搜索 / 热榜");
 }
 
 // ── URL Builders ─────────────────────────────────────────────
@@ -357,12 +412,12 @@ export function getPoolStatusSummary(status) {
           : "这轮还没补进",
     topics:
       runtime.recent_pool_topics.length > 0
-        ? runtime.recent_pool_topics.join(" / ")
+        ? formatRuntimeTopicList(runtime.recent_pool_topics)
         : runtime.last_discovered_count > 0
           ? "但可立即换的库存还没变"
-        : poolIsSufficient
-          ? "先把这一池给你慢慢换开"
-          : "还在继续摸你的口味",
+          : poolIsSufficient
+            ? "先把这一池给你慢慢换开"
+            : "还在继续摸你的口味",
   };
 }
 
@@ -386,6 +441,7 @@ export function getMobileRecommendationHeaderState({
   runtimeEvent = null,
   activityExpanded = false,
 } = {}) {
+  const runtime = normalizeRuntimeStatus(runtimeStatus);
   const poolSummary = getPoolStatusSummary(runtimeStatus);
   const activity = getActivityCardState({
     feed: activityFeed,
@@ -406,9 +462,25 @@ export function getMobileRecommendationHeaderState({
     activityNextCursor: activity.next_cursor,
     poolChips: poolSummary
       ? [
-          { value: poolSummary.available, label: "当前可换", tone: "neutral" },
-          { value: poolSummary.replenished, label: "最近补进", tone: "brand" },
-          { value: poolSummary.topics, label: "现在在忙", tone: "info" },
+          { value: `${runtime.pool_available_count} 条`, label: "当前可换", tone: "neutral" },
+          {
+            value: runtime.manual_refresh_state === "running"
+              ? (runtime.pool_available_count > 0 ? "继续补" : "正在补")
+              : runtime.last_replenished_count > 0
+                ? `补进 ${runtime.last_replenished_count} 条`
+                : runtime.last_discovered_count > 0
+                  ? "已发现"
+                  : poolSummary.replenished,
+            label: "最近补进",
+            tone: "brand",
+          },
+          {
+            value: runtime.recent_pool_topics.length > 0
+              ? formatCompactRuntimeTopicList(runtime.recent_pool_topics)
+              : poolSummary.topics,
+            label: "现在在忙",
+            tone: "info",
+          },
         ]
       : [],
   };

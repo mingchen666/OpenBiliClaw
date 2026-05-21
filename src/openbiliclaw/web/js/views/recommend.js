@@ -128,6 +128,7 @@ function renderRecommendationHeader() {
       const item = document.createElement("div");
       item.className = "recommend-pool-chip";
       item.dataset.tone = chip.tone;
+      item.title = `${chip.label}: ${chip.value}`;
       item.innerHTML = `
         <span class="recommend-pool-label">${esc(chip.label)}</span>
         <span class="recommend-pool-value">${esc(String(chip.value))}</span>`;

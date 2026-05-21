@@ -257,6 +257,16 @@ class TestMobileWebViewModels:
             assert.equal(idle.available, "还有 34 条可换");
             assert.equal(idle.replenished, "刚补进 6 条");
             assert.equal(idle.topics, "游戏 / 编程");
+
+            const internal = getPoolStatusSummary({
+              initialized: true,
+              pool_available_count: 600,
+              pool_target_count: 600,
+              last_replenished_count: 1,
+              recent_pool_topics: ["xhs-extension-task", "xhs-extension-explore"],
+              manual_refresh_state: "idle",
+            });
+            assert.equal(internal.topics, "小红书任务 / 小红书探索");
         """))
 
     def test_mobile_recommendation_header_matches_plugin_semantics(self) -> None:
@@ -294,9 +304,27 @@ class TestMobileWebViewModels:
             assert.deepEqual(
               header.poolChips.map((chip) => [chip.label, chip.value, chip.tone]),
               [
-                ["当前可换", "还有 23 条可换", "neutral"],
-                ["最近补进", "刚补进 7 条", "brand"],
+                ["当前可换", "23 条", "neutral"],
+                ["最近补进", "补进 7 条", "brand"],
                 ["现在在忙", "城市影像 / 设备测评", "info"],
+              ],
+            );
+
+            const internal = getMobileRecommendationHeaderState({
+              runtimeStatus: {
+                initialized: true,
+                pool_available_count: 600,
+                pool_target_count: 600,
+                last_replenished_count: 1,
+                recent_pool_topics: ["xhs-extension-task", "xhs-extension-explore"],
+              },
+            });
+            assert.deepEqual(
+              internal.poolChips.map((chip) => [chip.label, chip.value]),
+              [
+                ["当前可换", "600 条"],
+                ["最近补进", "补进 1 条"],
+                ["现在在忙", "小红书任务 / 探索"],
               ],
             );
         """))

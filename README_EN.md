@@ -64,7 +64,7 @@ All data lives in a single SQLite file on your disk. LLM calls use your own API 
     <td align="center" width="33%">
       <img src="docs/images/mobile-recommend.png" width="210" /><br/>
       <b>Recommendations</b><br/>
-      <sub>Reshuffle, load more, like / dislike, and chat</sub>
+      <sub>Reshuffle, load more, like / not interested, and chat</sub>
     </td>
     <td align="center" width="33%">
       <img src="docs/images/mobile-profile.png" width="210" /><br/>
@@ -152,7 +152,7 @@ Then open this on your phone:
 http://<your-computer-LAN-IP>:8420/m/
 ```
 
-The app has three bottom tabs: Recommendations, Profile, and Chat. Recommendations support reshuffle, load more, like, dislike, comments, and contextual chat. Profile shows the core profile, interests, and cognition updates. Chat shares the main chat history with the extension.
+The app has three bottom tabs: Recommendations, Profile, and Chat. Recommendations support reshuffle, load more, like, not interested, comments, and contextual chat. Profile shows the core profile, interests, and cognition updates. Chat shares the main chat history with the extension.
 
 You can also click the phone icon in the extension header and scan the QR code for the current backend's `/m/` URL.
 

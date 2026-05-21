@@ -97,7 +97,7 @@
     <td align="center" width="33%">
       <img src="docs/images/mobile-recommend.png" width="210" /><br/>
       <b>手机推荐页</b><br/>
-      <sub>换一批、加载更多、喜欢 / 不喜欢、聊一聊</sub>
+      <sub>换一批、加载更多、喜欢 / 不感兴趣、聊一聊</sub>
     </td>
     <td align="center" width="33%">
       <img src="docs/images/mobile-profile.png" width="210" /><br/>
@@ -210,7 +210,7 @@ openbiliclaw start --host 0.0.0.0 --port 8420
 http://<你的电脑局域网 IP>:8420/m/
 ```
 
-页面包含「推荐 / 画像 / 对话」三个底部 Tab，推荐页支持「换一批 / 加载更多 / 喜欢 / 不喜欢 / 写一句 / 聊一聊」，画像页展示核心画像、兴趣和认知更新，对话页与插件共享主聊天历史。
+页面包含「推荐 / 画像 / 对话」三个底部 Tab，推荐页支持「换一批 / 加载更多 / 喜欢 / 不感兴趣 / 写一句 / 聊一聊」，画像页展示核心画像、兴趣和认知更新，对话页与插件共享主聊天历史。
 
 也可以直接点插件顶部的手机图标，弹出二维码后用手机扫码打开当前后端对应的 `/m/`。
 
