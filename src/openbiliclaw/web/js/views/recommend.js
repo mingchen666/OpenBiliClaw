@@ -452,7 +452,22 @@ function renderCard(rawItem) {
     try {
       await submitFeedback(buildFeedbackPayload(item.id, "dislike"));
       feedbackDone.set(item.id, "dislike");
-      dislikeBtn.textContent = "\u274C";
+      // Remove the card from the list with a brief fade-out.
+      card.style.transition = "opacity 0.3s ease, max-height 0.3s ease";
+      card.style.opacity = "0";
+      card.style.maxHeight = card.offsetHeight + "px";
+      card.style.overflow = "hidden";
+      setTimeout(() => {
+        card.style.maxHeight = "0";
+        card.style.marginBottom = "0";
+        card.style.padding = "0";
+      }, 150);
+      setTimeout(() => {
+        card.remove();
+        patchState({
+          recommendations: state.recommendations.filter((r) => r.id !== item.id),
+        });
+      }, 450);
     } catch {
       dislikeBtn.disabled = false;
       dislikeBtn.textContent = "\u{1F44E}";
