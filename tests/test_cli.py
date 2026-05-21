@@ -2398,8 +2398,19 @@ def test_init_caps_bilibili_favorites_and_following_at_300(
             users = [
                 SimpleNamespace(uname=f"关注用户 {idx}", sign=f"签名 {idx}")
                 for idx in range(start, min(start + page_size, 350))
-            ]
+                ]
             return users
+
+    class FakeAuthManager:
+        async def get_status(self) -> AuthStatus:
+            return AuthStatus(
+                has_cookie=True,
+                authenticated=True,
+                cookie_path=tmp_path / "bilibili_cookie.json",
+                username="alice",
+                user_id=10086,
+                message="Cookie 验证成功。",
+            )
 
     class FakeMemoryManager:
         def __init__(self) -> None:
@@ -2440,6 +2451,7 @@ def test_init_caps_bilibili_favorites_and_following_at_300(
     _ignore_runtime_config_error(monkeypatch)
     monkeypatch.setattr(cli_module, "_is_interactive_terminal", lambda: False, raising=False)
     monkeypatch.setattr(cli_module, "_require_runtime_config", lambda: None)
+    monkeypatch.setattr(cli_module, "_build_auth_manager", lambda: FakeAuthManager())
     monkeypatch.setattr(cli_module, "_build_bilibili_client", lambda: FakeBilibiliClient())
     monkeypatch.setattr(cli_module, "_build_memory_manager", lambda: fake_memory)
     monkeypatch.setattr(cli_module, "_build_soul_engine", lambda: fake_soul)
@@ -2496,6 +2508,17 @@ def test_init_accepts_custom_bilibili_favorites_and_following_limits(
                 for idx in range(start, min(start + page_size, 5))
             ]
 
+    class FakeAuthManager:
+        async def get_status(self) -> AuthStatus:
+            return AuthStatus(
+                has_cookie=True,
+                authenticated=True,
+                cookie_path=tmp_path / "bilibili_cookie.json",
+                username="alice",
+                user_id=10086,
+                message="Cookie 验证成功。",
+            )
+
     class FakeMemoryManager:
         def __init__(self) -> None:
             self.events: list[dict[str, object]] = []
@@ -2533,6 +2556,7 @@ def test_init_accepts_custom_bilibili_favorites_and_following_limits(
     _ignore_runtime_config_error(monkeypatch)
     monkeypatch.setattr(cli_module, "_is_interactive_terminal", lambda: False, raising=False)
     monkeypatch.setattr(cli_module, "_require_runtime_config", lambda: None)
+    monkeypatch.setattr(cli_module, "_build_auth_manager", lambda: FakeAuthManager())
     monkeypatch.setattr(cli_module, "_build_bilibili_client", lambda: FakeBilibiliClient())
     monkeypatch.setattr(cli_module, "_build_memory_manager", lambda: fake_memory)
     monkeypatch.setattr(cli_module, "_build_soul_engine", lambda: fake_soul)
