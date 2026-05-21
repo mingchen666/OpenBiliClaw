@@ -2079,7 +2079,7 @@ def test_init_guides_missing_runtime_config_interactively(
     #   1. menu choice: "gemini"
     #   2. API key
     #   3. model (accept default)
-    #   4. embedding choice "1" (follow primary)
+    #   4. embedding choice "3" (disable embedding; avoids host-dependent Ollama prompts)
     #   5. "n" — skip module overrides
     #   6. "y" — allow LAN access
     #   7-8. "" — accept Bili favorite/follow init limits
@@ -2090,7 +2090,7 @@ def test_init_guides_missing_runtime_config_interactively(
                 "gemini",
                 "gemini-key",
                 "",
-                "1",
+                    "3",
                 "n",
                 "y",
                 "",
@@ -2214,6 +2214,7 @@ def test_init_reports_when_history_is_empty(
             return []
 
     _ignore_runtime_config_error(monkeypatch)
+    monkeypatch.setattr(cli_module, "_is_interactive_terminal", lambda: False, raising=False)
     monkeypatch.setattr(cli_module, "_require_runtime_config", lambda: None)
     monkeypatch.setattr(cli_module, "_build_auth_manager", lambda: FakeAuthManager(), raising=False)
     monkeypatch.setattr(
@@ -2327,6 +2328,7 @@ def test_init_runs_history_preference_profile_and_discovery(
         {"count_pool_candidates": lambda self: 0},
     )()
     _ignore_runtime_config_error(monkeypatch)
+    monkeypatch.setattr(cli_module, "_is_interactive_terminal", lambda: False, raising=False)
     monkeypatch.setattr(cli_module, "_require_runtime_config", lambda: None)
     monkeypatch.setattr(cli_module, "_build_auth_manager", lambda: FakeAuthManager(), raising=False)
     monkeypatch.setattr(
