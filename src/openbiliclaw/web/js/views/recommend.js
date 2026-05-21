@@ -40,6 +40,7 @@ let $root = null;
 let loaded = false;
 let loading = false;
 let feedbackSheet = null; // { itemId, note, submitState }
+const feedbackDone = new Map(); // recId -> "like" | "dislike" | "comment"
 
 // ── Escape helper ────────────────────────────────────────────
 function esc(s) {
@@ -399,21 +400,27 @@ function renderCard(rawItem) {
     if (url) window.open(url, "_blank");
   });
 
-  const likeBtn = createCardAction("\u{1F44D}", async () => {
+  const alreadyFeedback = feedbackDone.get(item.id);
+
+  const likeBtn = createCardAction(alreadyFeedback === "like" ? "\u2705" : "\u{1F44D}", async () => {
     likeBtn.disabled = true;
     try {
       await submitFeedback(buildFeedbackPayload(item.id, "like"));
+      feedbackDone.set(item.id, "like");
       likeBtn.textContent = "\u2705";
     } catch { likeBtn.disabled = false; }
   });
+  if (alreadyFeedback === "like") likeBtn.disabled = true;
 
-  const dislikeBtn = createCardAction("\u{1F44E}", async () => {
+  const dislikeBtn = createCardAction(alreadyFeedback === "dislike" ? "\u274C" : "\u{1F44E}", async () => {
     dislikeBtn.disabled = true;
     try {
       await submitFeedback(buildFeedbackPayload(item.id, "dislike"));
+      feedbackDone.set(item.id, "dislike");
       dislikeBtn.textContent = "\u274C";
     } catch { dislikeBtn.disabled = false; }
   });
+  if (alreadyFeedback === "dislike") dislikeBtn.disabled = true;
 
   const commentBtn = createCardAction("\u{1F4AC}", () => {
     feedbackSheet = { itemId: item.id, note: "", submitState: "idle" };
