@@ -78,8 +78,8 @@ function render() {
   frag.appendChild(delightSlot);
   renderInto(delightSlot, renderDelightTray);
 
-  // Recommendation cards
-  const recs = state.recommendations;
+  // Recommendation cards — hide disliked items
+  const recs = state.recommendations.filter((r) => feedbackDone.get(r.id) !== "dislike" && r.feedback_type !== "dislike");
   if (recs.length === 0 && !loading) {
     const hint = getReadyRecommendationHint(state.runtimeStatus);
     const empty = document.createElement("div");
