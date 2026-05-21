@@ -97,7 +97,8 @@
     <td align="center" width="33%">
       <img src="docs/images/mobile-recommend.png" width="210" /><br/>
       <b>手机推荐页</b><br/>
-      <sub>换一批、加载更多、喜欢 / 不感兴趣、聊一聊</sub>
+      <sub>换一批 · 加载更多</sub><br/>
+      <sub>喜欢 / 不感兴趣 / 聊一聊</sub>
     </td>
     <td align="center" width="33%">
       <img src="docs/images/mobile-profile.png" width="210" /><br/>

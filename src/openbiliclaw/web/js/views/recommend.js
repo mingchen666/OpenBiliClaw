@@ -204,17 +204,28 @@ function renderDelightTray() {
 
   const cover = getCoverImageAttrs(d.cover_url);
   const coverHtml = cover
-    ? `<img class="card-cover" src="${esc(cover.src)}" alt="" loading="lazy" referrerpolicy="${cover.referrerPolicy}" onerror="this.remove()" style="border-radius:10px;margin-bottom:8px">`
-    : "";
+    ? `<span class="delight-thumb"><img src="${esc(cover.src)}" alt="" loading="lazy" referrerpolicy="${cover.referrerPolicy}" onerror="this.parentElement.classList.add('is-fallback');this.remove()"></span>`
+    : `<span class="delight-thumb is-fallback">\u2728</span>`;
 
   tray.innerHTML = `
-    <span class="delight-tag">\u2728 \u60CA\u559C\u63A8\u8350</span>
-    ${coverHtml}
-    <div class="delight-title">${esc(d.title)}</div>
-    <div class="delight-hook">${esc(d.delight_hook || d.delight_reason)}</div>
-    <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
-      <span class="card-source" data-source="${d.source_platform}">${esc(getSourceLabel(d.source_platform))}</span>
-      ${uiState.score_label ? ` · ${esc(uiState.score_label)}` : ""}
+    <div class="delight-compact">
+      ${coverHtml}
+      <div class="delight-copy">
+        <div class="delight-kicker-line">
+          <span class="delight-tag">\u2728 \u60CA\u559C\u63A8\u8350</span>
+          ${delights.length > 1 ? `
+            <button class="delight-inline-nav" id="delight-prev" type="button" ${idx <= 0 ? "disabled" : ""}>\u2039</button>
+            <span class="delight-inline-counter">${idx + 1}/${delights.length}</span>
+            <button class="delight-inline-nav" id="delight-next" type="button" ${idx >= delights.length - 1 ? "disabled" : ""}>\u203A</button>
+          ` : ""}
+        </div>
+        <div class="delight-title">${esc(d.title)}</div>
+        <div class="delight-hook">${esc(d.delight_hook || d.delight_reason)}</div>
+        <div class="delight-meta">
+          <span class="card-source" data-source="${d.source_platform}">${esc(getSourceLabel(d.source_platform))}</span>
+          ${uiState.score_label ? `<span>${esc(uiState.score_label)}</span>` : ""}
+        </div>
+      </div>
     </div>`;
 
   if (uiState.handled) {
@@ -232,7 +243,6 @@ function renderDelightTray() {
     for (const b of btns) {
       const btn = document.createElement("button");
       btn.className = `btn ${b.action === "view" ? "btn-brand" : "btn-outline"}`;
-      btn.style.cssText = "flex:1;font-size:12px;padding:8px 4px;min-height:44px";
       btn.textContent = b.label;
       btn.addEventListener("click", () => handleDelightAction(d, b.action));
       actions.appendChild(btn);
@@ -240,21 +250,13 @@ function renderDelightTray() {
     tray.appendChild(actions);
   }
 
-  // Nav
   if (delights.length > 1) {
-    const nav = document.createElement("div");
-    nav.className = "delight-nav";
-    nav.innerHTML = `
-      <button class="delight-nav-btn" id="delight-prev" ${idx <= 0 ? "disabled" : ""}>\u2039</button>
-      <span class="delight-counter">${idx + 1} / ${delights.length}</span>
-      <button class="delight-nav-btn" id="delight-next" ${idx >= delights.length - 1 ? "disabled" : ""}>\u203A</button>`;
-    nav.querySelector("#delight-prev")?.addEventListener("click", () => {
+    tray.querySelector("#delight-prev")?.addEventListener("click", () => {
       if (idx > 0) { patchState({ delightCurrentIndex: idx - 1 }); render(); }
     });
-    nav.querySelector("#delight-next")?.addEventListener("click", () => {
+    tray.querySelector("#delight-next")?.addEventListener("click", () => {
       if (idx < delights.length - 1) { patchState({ delightCurrentIndex: idx + 1 }); render(); }
     });
-    tray.appendChild(nav);
   }
 
   $root.appendChild(tray);

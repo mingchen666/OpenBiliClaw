@@ -64,7 +64,8 @@ All data lives in a single SQLite file on your disk. LLM calls use your own API 
     <td align="center" width="33%">
       <img src="docs/images/mobile-recommend.png" width="210" /><br/>
       <b>Recommendations</b><br/>
-      <sub>Reshuffle, load more, like / not interested, and chat</sub>
+      <sub>Reshuffle · load more</sub><br/>
+      <sub>Like / not interested / chat</sub>
     </td>
     <td align="center" width="33%">
       <img src="docs/images/mobile-profile.png" width="210" /><br/>
