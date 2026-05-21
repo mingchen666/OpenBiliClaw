@@ -164,6 +164,12 @@ body {
 /* ── View Containers ──────────────────────────────────────── */
 .view { display: none; }
 .view.active { display: block; }
+#view-chat.active {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  height: 100%;
+}
 
 /* ── Cards ────────────────────────────────────────────────── */
 .card {
@@ -233,32 +239,138 @@ body {
   overflow: hidden;
 }
 
-/* ── Pool Status ──────────────────────────────────────────── */
-.pool-status {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
+/* ── Recommend Header ─────────────────────────────────────── */
+.recommend-header-card {
+  background: var(--surface);
+  border: 1px solid rgba(225, 232, 241, 0.92);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
+  padding: 10px 12px;
   margin-bottom: 12px;
 }
 
-.pool-chip {
-  background: var(--surface);
-  border-radius: 10px;
-  padding: 8px;
-  text-align: center;
-  box-shadow: var(--shadow-sm);
+.recommend-header-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
 }
 
-.pool-chip-value {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--brand);
+.recommend-header-copy {
+  min-width: 0;
 }
 
-.pool-chip-label {
+.recommend-kicker {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--brand-soft);
+  color: var(--brand-strong);
   font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.recommend-title {
+  margin-top: 4px;
+  font-size: 16px;
+  line-height: 1.25;
+  font-weight: 800;
+}
+
+.recommend-refresh-btn {
+  flex: 0 0 auto;
+  min-width: 82px;
+  padding-inline: 12px;
+  background: var(--surface-strong);
+}
+
+.recommend-pool-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.recommend-pool-chip {
+  min-width: 0;
+  min-height: 54px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.recommend-pool-chip[data-tone="brand"] {
+  background: rgba(255, 246, 249, 0.9);
+  border-color: rgba(245, 189, 209, 0.48);
+}
+
+.recommend-pool-chip[data-tone="info"] {
+  background: rgba(245, 249, 255, 0.9);
+  border-color: rgba(177, 207, 242, 0.6);
+}
+
+.recommend-pool-label {
+  font-size: 9px;
+  line-height: 1;
   color: var(--text-muted);
-  margin-top: 2px;
+  font-weight: 800;
+}
+
+.recommend-pool-value {
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-main);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.recommend-activity-line {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 8px 6px 10px;
+  border-radius: 12px;
+  background: var(--surface-soft);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.recommend-activity-text {
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.recommend-activity-toggle {
+  width: 44px;
+  min-height: 32px;
+  border-radius: 999px;
+  color: var(--sky);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.recommend-activity-toggle:active {
+  background: var(--sky-soft);
+}
+
+.recommend-activity-list {
+  border-top: 1px solid var(--line);
+  margin-top: 8px;
+  padding-top: 8px;
 }
 
 /* ── Delight Banner ───────────────────────────────────────── */
@@ -321,10 +433,10 @@ body {
 }
 
 /* ── Action Buttons ───────────────────────────────────────── */
-.action-row {
+.load-more-row {
   display: flex;
   gap: 8px;
-  margin-bottom: 12px;
+  margin: 4px 0 12px;
 }
 
 .btn {
@@ -359,12 +471,18 @@ body {
   text-align: center;
   font-size: 12px;
   color: var(--text-muted);
-  padding: 8px;
-  transition: opacity 0.2s;
+  height: 0;
+  overflow: hidden;
+  padding: 0 8px;
+  transition: opacity 0.2s, height 0.2s, padding 0.2s;
   opacity: 0;
 }
 
-.pull-indicator.visible { opacity: 1; }
+.pull-indicator.visible {
+  height: 32px;
+  padding: 8px;
+  opacity: 1;
+}
 
 /* ── Profile Sections ─────────────────────────────────────── */
 .profile-section {
@@ -597,14 +715,17 @@ body {
 .chat-shell {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 100%;
   height: 100%;
 }
 
 .chat-messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding-bottom: 8px;
+  padding-bottom: 10px;
 }
 
 .chat-bubble {
@@ -637,10 +758,16 @@ body {
 }
 
 .chat-input-row {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
   display: flex;
   gap: 8px;
-  padding: 8px 0;
+  padding: 8px 0 10px;
   align-items: flex-end;
+  background:
+    linear-gradient(180deg, rgba(242, 248, 255, 0), var(--bg-sky) 18px),
+    var(--bg-sky);
 }
 
 .chat-input {
@@ -651,7 +778,9 @@ body {
   box-shadow: var(--shadow-sm);
   font-size: 14px;
   resize: none;
-  max-height: 100px;
+  min-height: 60px;
+  height: 60px;
+  max-height: 112px;
   line-height: 1.4;
 }
 

@@ -19,6 +19,7 @@
 
 ## 📌 v0.3.88 Highlights (2026-05-21)
 
+- **📱 Mobile Web is now a primary surface** — open `/m/` from a phone on the same LAN to view recommendations, profile, chat, messages, and delight candidates; the recommendation and chat tabs are aligned with the extension experience.
 - **🚫 LLM fallback off by default** — `[llm].fallback_enabled` defaults to `false`; failures surface immediately instead of silently switching providers.
 - **🚫 Embedding fallback off by default** — `[llm.embedding].fallback_enabled` defaults to `false`; no more borrowing chat-side credentials or falling through to other embedding providers.
 - **🔌 Embedding fully independent** — empty embedding provider means disabled, no longer follows `[llm].default_provider`; the two config surfaces are fully decoupled.
@@ -58,7 +59,7 @@ All data lives in a single SQLite file on your disk. LLM calls use your own API 
 
 ## 🚀 Quick Start
 
-For most users, setup is three steps: install the extension, ask an AI coding agent to deploy the backend, then log in to the content platforms in the same browser.
+For most users, setup is four steps: install the extension, ask an AI coding agent to deploy the backend, log in to the content platforms in the same browser, and optionally open the Mobile Web app from your phone.
 
 ### 1. Install the browser extension
 
@@ -112,6 +113,24 @@ If the backend runs on another machine in your LAN, start it with `openbiliclaw 
 ### 3. Log in to content platforms in the same browser
 
 At minimum, log in to [Bilibili](https://www.bilibili.com). OpenBiliClaw uses it to build the first profile and recommendations. If you want Xiaohongshu, Douyin, or YouTube, also log in to [Xiaohongshu](https://www.xiaohongshu.com) / [Douyin](https://www.douyin.com) / [YouTube](https://www.youtube.com) in the same browser where the extension is installed.
+
+### 4. Open Mobile Web on your phone
+
+Mobile Web is now one of the primary ways to use OpenBiliClaw. It is for checking recommendations, reading your profile, chatting with the agent, and handling interest probes or delight candidates from a phone. It only calls your local backend API; it does not sync cookies, crawl pages, or log in to platforms.
+
+If your phone and backend are on the same LAN:
+
+```bash
+openbiliclaw start --host 0.0.0.0 --port 8420
+```
+
+Then open this on your phone:
+
+```text
+http://<your-computer-LAN-IP>:8420/m/
+```
+
+The app has three bottom tabs: Recommendations, Profile, and Chat. Recommendations support reshuffle, load more, like, dislike, comments, and contextual chat. Profile shows the core profile, interests, and cognition updates. Chat shares the main chat history with the extension.
 
 <details>
 <summary>No AI agent: run the one-line installer yourself</summary>
@@ -438,7 +457,7 @@ OpenBiliClaw/
 
 ## 📜 Release History
 
-Latest: **v0.3.87 / extension v0.3.38: runtime config now takes effect (2026-05-20)**. The top highlight callout keeps the current release visible; full history lives in [docs/changelog.md](docs/changelog.md), with packages on [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases).
+Latest: **v0.3.88 / extension v0.3.38: Mobile Web as a primary surface and fallback off by default (2026-05-21)**. The top highlight callout keeps the current release visible; full history lives in [docs/changelog.md](docs/changelog.md), with packages on [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases).
 
 ## 🗺️ Roadmap
 

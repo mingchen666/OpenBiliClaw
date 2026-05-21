@@ -8,6 +8,8 @@ import {
   startChatTurn,
   fetchChatTurn,
   fetchChatTurns,
+  fetchProfileSummary,
+  fetchActivityFeed,
   fetchPendingNotifications,
   ackNotification,
   fetchDelightBatch,
@@ -18,8 +20,13 @@ import {
 import { setUnreadCount, navigateToTab } from "../app.js";
 import {
   normalizeChatTurn,
+  normalizeProfileSummary,
+  normalizeActivityFeed,
   normalizeDelightCandidate,
   getDelightActionState,
+  getDelightMessageActions,
+  getProbeMessageActions,
+  getMobileChatSession,
   getCoverImageAttrs,
   getSourceLabel,
   buildContentUrl,
@@ -50,6 +57,10 @@ const PLACEHOLDERS = [
 let placeholderIdx = 0;
 let placeholderTimer = null;
 let inputFocused = false;
+
+function chatSession(scope = "chat") {
+  return getMobileChatSession(scope);
+}
 
 // ── Escape helper ────────────────────────────────────────────
 function esc(s) {
@@ -120,7 +131,7 @@ function render() {
   textarea.className = "chat-input";
   textarea.id = "chat-input";
   textarea.placeholder = PLACEHOLDERS[placeholderIdx];
-  textarea.rows = 1;
+  textarea.rows = 2;
   textarea.addEventListener("input", autoGrow);
   textarea.addEventListener("focus", () => { inputFocused = true; });
   textarea.addEventListener("blur", () => { inputFocused = false; });
@@ -168,7 +179,7 @@ function render() {
 function autoGrow(e) {
   const el = e.target;
   el.style.height = "auto";
-  el.style.height = Math.min(el.scrollHeight, 100) + "px";
+  el.style.height = Math.min(Math.max(el.scrollHeight, 60), 112) + "px";
 }
 
 function startPlaceholderCarousel() {
@@ -197,7 +208,7 @@ async function handleSend() {
   render();
 
   try {
-    await startChatTurn({ turnId, message: text });
+    await startChatTurn({ turnId, ...chatSession(), message: text });
     pendingTurnId = turnId;
     pollForResponse();
   } catch {
@@ -218,8 +229,8 @@ async function retryTurn(failedTurn) {
   try {
     await startChatTurn({
       turnId: failedTurn.turn_id,
+      ...chatSession(failedTurn.scope || "chat"),
       message: failedTurn.message,
-      scope: failedTurn.scope || "chat",
       subjectId: failedTurn.subject_id || "",
       subjectTitle: failedTurn.subject_title || "",
     });
@@ -247,6 +258,7 @@ function pollForResponse() {
         sending = false;
         userScrolledUp = false;
         render();
+        refreshAfterChatTurn();
       } else if (turn.status === "error" || turn.status === "failed") {
         pendingTurnId = null;
         sending = false;
@@ -302,9 +314,9 @@ function renderOverlay() {
       <div class="message-card-title">${esc(n.domain || n.title || "")}</div>
       <div class="message-card-body">${esc(n.description || n.reason || n.message || "")}</div>
       <div class="message-card-actions">
-        <button class="message-action-btn primary" data-probe="confirm" data-domain="${esc(n.domain || "")}">\u611F\u5174\u8DA3</button>
-        <button class="message-action-btn secondary" data-probe="reject" data-domain="${esc(n.domain || "")}">\u4E0D\u611F\u5174\u8DA3</button>
-        <button class="message-action-btn secondary" data-probe="chat" data-domain="${esc(n.domain || "")}">\u591A\u804A\u804A</button>
+        ${getProbeMessageActions().map((item) => `
+          <button class="message-action-btn ${item.primary ? "primary" : "secondary"}" data-probe="${esc(item.action)}" data-domain="${esc(n.domain || "")}">${esc(item.label)}</button>
+        `).join("")}
       </div>`;
     panel.appendChild(card);
   }
@@ -324,9 +336,9 @@ function renderOverlay() {
         <span class="card-source" data-source="${nd.source_platform}">${esc(getSourceLabel(nd.source_platform))}</span>
       </div>
       <div class="message-card-actions">
-        <button class="message-action-btn primary" data-delight="view" data-bvid="${esc(nd.bvid)}" data-title="${esc(nd.title)}">\u67E5\u770B</button>
-        <button class="message-action-btn secondary" data-delight="reject" data-bvid="${esc(nd.bvid)}">\u4E0D\u611F\u5174\u8DA3</button>
-        <button class="message-action-btn secondary" data-delight="chat" data-bvid="${esc(nd.bvid)}" data-title="${esc(nd.title)}">\u804A\u4E00\u804A</button>
+        ${getDelightMessageActions().map((item) => `
+          <button class="message-action-btn ${item.primary ? "primary" : "secondary"}" data-delight="${esc(item.action)}" data-bvid="${esc(nd.bvid)}" data-title="${esc(nd.title)}">${esc(item.label)}</button>
+        `).join("")}
       </div>`;
     panel.appendChild(card);
   }
@@ -405,7 +417,7 @@ function updateBadgeCount() {
 // ── Load ─────────────────────────────────────────────────────
 async function loadHistory() {
   try {
-    const data = await fetchChatTurns({ session: "mobile", limit: 50 });
+    const data = await fetchChatTurns({ ...chatSession(), limit: 50 });
     turns = Array.isArray(data?.items || data?.turns)
       ? (data.items || data.turns).map(normalizeChatTurn)
       : [];
@@ -417,6 +429,23 @@ async function loadHistory() {
     }
   } catch { /* ignore */ }
   render();
+}
+
+async function refreshAfterChatTurn() {
+  try {
+    const [profileResult, activityResult] = await Promise.allSettled([
+      fetchProfileSummary({ limit: 5 }),
+      fetchActivityFeed({ limit: 5 }),
+    ]);
+    const next = {};
+    if (profileResult.status === "fulfilled") {
+      next.profile = normalizeProfileSummary(profileResult.value);
+    }
+    if (activityResult.status === "fulfilled") {
+      next.activityFeed = normalizeActivityFeed(activityResult.value);
+    }
+    if (Object.keys(next).length > 0) patchState(next);
+  } catch { /* best-effort */ }
 }
 
 async function loadNotifications() {
@@ -499,7 +528,7 @@ export async function startContextualChat({ scope, subjectId, subjectTitle, mess
   render();
 
   try {
-    await startChatTurn({ turnId, session: "mobile", scope, subjectId, subjectTitle, message });
+    await startChatTurn({ turnId, ...chatSession(scope), subjectId, subjectTitle, message });
     pendingTurnId = turnId;
     pollForResponse();
   } catch {

@@ -242,6 +242,23 @@ export function getDelightActionState(action) {
   }
 }
 
+export function getDelightMessageActions() {
+  return [
+    { label: "看看", action: "view", primary: true },
+    { label: "喜欢", action: "like", primary: false },
+    { label: "不感兴趣", action: "reject", primary: false },
+    { label: "聊一聊", action: "chat", primary: false },
+  ];
+}
+
+export function getProbeMessageActions() {
+  return [
+    { label: "喜欢", action: "confirm", primary: true },
+    { label: "不喜欢", action: "reject", primary: false },
+    { label: "多聊聊", action: "chat", primary: false },
+  ];
+}
+
 // ── Pool Status (simple — backward compat) ───────────────────
 
 export function normalizePoolStatus(status) {
@@ -363,6 +380,40 @@ export function getReadyRecommendationHint(status) {
   return { message: "这池先翻到头了，等后台再补点新的。", tone: "info" };
 }
 
+export function getMobileRecommendationHeaderState({
+  runtimeStatus = null,
+  activityFeed = null,
+  runtimeEvent = null,
+  activityExpanded = false,
+} = {}) {
+  const poolSummary = getPoolStatusSummary(runtimeStatus);
+  const activity = getActivityCardState({
+    feed: activityFeed,
+    runtimeEvent,
+    expanded: activityExpanded,
+  });
+  return {
+    kicker: "For You",
+    title: "这几条，你大概会点开",
+    primaryActionLabel: "换一批",
+    secondaryActionLabel: "加载更多",
+    activityLine: activity.line1,
+    activityHeadline: activity.line2,
+    activityExpanded: activity.expanded,
+    activityToggleLabel: activity.expanded ? "收起" : "更多",
+    activityItems: activity.items,
+    activityHasMore: activity.has_more,
+    activityNextCursor: activity.next_cursor,
+    poolChips: poolSummary
+      ? [
+          { value: poolSummary.available, label: "当前可换", tone: "neutral" },
+          { value: poolSummary.replenished, label: "最近补进", tone: "brand" },
+          { value: poolSummary.topics, label: "现在在忙", tone: "info" },
+        ]
+      : [],
+  };
+}
+
 // ── Activity Feed ────────────────────────────────────────────
 
 function getHintBannerState(tone) {
@@ -460,6 +511,13 @@ export function normalizeChatTurn(turn) {
     response: normalizeText(turn.response) || normalizeText(turn.reply),
     status: normalizeText(turn.status),
     error: normalizeText(turn.error),
+  };
+}
+
+export function getMobileChatSession(scope = "chat") {
+  return {
+    session: "popup",
+    scope: normalizeText(scope) || "chat",
   };
 }
 

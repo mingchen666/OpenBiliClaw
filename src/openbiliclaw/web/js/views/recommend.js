@@ -1,5 +1,5 @@
 /**
- * Recommend view — activity strip, semantic pool status, delight tray,
+ * Recommend view — compact header, semantic pool status, delight tray,
  * recommendation cards with feedback, pull-to-refresh.
  */
 
@@ -21,10 +21,9 @@ import {
   normalizeRecommendation,
   normalizeRuntimeStatus,
   mergeRuntimeStatusEvent,
-  getPoolStatusSummary,
   getReadyRecommendationHint,
   normalizeActivityFeed,
-  getActivityCardState,
+  getMobileRecommendationHeaderState,
   normalizeDelightCandidate,
   getDelightUiState,
   getDelightActionState,
@@ -61,17 +60,10 @@ function render() {
   pull.textContent = "\u2193 \u4E0B\u62C9\u5237\u65B0";
   $root.appendChild(pull);
 
-  // Activity strip
-  renderActivityStrip();
-
-  // Pool semantic summary
-  renderPoolSummary();
+  renderRecommendationHeader();
 
   // Delight tray
   renderDelightTray();
-
-  // Action row
-  renderActionRow();
 
   // Recommendation cards
   const recs = state.recommendations;
@@ -87,6 +79,8 @@ function render() {
     $root.appendChild(renderCard(item));
   }
 
+  renderLoadMoreRow();
+
   if (loading) {
     const sp = document.createElement("div");
     sp.style.padding = "20px";
@@ -98,52 +92,84 @@ function render() {
   renderFeedbackSheet();
 }
 
-// ── Activity Strip ───────────────────────────────────────────
-function renderActivityStrip() {
-  const actState = getActivityCardState({
-    feed: state.activityFeed,
+// ── Recommendation Header ───────────────────────────────────
+function renderRecommendationHeader() {
+  const headerState = getMobileRecommendationHeaderState({
+    runtimeStatus: state.runtimeStatus,
+    activityFeed: state.activityFeed,
     runtimeEvent: state.runtimeEvent,
-    expanded: state.activityExpanded,
+    activityExpanded: state.activityExpanded,
   });
 
-  const strip = document.createElement("div");
-  strip.className = `activity-strip${actState.expanded ? " expanded" : ""}`;
+  const header = document.createElement("section");
+  header.className = "recommend-header-card";
 
-  // Collapsed: one-line summary
-  const summary = document.createElement("div");
-  summary.className = "activity-strip-summary";
-  summary.innerHTML = `<span>${esc(actState.line1)}</span>`;
+  const top = document.createElement("div");
+  top.className = "recommend-header-top";
+  top.innerHTML = `
+    <div class="recommend-header-copy">
+      <p class="recommend-kicker">${esc(headerState.kicker)}</p>
+      <h2 class="recommend-title">${esc(headerState.title)}</h2>
+    </div>`;
+
+  const refreshBtn = document.createElement("button");
+  refreshBtn.className = "btn btn-outline recommend-refresh-btn";
+  refreshBtn.type = "button";
+  refreshBtn.textContent = loading ? "\u6B63\u5728\u6362\u4E00\u6279\u2026" : headerState.primaryActionLabel;
+  refreshBtn.disabled = loading;
+  refreshBtn.addEventListener("click", handleReshuffle);
+  top.appendChild(refreshBtn);
+  header.appendChild(top);
+
+  if (headerState.poolChips.length > 0) {
+    const grid = document.createElement("div");
+    grid.className = "recommend-pool-grid";
+    for (const chip of headerState.poolChips) {
+      const item = document.createElement("div");
+      item.className = "recommend-pool-chip";
+      item.dataset.tone = chip.tone;
+      item.innerHTML = `
+        <span class="recommend-pool-label">${esc(chip.label)}</span>
+        <span class="recommend-pool-value">${esc(String(chip.value))}</span>`;
+      grid.appendChild(item);
+    }
+    header.appendChild(grid);
+  }
+
+  const activity = document.createElement("div");
+  activity.className = "recommend-activity-line";
+  activity.innerHTML = `<span class="recommend-activity-text">${esc(headerState.activityLine)}</span>`;
   const toggle = document.createElement("button");
-  toggle.className = "activity-strip-toggle";
-  toggle.textContent = actState.expanded ? "\u25B2" : "\u25BC";
+  toggle.className = "recommend-activity-toggle";
+  toggle.type = "button";
+  toggle.textContent = headerState.activityToggleLabel;
   toggle.addEventListener("click", () => {
     patchState({ activityExpanded: !state.activityExpanded });
     render();
   });
-  summary.appendChild(toggle);
-  strip.appendChild(summary);
+  activity.appendChild(toggle);
+  header.appendChild(activity);
 
-  // Expanded: history items
-  if (actState.expanded && actState.items.length > 0) {
+  if (headerState.activityExpanded && headerState.activityItems.length > 0) {
     const list = document.createElement("div");
-    list.className = "activity-strip-list";
-    for (const item of actState.items) {
+    list.className = "recommend-activity-list";
+    for (const item of headerState.activityItems) {
       const row = document.createElement("div");
       row.className = "activity-item";
       row.innerHTML = `<span class="activity-item-time">${esc(formatRelativeTimestamp(item.created_at))}</span> ${esc(item.summary)}`;
       list.appendChild(row);
     }
-    if (actState.has_more) {
+    if (headerState.activityHasMore) {
       const more = document.createElement("button");
       more.className = "load-more-btn";
       more.textContent = "\u52A0\u8F7D\u66F4\u591A";
       more.addEventListener("click", loadMoreActivity);
       list.appendChild(more);
     }
-    strip.appendChild(list);
+    header.appendChild(list);
   }
 
-  $root.appendChild(strip);
+  $root.appendChild(header);
 }
 
 async function loadMoreActivity() {
@@ -160,27 +186,6 @@ async function loadMoreActivity() {
     });
     render();
   } catch { /* ignore */ }
-}
-
-// ── Pool Summary ─────────────────────────────────────────────
-function renderPoolSummary() {
-  const poolSummary = getPoolStatusSummary(state.runtimeStatus);
-  if (!poolSummary) return;
-
-  const grid = document.createElement("div");
-  grid.className = "pool-status";
-  const chips = [
-    { value: poolSummary.available, label: "\u6C60\u5B58\u91CF" },
-    { value: poolSummary.replenished, label: "\u8FD1\u671F\u8865\u5145" },
-    { value: poolSummary.topics, label: "\u5F53\u524D\u8BDD\u9898" },
-  ];
-  for (const c of chips) {
-    const chip = document.createElement("div");
-    chip.className = "pool-chip";
-    chip.innerHTML = `<div class="pool-chip-value" style="font-size:13px">${esc(String(c.value))}</div><div class="pool-chip-label">${esc(c.label)}</div>`;
-    grid.appendChild(chip);
-  }
-  $root.appendChild(grid);
 }
 
 // ── Delight Tray ─────────────────────────────────────────────
@@ -304,21 +309,15 @@ async function handleDelightAction(d, action) {
   }
 }
 
-// ── Action Row ───────────────────────────────────────────────
-function renderActionRow() {
+// ── Load More ────────────────────────────────────────────────
+function renderLoadMoreRow() {
+  if (state.recommendations.length === 0) return;
+  const headerState = getMobileRecommendationHeaderState();
   const actions = document.createElement("div");
-  actions.className = "action-row";
-
-  const reshuffleBtn = document.createElement("button");
-  reshuffleBtn.className = "btn btn-brand";
-  reshuffleBtn.textContent = "\u{1F500} \u6362\u4E00\u6279";
-  reshuffleBtn.disabled = loading;
-  reshuffleBtn.addEventListener("click", handleReshuffle);
-  actions.appendChild(reshuffleBtn);
-
+  actions.className = "load-more-row";
   const appendBtn = document.createElement("button");
-  appendBtn.className = "btn btn-outline";
-  appendBtn.textContent = "\u52A0\u8F7D\u66F4\u591A";
+  appendBtn.className = "btn btn-outline load-more-action";
+  appendBtn.textContent = headerState.secondaryActionLabel;
   appendBtn.disabled = loading;
   appendBtn.addEventListener("click", handleAppend);
   actions.appendChild(appendBtn);

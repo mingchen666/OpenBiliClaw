@@ -26,13 +26,14 @@
 ### 包含
 
 1. **推荐页**（默认 Tab）
+   - 插件同款紧凑头部：`For You / 这几条，你大概会点开` + 首屏「换一批」
    - 推荐列表（封面、标题、UP 主、推荐理由）
    - 来源标识（Bilibili / Xiaohongshu / Douyin / YouTube / Web）
    - 点击跳转原始内容链接（`content_url` 优先，B 站 `bvid` fallback）
    - 点击直达上报（best-effort，不追踪观看时长）
    - "换一批" 按钮（reshuffle）
-   - "加载更多"（append）
-   - 推荐池状态显示（数量、最近补充、当前话题）
+   - 列表底部 "加载更多"（append）
+   - 推荐池状态显示（当前可换、最近补进、现在在忙）
    - Delight 惊喜推荐 banner（队列浏览 ‹/›），动作与插件对齐为「看看 / 喜欢 / 不感兴趣 / 聊一聊」
 
 2. **画像页**
@@ -50,7 +51,10 @@
    - 消息历史
    - 文本输入 & 发送
    - AI 思考中状态
-   - 消息收件箱 overlay（兴趣探测 + 惊喜推荐通知）
+   - 与插件共享 `session=popup&scope=chat` 的主聊天历史
+   - 聊天回复完成后刷新画像摘要与活动流
+   - 底部固定两行输入框，优先保留聊天上下文浏览空间
+   - 消息收件箱 overlay（兴趣探测 + 惊喜推荐通知；兴趣探测动作对齐插件为「喜欢 / 不喜欢 / 多聊聊」，惊喜推荐动作对齐插件为「看看 / 喜欢 / 不感兴趣 / 聊一聊」）
 
 4. **通用**
    - 底部 Tab 导航栏（推荐/画像/对话）
@@ -156,7 +160,7 @@ if web_dir.is_dir():
 | 推荐 | `GET /api/recommendations`, `POST /api/recommendations/reshuffle`, `POST /api/recommendations/append`, `POST /api/recommendation-click`, `GET /api/runtime-status` |
 | Delight | `GET /api/delight/pending-batch`, `POST /api/delight/respond` |
 | 画像 | `GET /api/profile-summary` |
-| 对话 | `POST /api/chat/turns`, `GET /api/chat/turns`, `GET /api/chat/turns/{id}` |
+| 对话 | `POST /api/chat/turns`, `GET /api/chat/turns`, `GET /api/chat/turns/{id}`；主聊天使用 `session=popup&scope=chat` 与插件共享历史 |
 | 消息 | `GET /api/notifications/pending`, `POST /api/notifications/sent` |
 | 认知通知 | `GET /api/cognition-updates/pending`, `POST /api/cognition-updates/seen` |
 | 活动流 | `GET /api/activity-feed` |
@@ -166,10 +170,12 @@ if web_dir.is_dir():
 
 移动端会在 `view-models.js` 中做最小字段适配：
 - 推荐池状态读取 `/api/runtime-status` 的 `pool_available_count`、`last_replenished_count`、`recent_pool_topics`，再映射成推荐页三枚 chip 使用的 `pool_size`、`recent_replenish`、`current_topic`。
+- 推荐页头部用 `getMobileRecommendationHeaderState()` 生成插件语义一致的标题、首屏「换一批」、三枚池状态 chip 和活动辅助行；移动端把「加载更多」保留为列表底部显式续页入口。
 - MBTI 维度兼容后端对象形态（如 `EI: { pole: "I", strength: 0.8 }`）和旧数组形态，统一映射为 `{ left, right, score }` 后再渲染。
 - MBTI 会保留后端 `confidence` 显示为“可信度”；内容口味将 `long/slow` 等 raw 枚举映射为“长视频 / 慢节奏”等中文标签；使用场景会显示 `session_type` 为“模式”。
 - 认知更新卡片会保留后端 `context_line` 与 `source_label`，即使前端已做过一次 normalize 后再次渲染，也不回退成泛化上下文。
 - 对话 turn 兼容 `response` 和后端当前返回的 `reply` 字段，统一映射成聊天气泡使用的 `response`。
+- 移动端主聊天与插件读取同一 `session=popup&scope=chat`；contextual delight/probe 聊天仍通过 `scope=delight/probe` 标识主题上下文。
 - 封面图会在渲染前归一化：B 站 `http` / protocol-relative 地址升级为 HTTPS，小红书 `*.xhscdn.com` 这类直接 403 的热链地址不渲染，外链图片统一使用 `referrerpolicy="no-referrer"`，避免 localhost 页面触发热链拦截。
 
 ### 静态资源

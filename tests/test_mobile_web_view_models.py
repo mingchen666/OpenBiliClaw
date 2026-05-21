@@ -32,7 +32,7 @@ class TestMobileWebViewModels:
     """Phase 1 view-model coverage."""
 
     def test_existing_helpers_still_work(self) -> None:
-        """Backward compat: normalizePoolStatus, normalizeMbtiDimensions, normalizeChatTurn, normalizeCoverUrl, getCoverImageAttrs."""
+        """Backward compatibility for legacy mobile web helpers."""
         _assert_js(dedent("""
             import assert from "node:assert/strict";
             import {
@@ -64,7 +64,12 @@ class TestMobileWebViewModels:
             );
 
             assert.equal(
-              normalizeChatTurn({ turn_id: "m-1", message: "ping", reply: "pong", status: "completed" }).response,
+              normalizeChatTurn({
+                turn_id: "m-1",
+                message: "ping",
+                reply: "pong",
+                status: "completed",
+              }).response,
               "pong",
             );
 
@@ -90,6 +95,8 @@ class TestMobileWebViewModels:
               "buildFeedbackPayload", "validateCommentInput", "getCommentSubmitUiState",
               "normalizeProfileSummary", "normalizeCognitionUpdateCard",
               "getMbtiDisplayState", "getProfileStyleDisplay", "getContextPatternRows",
+              "getMobileChatSession", "getDelightMessageActions", "getProbeMessageActions",
+              "getMobileRecommendationHeaderState",
               "buildNextCognitionHistoryState",
               "normalizeActivityFeed", "getActivityCardState",
               "getPoolStatusSummary", "normalizeRuntimeStatus", "mergeRuntimeStatusEvent",
@@ -186,6 +193,40 @@ class TestMobileWebViewModels:
             assert.equal(empty.visible, false);
         """))
 
+    def test_chat_alignment_helpers(self) -> None:
+        _assert_js(dedent("""
+            import assert from "node:assert/strict";
+            import {
+              getDelightMessageActions,
+              getMobileChatSession,
+              getProbeMessageActions,
+            } from "./src/openbiliclaw/web/js/view-models.js";
+
+            assert.deepEqual(getMobileChatSession(), { session: "popup", scope: "chat" });
+            assert.deepEqual(
+              getMobileChatSession("delight"),
+              { session: "popup", scope: "delight" },
+            );
+
+            assert.deepEqual(
+              getDelightMessageActions().map((item) => [item.label, item.action]),
+              [
+                ["看看", "view"],
+                ["喜欢", "like"],
+                ["不感兴趣", "reject"],
+                ["聊一聊", "chat"],
+              ],
+            );
+            assert.deepEqual(
+              getProbeMessageActions().map((item) => [item.label, item.action]),
+              [
+                ["喜欢", "confirm"],
+                ["不喜欢", "reject"],
+                ["多聊聊", "chat"],
+              ],
+            );
+        """))
+
     def test_pool_status_summary_semantic(self) -> None:
         _assert_js(dedent("""
             import assert from "node:assert/strict";
@@ -218,10 +259,55 @@ class TestMobileWebViewModels:
             assert.equal(idle.topics, "游戏 / 编程");
         """))
 
+    def test_mobile_recommendation_header_matches_plugin_semantics(self) -> None:
+        _assert_js(dedent("""
+            import assert from "node:assert/strict";
+            import {
+              getMobileRecommendationHeaderState,
+            } from "./src/openbiliclaw/web/js/view-models.js";
+
+            const header = getMobileRecommendationHeaderState({
+              runtimeStatus: {
+                initialized: true,
+                pool_available_count: 23,
+                pool_target_count: 60,
+                last_replenished_count: 7,
+                recent_pool_topics: ["城市影像", "设备测评"],
+              },
+              activityFeed: {
+                live_summary: "刚补进 7 条，正在筛城市影像",
+                headline: "最近活跃：城市影像",
+                items: [{
+                  id: "a1",
+                  kind: "refresh",
+                  summary: "候选池完成一次补货",
+                  created_at: "刚刚",
+                }],
+              },
+            });
+
+            assert.equal(header.kicker, "For You");
+            assert.equal(header.title, "这几条，你大概会点开");
+            assert.equal(header.primaryActionLabel, "换一批");
+            assert.equal(header.secondaryActionLabel, "加载更多");
+            assert.equal(header.activityLine, "刚补进 7 条，正在筛城市影像");
+            assert.deepEqual(
+              header.poolChips.map((chip) => [chip.label, chip.value, chip.tone]),
+              [
+                ["当前可换", "还有 23 条可换", "neutral"],
+                ["最近补进", "刚补进 7 条", "brand"],
+                ["现在在忙", "城市影像 / 设备测评", "info"],
+              ],
+            );
+        """))
+
     def test_normalize_activity_feed(self) -> None:
         _assert_js(dedent("""
             import assert from "node:assert/strict";
-            import { normalizeActivityFeed, getActivityCardState } from "./src/openbiliclaw/web/js/view-models.js";
+            import {
+              getActivityCardState,
+              normalizeActivityFeed,
+            } from "./src/openbiliclaw/web/js/view-models.js";
 
             const empty = normalizeActivityFeed({});
             assert.equal(empty.items.length, 0);
@@ -359,10 +445,18 @@ class TestMobileWebViewModels:
     def test_source_platform_and_label(self) -> None:
         _assert_js(dedent("""
             import assert from "node:assert/strict";
-            import { normalizeSourcePlatform, getSourceLabel } from "./src/openbiliclaw/web/js/view-models.js";
+            import {
+              getSourceLabel,
+              normalizeSourcePlatform,
+            } from "./src/openbiliclaw/web/js/view-models.js";
 
             assert.equal(normalizeSourcePlatform({ bvid: "BV1xx" }), "bilibili");
-            assert.equal(normalizeSourcePlatform({ content_url: "https://www.youtube.com/watch?v=abc" }), "youtube");
+            assert.equal(
+              normalizeSourcePlatform({
+                content_url: "https://www.youtube.com/watch?v=abc",
+              }),
+              "youtube",
+            );
             assert.equal(normalizeSourcePlatform({ source_platform: "douyin" }), "douyin");
             assert.equal(getSourceLabel("bilibili"), "Bilibili");
             assert.equal(getSourceLabel("youtube"), "YouTube");
