@@ -419,10 +419,11 @@ body {
 .delight-thumb {
   width: 116px;
   float: left;
-  margin: 2px 12px 7px 0;
+  margin: 2px 12px 8px 0;
+  shape-outside: inset(0 round 14px);
   position: relative;
   overflow: hidden;
-  border-radius: 12px;
+  border-radius: 14px;
   aspect-ratio: 16 / 10;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 248, 252, 0.94)),
@@ -430,7 +431,8 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.92);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.74),
-    0 10px 18px rgba(52, 72, 110, 0.12);
+    0 6px 16px rgba(251, 114, 153, 0.14),
+    0 12px 24px rgba(52, 72, 110, 0.08);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -600,9 +602,10 @@ body {
 }
 
 .delight-reason {
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text-secondary);
-  line-height: 1.48;
+  line-height: 1.68;
+  letter-spacing: 0.01em;
   margin-top: 2px;
   overflow-wrap: anywhere;
 }
@@ -616,9 +619,10 @@ body {
   display: inline-flex;
   align-items: center;
   margin-right: 6px;
-  padding: 1px 5px;
+  padding: 2px 7px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
+  background: linear-gradient(135deg, rgba(251, 114, 153, 0.1), rgba(90, 169, 255, 0.08));
+  border: 1px solid rgba(251, 114, 153, 0.15);
   color: var(--brand-strong);
   font-size: 10px;
   line-height: 1.4;
@@ -691,7 +695,8 @@ body {
   }
 
   .delight-reason {
-    max-height: 2.8em;
+    font-size: 12px;
+    line-height: 1.58;
   }
 }
 
@@ -1279,15 +1284,16 @@ body {
 .delight-tray {
   position: relative;
   background:
-    linear-gradient(180deg, rgba(255, 252, 254, 0.96), rgba(246, 250, 255, 0.9)),
-    linear-gradient(135deg, rgba(251,114,153,0.1), rgba(90,169,255,0.08));
-  border: 1px solid rgba(251, 114, 153, 0.34);
-  border-radius: 14px;
-  padding: 10px;
+    radial-gradient(circle at top right, rgba(251, 114, 153, 0.1), transparent 50%),
+    linear-gradient(180deg, rgba(255, 252, 254, 0.97), rgba(246, 250, 255, 0.93));
+  border: 1px solid rgba(251, 114, 153, 0.3);
+  border-radius: 18px;
+  padding: 12px;
   margin-bottom: 12px;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.88),
-    0 10px 24px rgba(251, 114, 153, 0.08);
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 8px 20px rgba(251, 114, 153, 0.1),
+    0 18px 36px rgba(52, 72, 110, 0.06);
 }
 
 .delight-tray::before {
