@@ -1,1 +1,0 @@
-"""Bundled standalone Web UI."""
