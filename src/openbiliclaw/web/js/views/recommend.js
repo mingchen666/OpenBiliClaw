@@ -648,7 +648,7 @@ async function loadData() {
   render();
   try {
     const [recs, status, delights, activity] = await Promise.all([
-      fetchRecommendations(),
+      reshuffleRecommendations().then((r) => r.items || []).catch(() => fetchRecommendations()),
       fetchRuntimeStatus().catch(() => null),
       fetchDelightBatch().catch(() => []),
       fetchActivityFeed({ limit: 5 }).catch(() => null),
