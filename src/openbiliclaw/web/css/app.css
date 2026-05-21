@@ -481,6 +481,7 @@ body {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  padding-right: 78px;
   flex-wrap: wrap;
 }
 
@@ -504,6 +505,16 @@ body {
   color: var(--text-muted);
   font-size: 10px;
   font-weight: 700;
+}
+
+.delight-corner-nav {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  z-index: 2;
 }
 
 .delight-inline-nav {
@@ -538,7 +549,24 @@ body {
   overflow: hidden;
 }
 
-.delight-hook {
+.delight-hook-badge {
+  min-width: 0;
+  max-width: 112px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delight-reason {
   font-size: 12px;
   color: var(--text-secondary);
   line-height: 1.4;
@@ -599,7 +627,17 @@ body {
     width: 96px;
   }
 
-  .delight-hook {
+  .delight-corner-nav {
+    position: static;
+    justify-content: flex-end;
+    margin-bottom: 6px;
+  }
+
+  .delight-kicker-line {
+    padding-right: 0;
+  }
+
+  .delight-reason {
     -webkit-line-clamp: 1;
   }
 }
@@ -1186,6 +1224,7 @@ body {
 
 /* ── Delight Tray ─────────────────────────────────────────── */
 .delight-tray {
+  position: relative;
   background: linear-gradient(135deg, rgba(251,114,153,0.08), rgba(90,169,255,0.08));
   border: 1px solid var(--line-strong);
   border-radius: 14px;

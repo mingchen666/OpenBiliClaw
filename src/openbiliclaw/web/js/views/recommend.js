@@ -206,21 +206,25 @@ function renderDelightTray() {
   const coverHtml = cover
     ? `<span class="delight-thumb"><img src="${esc(cover.src)}" alt="" loading="lazy" referrerpolicy="${cover.referrerPolicy}" onerror="this.parentElement.classList.add('is-fallback');this.remove()"></span>`
     : `<span class="delight-thumb is-fallback">\u2728</span>`;
+  const reasonText = d.delight_reason || d.delight_hook || "";
 
   tray.innerHTML = `
+    ${delights.length > 1 ? `
+      <div class="delight-corner-nav">
+        <button class="delight-inline-nav" id="delight-prev" type="button" ${idx <= 0 ? "disabled" : ""}>\u2039</button>
+        <span class="delight-inline-counter">${idx + 1}/${delights.length}</span>
+        <button class="delight-inline-nav" id="delight-next" type="button" ${idx >= delights.length - 1 ? "disabled" : ""}>\u203A</button>
+      </div>
+    ` : ""}
     <div class="delight-compact">
       ${coverHtml}
       <div class="delight-copy">
         <div class="delight-kicker-line">
           <span class="delight-tag">\u2728 \u60CA\u559C\u63A8\u8350</span>
-          ${delights.length > 1 ? `
-            <button class="delight-inline-nav" id="delight-prev" type="button" ${idx <= 0 ? "disabled" : ""}>\u2039</button>
-            <span class="delight-inline-counter">${idx + 1}/${delights.length}</span>
-            <button class="delight-inline-nav" id="delight-next" type="button" ${idx >= delights.length - 1 ? "disabled" : ""}>\u203A</button>
-          ` : ""}
+          ${d.delight_hook ? `<span class="delight-hook-badge">${esc(d.delight_hook)}</span>` : ""}
         </div>
         <div class="delight-title">${esc(d.title)}</div>
-        <div class="delight-hook">${esc(d.delight_hook || d.delight_reason)}</div>
+        ${reasonText ? `<div class="delight-reason">${esc(reasonText)}</div>` : ""}
         <div class="delight-meta">
           <span class="card-source" data-source="${d.source_platform}">${esc(getSourceLabel(d.source_platform))}</span>
           ${uiState.score_label ? `<span>${esc(uiState.score_label)}</span>` : ""}
