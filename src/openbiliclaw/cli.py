@@ -152,12 +152,13 @@ _INIT_DISCOVERY_PLAN = [
 # Initial pool target. Kept small so the discover phase finishes in
 # one or two LLM-eval waves and ``_run_backfill`` doesn't trigger. The
 # background refresh loop tops the pool up to
-# ``scheduler.pool_target_count`` (600) over the following hour, so a
+# ``scheduler.pool_target_count`` (300 by default) over the following hour, so a
 # tiny init pool only delays diversity, never reduces it.
 _INIT_POOL_TARGET_COUNT = 15
 _INIT_BILIBILI_HISTORY_LIMIT = 300
 _INIT_BILIBILI_FAVORITE_LIMIT = 300
-_INIT_BILIBILI_FOLLOW_LIMIT = 300
+_INIT_BILIBILI_FOLLOW_LIMIT = 100
+_INIT_BOOTSTRAP_MAX_ITEMS_PER_SCOPE = 100
 _DEFAULT_XHS_BOOTSTRAP_WAIT_SECONDS = 180.0
 _DEFAULT_DY_BOOTSTRAP_WAIT_SECONDS = 180.0
 _DEFAULT_YT_BOOTSTRAP_WAIT_SECONDS = 240.0
@@ -2098,14 +2099,9 @@ def _enqueue_xhs_bootstrap_task(*, force: bool = False) -> str | None:
     extension picks the task off the queue and runs it in parallel
     with the rest of init.
 
-    Defaults (v0.3.64+): ``max_scroll_rounds=15`` and
-    ``max_items_per_scope=300`` so users with hundreds of saves get
-    a deep enough pull to actually reflect their taste — earlier 50 /
-    3 rounds left users with serious save histories getting only the
-    most-recent ~60 items (the executor early-exits per scope when
-    further scrolls stop yielding new items, so the 15-round budget
-    is a ceiling, not a hard time cost). Both can be overridden via env
-    vars ``OPENBILICLAW_XHS_BOOTSTRAP_SCROLL_ROUNDS`` and
+    Defaults: ``max_scroll_rounds=15`` and ``max_items_per_scope=100``.
+    Both can be overridden via env vars
+    ``OPENBILICLAW_XHS_BOOTSTRAP_SCROLL_ROUNDS`` and
     ``OPENBILICLAW_XHS_BOOTSTRAP_MAX_ITEMS``.
     """
     from openbiliclaw.sources.xhs_tasks import XhsTaskQueue
@@ -2119,7 +2115,12 @@ def _enqueue_xhs_bootstrap_task(*, force: bool = False) -> str | None:
         return None
 
     scroll_rounds = int(os.environ.get("OPENBILICLAW_XHS_BOOTSTRAP_SCROLL_ROUNDS", "15"))
-    max_items = int(os.environ.get("OPENBILICLAW_XHS_BOOTSTRAP_MAX_ITEMS", "300"))
+    max_items = int(
+        os.environ.get(
+            "OPENBILICLAW_XHS_BOOTSTRAP_MAX_ITEMS",
+            str(_INIT_BOOTSTRAP_MAX_ITEMS_PER_SCOPE),
+        )
+    )
     task_id: str | None = None
 
     try:
@@ -2299,10 +2300,8 @@ def _enqueue_dy_bootstrap_task() -> str | None:
     ``event_format.build_event`` contract, so the cross-source
     analysis remains uniform downstream.
 
-    Defaults: ``max_scroll_rounds=15`` and ``max_items_per_scope=300``,
-    matching the XHS post-v0.3.64 conventions but independently
-    chosen — Douyin can diverge later without touching XHS. Both
-    can be overridden via env vars
+    Defaults: ``max_scroll_rounds=15`` and ``max_items_per_scope=100``.
+    Both can be overridden via env vars
     ``OPENBILICLAW_DY_BOOTSTRAP_SCROLL_ROUNDS`` and
     ``OPENBILICLAW_DY_BOOTSTRAP_MAX_ITEMS``.
     """
@@ -2317,7 +2316,12 @@ def _enqueue_dy_bootstrap_task() -> str | None:
         return None
 
     scroll_rounds = int(os.environ.get("OPENBILICLAW_DY_BOOTSTRAP_SCROLL_ROUNDS", "15"))
-    max_items = int(os.environ.get("OPENBILICLAW_DY_BOOTSTRAP_MAX_ITEMS", "300"))
+    max_items = int(
+        os.environ.get(
+            "OPENBILICLAW_DY_BOOTSTRAP_MAX_ITEMS",
+            str(_INIT_BOOTSTRAP_MAX_ITEMS_PER_SCOPE),
+        )
+    )
     task_id: str | None = None
 
     try:
@@ -2455,7 +2459,7 @@ def _collect_dy_bootstrap_events(
 def _enqueue_yt_bootstrap_task() -> str | None:
     """Enqueue a YouTube bootstrap_profile task for the browser extension.
 
-    Defaults: ``max_scroll_rounds=10`` and ``max_items_per_scope=300``.
+    Defaults: ``max_scroll_rounds=10`` and ``max_items_per_scope=100``.
     Both can be overridden via env vars
     ``OPENBILICLAW_YT_BOOTSTRAP_SCROLL_ROUNDS`` and
     ``OPENBILICLAW_YT_BOOTSTRAP_MAX_ITEMS``.
@@ -2471,7 +2475,12 @@ def _enqueue_yt_bootstrap_task() -> str | None:
         return None
 
     scroll_rounds = int(os.environ.get("OPENBILICLAW_YT_BOOTSTRAP_SCROLL_ROUNDS", "10"))
-    max_items = int(os.environ.get("OPENBILICLAW_YT_BOOTSTRAP_MAX_ITEMS", "300"))
+    max_items = int(
+        os.environ.get(
+            "OPENBILICLAW_YT_BOOTSTRAP_MAX_ITEMS",
+            str(_INIT_BOOTSTRAP_MAX_ITEMS_PER_SCOPE),
+        )
+    )
     task_id: str | None = None
 
     try:
@@ -3707,7 +3716,7 @@ def init(
         None,
         "--bilibili-follow-limit",
         min=0,
-        help="B 站关注 UP 初始化信号上限；默认 300，0 表示跳过关注。",
+        help="B 站关注 UP 初始化信号上限；默认 100，0 表示跳过关注。",
     ),
 ) -> None:
     """首次运行：拉取历史、生成画像并补足首轮发现池."""
@@ -3745,7 +3754,7 @@ def init(
     #     decays into noise quickly)
     #   - up to 300 favorites across folders (high-signal user curation,
     #     but too many low-recency saves dominate init cost)
-    #   - up to 300 followed creators (high-signal subscription intent)
+    #   - up to 100 followed creators (high-signal subscription intent)
     resolved_bilibili_favorite_limit = _INIT_BILIBILI_FAVORITE_LIMIT
     resolved_bilibili_follow_limit = _INIT_BILIBILI_FOLLOW_LIMIT
 

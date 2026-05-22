@@ -297,7 +297,7 @@ export async function executeTask(task: YtTask): Promise<void> {
     scopes,
     current_scope_idx: 0,
     accumulated_counts: {},
-    max_items_per_scope: task.max_items_per_scope ?? 300,
+    max_items_per_scope: task.max_items_per_scope ?? 100,
     max_scroll_rounds: task.max_scroll_rounds ?? 10,
   };
 

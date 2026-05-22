@@ -290,11 +290,13 @@ class TestBackendAPI:
                 memory: object,
                 usage_recorder: object | None = None,
                 module_overrides: object | None = None,
+                concurrency: int = 1,
             ) -> None:
                 self.registry = registry
                 self.memory = memory
                 self.usage_recorder = usage_recorder
                 self.module_overrides = module_overrides
+                self.concurrency = concurrency
 
         class FakeBilibiliClient:
             def __init__(self, *, cookie: str) -> None:
@@ -421,11 +423,13 @@ class TestBackendAPI:
                 memory: object,
                 usage_recorder: object | None = None,
                 module_overrides: object | None = None,
+                concurrency: int = 1,
             ) -> None:
                 self.registry = registry
                 self.memory = memory
                 self.usage_recorder = usage_recorder
                 self.module_overrides = module_overrides
+                self.concurrency = concurrency
 
         class FakeBilibiliClient:
             def __init__(self, *, cookie: str) -> None:
@@ -490,6 +494,7 @@ class TestBackendAPI:
         fake_config = SimpleNamespace(
             data_path=Path("/tmp/openbiliclaw-test-data"),
             bilibili=SimpleNamespace(cookie="", browser_executable="", browser_headed=False),
+            llm=SimpleNamespace(concurrency=3),
             sources=SimpleNamespace(
                 browser_cdp_url="",
                 browser_headed=False,

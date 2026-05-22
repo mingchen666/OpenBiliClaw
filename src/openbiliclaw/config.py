@@ -174,7 +174,7 @@ class SchedulerConfig:
     pause_on_extension_disconnect: bool = False
     extension_disconnect_grace_seconds: int = _DEFAULT_EXTENSION_DISCONNECT_GRACE_SECONDS
     discovery_cron: str = "0 */8 * * *"
-    pool_target_count: int = 600
+    pool_target_count: int = 300
     pool_source_shares: dict[str, int] = field(
         default_factory=lambda: dict(_DEFAULT_POOL_SOURCE_SHARES)
     )

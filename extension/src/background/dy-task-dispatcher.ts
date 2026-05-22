@@ -827,7 +827,7 @@ export async function executeTask(task: DyTask): Promise<void> {
     scopes,
     current_scope_idx: 0,
     accumulated_counts: emptyScopeCounts(),
-    max_items_per_scope: task.max_items_per_scope ?? 300,
+    max_items_per_scope: task.max_items_per_scope ?? 100,
     max_scroll_rounds: task.max_scroll_rounds ?? 15,
     max_stagnant_scroll_rounds: task.max_stagnant_scroll_rounds ?? 5,
   };

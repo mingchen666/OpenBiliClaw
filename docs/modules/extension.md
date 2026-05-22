@@ -189,7 +189,7 @@ dispatcher 会把这两个字段透传给 content script；如果 `scroll_wait_m
   "task_id": "...",
   "type": "bootstrap_profile",
   "scopes": ["dy_post", "dy_collect", "dy_like", "dy_follow"],
-  "max_items_per_scope": 300,
+  "max_items_per_scope": 100,
   "max_scroll_rounds": 15
 }
 ```
@@ -210,7 +210,7 @@ CLI 侧分两层使用这条链路：
   "task_id": "...",
   "type": "bootstrap_profile",
   "scopes": ["yt_history", "yt_subscriptions", "yt_likes"],
-  "max_items_per_scope": 300,
+  "max_items_per_scope": 100,
   "max_scroll_rounds": 10
 }
 ```

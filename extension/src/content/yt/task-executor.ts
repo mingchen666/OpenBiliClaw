@@ -193,7 +193,7 @@ export function extractChannelId(href: string): string {
 // ---------------------------------------------------------------------------
 
 export async function executeYtScope(msg: YtScopeExecuteMessage): Promise<YtScopeResult> {
-  const { task_id, scope, max_items_per_scope = 300, max_scroll_rounds = 10 } = msg;
+  const { task_id, scope, max_items_per_scope = 100, max_scroll_rounds = 10 } = msg;
 
   if (!isKnownScope(scope)) {
     return { task_id, scope: scope as YtScope, items: [], scope_count: 0, status: "failed", error: "unknown_scope" };

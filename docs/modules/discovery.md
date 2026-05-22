@@ -685,8 +685,8 @@ from openbiliclaw.discovery.pool_snapshot import (
 
 snapshot = build_pool_distribution_snapshot(
     database,
-    pool_target_count=600,
-    source_targets={"bilibili": 480, "xiaohongshu": 60, "douyin": 60},
+    pool_target_count=300,
+    source_targets={"bilibili": 240, "xiaohongshu": 30, "douyin": 30},
 )
 hints = snapshot.to_prompt_hints()
 ```
@@ -694,7 +694,7 @@ hints = snapshot.to_prompt_hints()
 行为说明：
 
 - `PoolDistributionSnapshot` 是冻结 dataclass，记录 `pool_target_count`、`pool_available_count`、各平台族目标数量 / 当前数量 / 缺口，以及已饱和的 `topic_group`、`style_key`、`franchise_key`。
-- 默认饱和阈值按池目标数换算：topic 为 `max(8, pool_target_count // 20)`，style 为 `max(12, pool_target_count // 8)`，franchise 固定为 10；以 `pool_target_count=600` 为例，topic 30 条、style 75 条、franchise 10 条即进入软避让。
+- 默认饱和阈值按池目标数换算：topic 为 `max(8, pool_target_count // 20)`，style 为 `max(12, pool_target_count // 8)`，franchise 固定为 10；以默认 `pool_target_count=300` 为例，topic 15 条、style 37 条、franchise 10 条即进入软避让。
 - `source_deficits` 只表示平台 / 来源族缺口，例如 `bilibili`、`xiaohongshu`、`douyin`、`youtube` 距离目标配比还差多少；它和内容轴分开处理，不会被解释成“应该搜索某个平台名”。
 - `to_prompt_hints()` 输出面向后续 prompt 的轻量 dict：`avoid_topics`、`avoid_styles`、`avoid_franchises`、`prefer_axes` 和 `source_deficits`。其中 `avoid_*`、`prefer_axes` 都是软信号，只影响 query 生成和引擎层软重排，不是硬过滤条件。
 - 当前 runtime 构建的 snapshot 不会把平台缺口自动合成内容 `prefer_axes`；`undercovered_axes` / `prefer_axes` 保留给手动传入或未来更细的内容轴缺口判断。

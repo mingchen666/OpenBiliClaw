@@ -1948,7 +1948,7 @@
           enabled: $("#schedulerEnabled").value === "on",
           pause_on_extension_disconnect: $("#pauseDisconnect").value === "pause",
           discovery_cron: getInput("discoveryCron"),
-          pool_target_count: getIntInput("poolTarget", 600),
+          pool_target_count: getIntInput("poolTarget", 300),
           account_sync_interval_hours: getIntInput("accountSyncInterval", 6),
           pool_source_shares: {
             bilibili: getIntInput("shareBilibili", 8),

@@ -615,7 +615,7 @@ class SchedulerConfigOut(BaseModel):
     pause_on_extension_disconnect: bool = False
     extension_disconnect_grace_seconds: int = 90
     discovery_cron: str = "0 */8 * * *"
-    pool_target_count: int = 600
+    pool_target_count: int = 300
     pool_source_shares: dict[str, int] = Field(default_factory=dict)
     account_sync_interval_hours: int = 6
     refresh_check_interval_seconds: int = 60

@@ -37,7 +37,7 @@ task_id = queue.enqueue_with_id(
     "bootstrap_profile",
     {
         "scopes": ["yt_history", "yt_subscriptions", "yt_likes"],
-        "max_items_per_scope": 300,
+        "max_items_per_scope": 100,
         "max_scroll_rounds": 10,
     },
 )
@@ -95,7 +95,7 @@ openbiliclaw import-youtube ~/Downloads/takeout.zip --dry-run
 |------|------:|------|
 | `OPENBILICLAW_NO_YOUTUBE` | 空 | 设为 `1` 时强制跳过 YouTube init，即使命令行传了 `--yes-youtube` |
 | `OPENBILICLAW_YT_BOOTSTRAP_SCROLL_ROUNDS` | `10` | 每个 YouTube scope 的最大滚动轮数 |
-| `OPENBILICLAW_YT_BOOTSTRAP_MAX_ITEMS` | `300` | 每个 YouTube scope 最多采集条目数 |
+| `OPENBILICLAW_YT_BOOTSTRAP_MAX_ITEMS` | `100` | 每个 YouTube scope 最多采集条目数 |
 | `OPENBILICLAW_YT_BOOTSTRAP_WAIT_SECONDS` | `240` | CLI 等待扩展完成 bootstrap 的默认秒数 |
 | `OPENBILICLAW_YT_BOOTSTRAP_DEDUPE_HOURS` | `6` | YouTube `bootstrap_profile` 近期任务复用窗口；设为 `0` 可关闭 |
 | `sources.youtube.enabled` | `false` | 是否启用 YouTube steady-state discovery 和候选池 quota |

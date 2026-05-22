@@ -4640,7 +4640,7 @@ function bindSettings() {
         enabled: !checked("cfgSchedulerEnabled"),
         pause_on_extension_disconnect: checked("cfgPauseOnDisconnect"),
         extension_disconnect_grace_seconds: getInt("cfgExtensionDisconnectGrace", 90),
-        pool_target_count: getInt("cfgPoolTarget", 600),
+        pool_target_count: getInt("cfgPoolTarget", 300),
         account_sync_interval_hours: getInt("cfgAccountSyncInterval", 6),
         refresh_check_interval_seconds: getInt("cfgRefreshCheckInterval", 60),
         signal_event_threshold: getInt("cfgSignalEventThreshold", 6),

@@ -206,7 +206,7 @@ class ContinuousRefreshController:
     # gating happens upstream now in pipeline.tick().  Kept explicit so
     # we can tune in tests.
     discovery_limit: int = 30
-    pool_target_count: int = 600
+    pool_target_count: int = 300
     pool_source_shares: dict[str, int] = field(
         default_factory=lambda: dict(_DEFAULT_PLATFORM_SOURCE_SHARES)
     )
