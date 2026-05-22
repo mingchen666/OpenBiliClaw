@@ -32,7 +32,7 @@
    - 点击跳转原始内容链接（`content_url` 优先，B 站 `bvid` fallback）
    - 点击直达上报（best-effort，不追踪观看时长）
    - "换一批" 按钮（reshuffle）
-   - 列表底部 "加载更多"（append）
+   - 接近列表底部自动 append 下一批，底部 "加载更多" 保留为手动兜底
    - 推荐池状态显示（当前可换、最近补进、现在在忙）
    - Delight 惊喜推荐 banner（队列浏览 ‹/›），动作与插件对齐为「看看 / 喜欢 / 不感兴趣 / 聊一聊」
 
@@ -170,14 +170,14 @@ if web_dir.is_dir():
 
 移动端会在 `view-models.js` 中做最小字段适配：
 - 推荐池状态读取 `/api/runtime-status` 的 `pool_available_count`、`last_replenished_count`、`recent_pool_topics`，再映射成推荐页三枚 chip 使用的 `pool_size`、`recent_replenish`、`current_topic`。
-- 推荐页头部用 `getMobileRecommendationHeaderState()` 生成插件语义一致的标题、首屏「换一批」、三枚池状态 chip 和活动辅助行；移动端把池状态压成横向轻量 pill，并把 `xhs-extension-*` / `dy-plugin-*` / `yt-*` 等内部来源名显示为用户可读短标签；「加载更多」保留为列表底部显式续页入口。
+- 推荐页头部用 `getMobileRecommendationHeaderState()` 生成插件语义一致的标题、首屏「换一批」、三枚池状态 chip 和活动辅助行；移动端把池状态压成横向轻量 pill，并把 `xhs-extension-*` / `dy-plugin-*` / `yt-*` 等内部来源名显示为用户可读短标签；列表接近底部时用 `IntersectionObserver` 自动调用 `append`，同时保留底部「加载更多」作为手动兜底。
 - 惊喜推荐沿用插件 compact banner 思路：左侧小缩略图、标签 / 标题 / 理由 / 来源围绕头图形成 featured card，推荐原因带轻量标记，翻页控件与「稍后看」关闭入口放在右上角，动作区仍保持「看看 / 喜欢 / 不感兴趣 / 聊一聊」；「聊一聊」会在当前卡片内展开 composer 和多轮气泡，不切换到对话 tab。
 - MBTI 维度兼容后端对象形态（如 `EI: { pole: "I", strength: 0.8 }`）和旧数组形态，统一映射为 `{ left, right, score }` 后再渲染。
 - MBTI 会保留后端 `confidence` 显示为“可信度”；内容口味将 `long/slow` 等 raw 枚举映射为“长视频 / 慢节奏”等中文标签；使用场景会显示 `session_type` 为“模式”。
 - 认知更新卡片会保留后端 `context_line` 与 `source_label`，即使前端已做过一次 normalize 后再次渲染，也不回退成泛化上下文。
 - 对话 turn 兼容 `response` 和后端当前返回的 `reply` 字段，统一映射成聊天气泡使用的 `response`。
 - 移动端主聊天与插件读取同一 `session=popup&scope=chat`；contextual delight/probe 聊天通过 `scope=delight/probe` 标识主题上下文。惊喜推荐内联聊天也复用 `session=popup&scope=delight`，按 `subject_id=bvid` hydrate 每条候选自己的 `turns` 历史，pending turn 通过 `/api/chat/turns/{turn_id}` 轮询恢复。
-- 封面图会在渲染前归一化：B 站 `http` / protocol-relative 地址升级为 HTTPS，小红书 `*.xhscdn.com` 这类直接 403 的热链地址不渲染，外链图片统一使用 `referrerpolicy="no-referrer"`，避免 localhost 页面触发热链拦截。
+- 封面图会在渲染前归一化：B 站 `http` / protocol-relative 地址升级为 HTTPS，推荐、惊喜推荐和消息封面统一走本地 `/api/image-proxy`，加载失败时保留固定比例 fallback。推荐列表首屏封面使用 eager/high priority，后续若干封面通过 `Image()` best-effort 预热，减少滑动过程中的白屏。
 
 ### 静态资源
 
@@ -207,7 +207,7 @@ if web_dir.is_dir():
 1. 推荐卡片组件
 2. 推荐列表渲染 + 空状态
 3. 池状态显示
-4. 换一批 / 加载更多
+4. 换一批 / 自动续页 / 加载更多兜底
 5. Delight banner + 队列导航
 6. 下拉刷新
 7. 实时更新（WebSocket）

@@ -109,6 +109,7 @@ class TestMobileWebViewModels:
               "normalizeActivityFeed", "getActivityCardState",
               "getPoolStatusSummary", "normalizeRuntimeStatus", "mergeRuntimeStatusEvent",
               "getReadyRecommendationHint",
+              "getRecommendationCoverPreloadUrls", "getRecommendationImageLoadingAttrs",
               "formatRelativeTimestamp",
               "normalizeSourcePlatform", "getSourceLabel",
               "normalizeCoverUrl", "getCoverImageAttrs",
@@ -135,6 +136,61 @@ class TestMobileWebViewModels:
         assert ".message-cover-frame.is-error" in app_css
         assert ".card-cover::after" not in app_css
         assert ".message-cover-frame img" in app_css
+
+    def test_recommendation_cover_preload_helpers(self) -> None:
+        _assert_js(
+            dedent("""
+            import assert from "node:assert/strict";
+            import {
+              getRecommendationCoverPreloadUrls,
+              getRecommendationImageLoadingAttrs,
+            } from "./src/openbiliclaw/web/js/view-models.js";
+
+            const urls = getRecommendationCoverPreloadUrls([
+              { cover_url: "http://i0.hdslb.com/bfs/archive/a.jpg" },
+              { cover_url: "//i0.hdslb.com/bfs/archive/a.jpg" },
+              { cover_url: "https://i1.hdslb.com/bfs/archive/b.jpg" },
+              { cover_url: "not-a-url" },
+              { cover_url: "" },
+              { cover_url: "https://sns-webpic-qc.xhscdn.com/c.jpg" },
+            ], { limit: 3 });
+
+            assert.deepEqual(urls, [
+              "/api/image-proxy?url=https%3A%2F%2Fi0.hdslb.com%2Fbfs%2Farchive%2Fa.jpg",
+              "/api/image-proxy?url=https%3A%2F%2Fi1.hdslb.com%2Fbfs%2Farchive%2Fb.jpg",
+              "/api/image-proxy?url=https%3A%2F%2Fsns-webpic-qc.xhscdn.com%2Fc.jpg",
+            ]);
+
+            assert.deepEqual(
+              getRecommendationImageLoadingAttrs(0),
+              { loading: "eager", fetchPriority: "high" },
+            );
+            assert.deepEqual(
+              getRecommendationImageLoadingAttrs(1),
+              { loading: "eager", fetchPriority: "high" },
+            );
+            assert.deepEqual(
+              getRecommendationImageLoadingAttrs(2),
+              { loading: "lazy", fetchPriority: "auto" },
+            );
+        """)
+        )
+
+    def test_mobile_recommendation_view_preloads_and_auto_appends(self) -> None:
+        recommend_js = Path("src/openbiliclaw/web/js/views/recommend.js").read_text()
+
+        assert "getRecommendationCoverPreloadUrls" in recommend_js
+        assert "getRecommendationImageLoadingAttrs" in recommend_js
+        assert "function warmRecommendationCovers" in recommend_js
+        assert "new Image()" in recommend_js
+        assert ".decode()" in recommend_js
+        assert 'loading="${esc(imageAttrs.loading)}"' in recommend_js
+        assert 'fetchpriority="${esc(imageAttrs.fetchPriority)}"' in recommend_js
+        assert "AUTO_APPEND_ROOT_MARGIN" in recommend_js
+        assert "IntersectionObserver" in recommend_js
+        assert "observeAutoAppendSentinel" in recommend_js
+        assert ".load-more-row" in recommend_js
+        assert "handleAppend();" in recommend_js
 
     def test_normalize_recommendation_defaults(self) -> None:
         _assert_js(

@@ -64,6 +64,32 @@ export function getCoverImageAttrs(value) {
   return { src: `/api/image-proxy?url=${encodeURIComponent(src)}` };
 }
 
+export function getRecommendationCoverPreloadUrls(items, { start = 0, limit = 8 } = {}) {
+  const safeStart = Math.max(0, Math.trunc(coerceNumber(start) ?? 0));
+  const safeLimit = Math.max(0, Math.trunc(coerceNumber(limit) ?? 0));
+  if (!Array.isArray(items) || safeLimit <= 0) return [];
+
+  const seen = new Set();
+  const urls = [];
+  for (const item of items.slice(safeStart)) {
+    const attrs = getCoverImageAttrs(item?.cover_url ?? item);
+    if (!attrs || seen.has(attrs.src)) continue;
+    seen.add(attrs.src);
+    urls.push(attrs.src);
+    if (urls.length >= safeLimit) break;
+  }
+  return urls;
+}
+
+export function getRecommendationImageLoadingAttrs(index, { eagerCount = 2 } = {}) {
+  const safeIndex = Math.max(0, Math.trunc(coerceNumber(index) ?? 0));
+  const safeEagerCount = Math.max(0, Math.trunc(coerceNumber(eagerCount) ?? 0));
+  if (safeIndex < safeEagerCount) {
+    return { loading: "eager", fetchPriority: "high" };
+  }
+  return { loading: "lazy", fetchPriority: "auto" };
+}
+
 // ── Source Platform ──────────────────────────────────────────
 
 const SOURCE_LABEL_MAP = {

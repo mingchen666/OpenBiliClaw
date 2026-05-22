@@ -21,6 +21,8 @@ import {
 import { state, patchState } from "../state.js";
 import {
   getCoverImageAttrs,
+  getRecommendationCoverPreloadUrls,
+  getRecommendationImageLoadingAttrs,
   normalizeRecommendation,
   normalizeRuntimeStatus,
   mergeRuntimeStatusEvent,
@@ -45,6 +47,12 @@ let loaded = false;
 let loading = false;
 let feedbackSheet = null; // { itemId, note, submitState }
 const feedbackDone = new Map(); // recId -> "like" | "dislike" | "comment"
+const COVER_PRELOAD_BATCH_SIZE = 8;
+const AUTO_APPEND_ROOT_MARGIN = "700px 0px 900px 0px";
+const warmedCoverUrls = new Set();
+const warmingImages = new Map();
+let autoAppendObserver = null;
+let autoAppendExhausted = false;
 
 // ── Escape helper ────────────────────────────────────────────
 function esc(s) {
@@ -92,8 +100,8 @@ function render() {
     frag.appendChild(empty);
   }
 
-  for (const item of recs) {
-    frag.appendChild(renderCard(item));
+  for (const [index, item] of recs.entries()) {
+    frag.appendChild(renderCard(item, index));
   }
 
   renderInto(frag, renderLoadMoreRow);
@@ -112,6 +120,8 @@ function render() {
 
   // Feedback bottom sheet
   renderFeedbackSheet();
+  warmRecommendationCovers(recs);
+  observeAutoAppendSentinel();
 }
 
 /** Run a sub-renderer with $root temporarily pointed at the given container. */
@@ -575,16 +585,62 @@ function renderLoadMoreRow() {
   $root.appendChild(actions);
 }
 
+function warmRecommendationCovers(items, { start = 0, limit = COVER_PRELOAD_BATCH_SIZE } = {}) {
+  if (typeof Image === "undefined") return;
+  const urls = getRecommendationCoverPreloadUrls(items, { start, limit });
+  for (const src of urls) {
+    if (warmedCoverUrls.has(src)) continue;
+    warmedCoverUrls.add(src);
+
+    const img = new Image();
+    const cleanup = () => warmingImages.delete(src);
+    img.decoding = "async";
+    img.loading = "eager";
+    img.onload = cleanup;
+    img.onerror = cleanup;
+    warmingImages.set(src, img);
+    img.src = src;
+    if (typeof img.decode === "function") {
+      img.decode().then(cleanup).catch(cleanup);
+    }
+  }
+}
+
+function disconnectAutoAppendObserver() {
+  if (!autoAppendObserver) return;
+  autoAppendObserver.disconnect();
+  autoAppendObserver = null;
+}
+
+function observeAutoAppendSentinel() {
+  disconnectAutoAppendObserver();
+  if (!$root || typeof IntersectionObserver === "undefined") return;
+  const loadMoreRow = $root.querySelector(".load-more-row");
+  if (!loadMoreRow) return;
+
+  autoAppendObserver = new IntersectionObserver((entries) => {
+    if (!entries.some((entry) => entry.isIntersecting)) return;
+    if (loading || autoAppendExhausted || state.activeTab !== "recommend") return;
+    handleAppend();
+  }, {
+    root: document.getElementById("app"),
+    rootMargin: AUTO_APPEND_ROOT_MARGIN,
+    threshold: 0,
+  });
+  autoAppendObserver.observe(loadMoreRow);
+}
+
 // ── Recommendation Card ──────────────────────────────────────
-function renderCard(rawItem) {
+function renderCard(rawItem, index = 0) {
   const item = normalizeRecommendation(rawItem);
   const card = document.createElement("div");
   card.className = "card";
   const url = buildContentUrl(item);
   const cover = getCoverImageAttrs(item.cover_url);
+  const imageAttrs = getRecommendationImageLoadingAttrs(index);
 
   const coverHtml = cover
-    ? `<div class="card-cover-frame"><img class="card-cover" src="${esc(cover.src)}" alt="" loading="lazy" onerror="this.parentElement.classList.add('is-error');this.remove()"></div>`
+    ? `<div class="card-cover-frame"><img class="card-cover" src="${esc(cover.src)}" alt="" loading="${esc(imageAttrs.loading)}" fetchpriority="${esc(imageAttrs.fetchPriority)}" decoding="async" onerror="this.parentElement.classList.add('is-error');this.remove()"></div>`
     : `<div class="card-cover-frame is-error"></div>`;
 
   card.innerHTML = `
@@ -752,6 +808,7 @@ async function handleReshuffle() {
   render();
   try {
     const result = await reshuffleRecommendations();
+    autoAppendExhausted = false;
     patchState({ recommendations: (result.items || []).map(normalizeRecommendation) });
   } catch { /* ignore */ }
   loading = false;
@@ -768,18 +825,23 @@ async function handleAppend() {
   if (appendBtnEl) { appendBtnEl.disabled = true; appendBtnEl.textContent = "\u52A0\u8F7D\u4E2D\u2026"; }
 
   try {
+    const startIndex = state.recommendations.length;
     const existing = state.recommendations.map((i) => i.bvid).filter(Boolean);
     const result = await appendRecommendations(existing);
     const newItems = (result.items || []).map(normalizeRecommendation);
+    autoAppendExhausted = newItems.length === 0;
     patchState({ recommendations: [...state.recommendations, ...newItems] });
 
     // Append new cards before the load-more row without rebuilding existing ones.
     if (loadMoreRow) {
-      for (const item of newItems) {
-        $root.insertBefore(renderCard(item), loadMoreRow);
+      for (const [offset, item] of newItems.entries()) {
+        $root.insertBefore(renderCard(item, startIndex + offset), loadMoreRow);
       }
     }
-  } catch { /* ignore */ }
+    warmRecommendationCovers(newItems);
+  } catch {
+    autoAppendExhausted = true;
+  }
 
   loading = false;
   // Restore button state.
@@ -788,6 +850,7 @@ async function handleAppend() {
     const headerState = getMobileRecommendationHeaderState();
     appendBtnEl.textContent = headerState.secondaryActionLabel;
   }
+  observeAutoAppendSentinel();
 }
 
 // ── Pull-to-Refresh ──────────────────────────────────────────
@@ -892,6 +955,7 @@ async function loadData() {
       fetchActivityFeed({ limit: 5 }).catch(() => null),
     ]);
     const normalizedRecs = recs.map(normalizeRecommendation);
+    autoAppendExhausted = false;
     // Restore feedback state from backend so it survives page refresh.
     for (const rec of normalizedRecs) {
       if (rec.feedback_type && !feedbackDone.has(rec.id)) {
