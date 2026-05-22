@@ -385,15 +385,15 @@
         const card = document.createElement("article");
         card.className = "video-card";
         card.innerHTML = `
-          <button class="cover" data-platform="${escapeHtml(item.platform)}" type="button" aria-label="打开 ${escapeHtml(item.title)}">
-            ${coverImg(item)}
+          <div class="cover" data-platform="${escapeHtml(item.platform)}">
+            <button class="cover-btn" type="button" aria-label="打开 ${escapeHtml(item.title)}">
+              ${coverImg(item)}
+            </button>
             <span class="platform">${escapeHtml(platformName(item.platform))}</span>
-          </button>
-          <div>
-            <p class="video-title">${escapeHtml(item.title)}</p>
-            <p class="video-meta">${escapeHtml(recommendationMeta(item))}</p>
           </div>
-          <p class="reason">${escapeHtml(item.reason)}</p>
+          <p class="video-title">${escapeHtml(item.title)}</p>
+          <p class="video-meta">${escapeHtml(recommendationMeta(item))}</p>
+          <p class="reason" data-full-reason="${escapeHtml(item.reason)}">${escapeHtml(item.reason)}</p>
           <div class="card-actions" aria-label="推荐反馈操作">
             <div class="card-feedback-icons" aria-label="喜欢或不感兴趣">
               <button class="feedback-icon-btn" data-action="like" type="button" aria-label="喜欢" title="喜欢">
@@ -412,7 +412,7 @@
             <button class="small-btn chat-action" data-action="comment" type="button">聊一聊</button>
           </div>
           <p class="status-line"></p>`;
-        card.querySelector(".cover").addEventListener("click", () => openRecommendation(item, card));
+        card.querySelector(".cover-btn").addEventListener("click", () => openRecommendation(item, card));
         card.querySelectorAll("[data-action]").forEach((btn) => btn.addEventListener("click", () => handleCardAction(btn.dataset.action, item, card)));
         card.querySelector(".comment-field input").addEventListener("keydown", (event) => {
           if (event.key === "Enter") handleCardAction("send-comment", item, card);
@@ -1926,7 +1926,11 @@
       if (!layout) return;
       const collapsed = layout.classList.toggle("rail-collapsed");
       const btn = $("#railToggle");
-      if (btn) btn.setAttribute("aria-label", collapsed ? "展开侧栏" : "收起侧栏");
+      if (btn) {
+        btn.setAttribute("aria-label", collapsed ? "展开侧栏" : "收起侧栏");
+        const label = btn.querySelector(".rail-toggle-label");
+        if (label) label.textContent = collapsed ? "" : "收起侧栏";
+      }
     });
 
     safeBind("#mobileMenuBtn", "click", openMobileMenu);
@@ -2045,6 +2049,31 @@
       $("#statusLabel").textContent = "首屏渲染失败";
       $("#runtimeSummary").textContent = error?.message || "请检查后端返回的数据结构。";
     }
+    // Global reason tooltip
+    const _tip = document.createElement("div");
+    _tip.id = "reasonTooltip";
+    document.body.appendChild(_tip);
+    let _tipTarget = null;
+    document.addEventListener("mouseover", (e) => {
+      const reason = e.target.closest(".reason[data-full-reason]");
+      if (reason && reason !== _tipTarget) {
+        _tipTarget = reason;
+        _tip.textContent = reason.dataset.fullReason;
+        _tip.style.display = "block";
+        const rect = reason.getBoundingClientRect();
+        let top = rect.bottom + 8;
+        if (top + _tip.offsetHeight > window.innerHeight) top = rect.top - _tip.offsetHeight - 8;
+        let left = rect.left;
+        if (left + _tip.offsetWidth > window.innerWidth - 16) left = window.innerWidth - _tip.offsetWidth - 16;
+        _tip.style.top = Math.max(8, top) + "px";
+        _tip.style.left = Math.max(8, left) + "px";
+      }
+    });
+    document.addEventListener("mouseout", (e) => {
+      const reason = e.target.closest(".reason[data-full-reason]");
+      if (reason && !reason.contains(e.relatedTarget)) { _tip.style.display = "none"; _tipTarget = null; }
+    });
+
     hydrateFromBackend()
       .then(connectRuntimeStream)
       .catch((error) => {
