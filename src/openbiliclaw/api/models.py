@@ -542,6 +542,7 @@ class ModuleLLMConfigOut(BaseModel):
 
 class LLMConfigOut(BaseModel):
     default_provider: str = "openai"
+    concurrency: int = 3
     fallback_enabled: bool = False
     fallback_provider: str = ""
     openai: LLMProviderConfigOut = Field(default_factory=LLMProviderConfigOut)

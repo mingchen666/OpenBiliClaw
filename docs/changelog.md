@@ -9,6 +9,7 @@
 - 浏览器插件版本提升到 extension v0.3.44，准备发布 `extension-v0.3.44`；后端源码版本仍为 v0.3.89，不发布新的后端 tag。
 - 移动 Web 惊喜推荐的「聊一聊」不再切到对话 tab，而是在当前惊喜卡片内展开 16px textarea composer，提交后就地显示用户气泡、AI thinking、完成回复或失败提示。
 - 移动 Web 和插件的惊喜推荐内聊统一走 durable `/api/chat/turns`，按 `scope=delight` + `subject_id` 归并历史；pending turn 会轮询恢复，reload 后可重新 hydrate。
+- `[llm].concurrency` 新增为全局 LLM 请求并发上限，默认从 1 提升到 3，并接入 `/api/config` 与插件设置页「模型」tab，方便在速度和上游限流之间调整。
 - 移动 Web 推荐列表新增封面预热和接近底部自动续页：首屏推荐封面用 eager/high priority 加载，后续封面通过 `/api/image-proxy` URL best-effort 预热；滚到列表底部附近会自动调用 `append` 续下一批，底部「加载更多」按钮保留为兜底。
 - 移动 Web 推荐列表的高速滑动封面体验继续收敛：当前批次默认预热 12 张封面，前 12 张用 eager 加载，追加批次会先等待封面预热/解码或短超时再插入卡片；封面图加载和 decode 完成前保持透明，让粉蓝渐变骨架先显示，decode 完成后淡入，减少快速下滑时的白屏闪烁。
 - 插件惊喜推荐卡片从单个 `chat_reply` 升级为 per-delight `turns` 多轮气泡，`chat_reply` 仅保留为兼容 last reply；切换候选和 side panel reload 不再覆盖旧回合。

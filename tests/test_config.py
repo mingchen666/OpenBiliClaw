@@ -82,6 +82,7 @@ class TestConfigDefaults:
         assert config.api.host == "0.0.0.0"
         assert config.api.port == 8420
         assert config.llm.default_provider == "openai"
+        assert config.llm.concurrency == 3
         assert config.bilibili.auth_method == "cookie"
         assert config.scheduler.enabled is True
         assert config.scheduler.discovery_cron == "0 */8 * * *"
@@ -994,6 +995,7 @@ def test_save_config_round_trips_runtime_changes(tmp_path: Path) -> None:
     config.language = "en"
     config.data_dir = "runtime-data"
     config.llm.default_provider = "gemini"
+    config.llm.concurrency = 6
     config.llm.fallback_enabled = True
     config.llm.fallback_provider = "openai"
     config.llm.gemini.api_key = "gemini-test-key"
@@ -1007,6 +1009,7 @@ def test_save_config_round_trips_runtime_changes(tmp_path: Path) -> None:
     assert loaded.language == "en"
     assert loaded.data_dir == "runtime-data"
     assert loaded.llm.default_provider == "gemini"
+    assert loaded.llm.concurrency == 6
     assert loaded.llm.fallback_enabled is True
     assert loaded.llm.fallback_provider == "openai"
     assert loaded.llm.gemini.api_key == "gemini-test-key"

@@ -408,6 +408,7 @@ def _build_soul_engine() -> Any:
         memory=memory,
         satisfaction_filter_enabled=cfg.soul.preference.satisfaction_filter_enabled,
         module_overrides=module_overrides_from_config(cfg),
+        llm_concurrency=cfg.llm.concurrency,
         speculation_interval_minutes=cfg.scheduler.speculation_interval_minutes,
         speculation_ttl_days=cfg.scheduler.speculation_ttl_days,
         speculation_cooldown_days=cfg.scheduler.speculation_cooldown_days,
@@ -436,6 +437,7 @@ def _build_recommendation_engine() -> Any:
         registry=registry,
         memory=memory,
         module_overrides=module_overrides_from_config(cfg),
+        concurrency=cfg.llm.concurrency,
     )
     from openbiliclaw.llm.registry import build_embedding_service
 
@@ -521,6 +523,7 @@ def _build_discovery_engine() -> Any:
         registry=registry,
         memory=memory,
         module_overrides=module_overrides_from_config(cfg),
+        concurrency=cfg.llm.concurrency,
     )
     concurrency = DiscoveryConcurrencyController(
         bilibili_request_concurrency=2,
@@ -5042,6 +5045,7 @@ def _run_xhs_discovery(*, force: bool) -> None:
         registry=registry,
         memory=memory,
         module_overrides=module_overrides_from_config(config),
+        concurrency=config.llm.concurrency,
     )
 
     xhs_cfg = getattr(config.sources, "xiaohongshu", None)
@@ -5608,6 +5612,7 @@ def config_show() -> None:
     rows = [
         ("语言", cfg.language),
         ("LLM", cfg.llm.default_provider),
+        ("LLM 并发", str(cfg.llm.concurrency)),
         ("B站认证", cfg.bilibili.auth_method),
         ("定时任务", "开启" if cfg.scheduler.enabled else "关闭"),
         ("停止后台 LLM 请求", "否" if cfg.scheduler.enabled else "是"),

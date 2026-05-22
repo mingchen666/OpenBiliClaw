@@ -3891,6 +3891,7 @@ def create_app(
             degraded_reason=degraded_reason,
             llm=LLMConfigOut(
                 default_provider=cfg.llm.default_provider,
+                concurrency=int(getattr(cfg.llm, "concurrency", 3)),
                 fallback_enabled=cfg.llm.fallback_enabled,
                 fallback_provider=cfg.llm.fallback_provider,
                 openai=_provider_out(cfg.llm.openai),
@@ -4048,6 +4049,7 @@ def create_app(
             _collect_config_issues,
             _default_config_path,
             _normalize_extension_disconnect_grace,
+            _normalize_llm_concurrency,
             _normalize_pool_source_shares,
             _normalize_scheduler_int,
             load_config,
@@ -4087,6 +4089,8 @@ def create_app(
             llm_data = update["llm"]
             if "default_provider" in llm_data:
                 cfg.llm.default_provider = str(llm_data["default_provider"])
+            if "concurrency" in llm_data:
+                cfg.llm.concurrency = _normalize_llm_concurrency(llm_data["concurrency"])
             if "fallback_enabled" in llm_data:
                 cfg.llm.fallback_enabled = _as_bool(llm_data["fallback_enabled"])
             if "fallback_provider" in llm_data:

@@ -3710,6 +3710,7 @@ class TestEmbeddingAndCompatProviderE2E:
         data = response.json()
 
         assert data["data_dir"] == "runtime-data"
+        assert data["llm"]["concurrency"] == 3
         assert data["llm"]["deepseek"]["reasoning_effort"] == "high"
         assert data["llm"]["openrouter"]["http_referer"] == "https://example.com"
         assert data["llm"]["openrouter"]["x_title"] == "Example App"
@@ -3848,6 +3849,7 @@ class TestEmbeddingAndCompatProviderE2E:
             json={
                 "data_dir": "runtime-data",
                 "llm": {
+                    "concurrency": 5,
                     "deepseek": {"reasoning_effort": "high"},
                     "openrouter": {
                         "http_referer": "https://example.com",
@@ -3930,6 +3932,8 @@ class TestEmbeddingAndCompatProviderE2E:
 
         assert response.status_code == 200
         assert cfg.data_dir == "runtime-data"
+        assert cfg.llm.concurrency == 5
+        assert response.json()["config"]["llm"]["concurrency"] == 5
         assert cfg.llm.deepseek.reasoning_effort == "high"
         assert cfg.llm.openrouter.http_referer == "https://example.com"
         assert cfg.llm.openrouter.x_title == "Example App"
