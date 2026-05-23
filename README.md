@@ -19,6 +19,14 @@
 
 ---
 
+## 💬 用户交流群
+
+<p align="center">
+  <img src="docs/images/user-community-qrcode.png" width="200" alt="用户交流群二维码" />
+</p>
+
+---
+
 ## 📌 v0.3.89 / extension v0.3.44 重要更新（2026-05-22）
 
 - **💬 惊喜推荐原地聊** —— 移动端 Web 和插件的「聊一聊」现在都在惊喜推荐卡片内展开 composer，不再把你丢到对话 tab。
@@ -576,12 +584,6 @@ OpenBiliClaw 的目标是做你的**全网个性化内容入口**——从 B 站
 - **跨平台兴趣融合** — 你在 B 站看的机械键盘 + 小红书种草的咖啡器具 + 抖音点赞收藏的短视频偏好 + YouTube 长视频观看和订阅 = 一个完整的你。画像融合让推荐不再割裂
 - **更智能的发现** — 跨平台关联推荐（"你在小红书关注了咖啡器具，B 站有个手冲咖啡纪录片你可能喜欢"，或用抖音 feed 口味补足短视频兴趣）
 - **社区生态** — 用户自定义 SourceAdapter、共享发现策略、贡献平台适配器
-
-## 💬 用户交流群
-
-<p align="center">
-  <img src="docs/images/user-community-qrcode.png" width="260" alt="用户交流群二维码" />
-</p>
 
 ## 🤝 贡献
 
