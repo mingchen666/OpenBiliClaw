@@ -222,16 +222,19 @@ Keep file-local history helpers:
 
 ```python
 AVOIDANCE_FEEDBACK_HISTORY_LIMIT = 100
-NEGATIVE_AVOIDANCE_RESPONSES = {"reject", "chat_negative"}
-POSITIVE_AVOIDANCE_RESPONSES = {"confirm", "chat_positive"}
+DENYING_AVOIDANCE_RESPONSES = {"reject", "chat_negative"}
+CONFIRMING_AVOIDANCE_RESPONSES = {"confirm", "chat_positive"}
 ```
 
-For avoidance probes, “negative response” means user denies the avoidance hypothesis. Use it to avoid asking the denied direction again.
+For avoidance probes, name responses by what they do to the avoidance hypothesis.
+`DENYING_AVOIDANCE_RESPONSES` suppress future duplicates; `CONFIRMING_AVOIDANCE_RESPONSES`
+move the candidate toward writeback.
 
 Add `AvoidanceSpeculator.observe(events)` with explicit-negative-only semantics:
 
 - Count only events with `metadata.feedback_type == "dislike"`, `metadata.reaction == "thumbs_down"`, `event_type == "dislike"`, or probe chat records explicitly marked negative toward the content.
 - Do not count passive `quick_exit` or generic `inferred_satisfaction=negative`; those are too noisy for an avoidance confirmation.
+- This is intentionally stricter than the preference-layer dislike extraction prompt, which can use weaker negative signals. Avoidance auto-confirmation writes durable filtering preferences, so it requires high-confidence evidence.
 - When an explicit negative event text matches an active avoidance `domain` or `specifics`, increment `confirmation_count` and store a short event title.
 - User `confirm` still force-sets the threshold and marks `status="confirmed"`; threshold is for repeated explicit negative evidence and state-machine compatibility, not required after a direct confirmation click.
 
@@ -484,7 +487,12 @@ Pass to `ProfileUpdatePipeline`.
 
 In `SoulEngine.get_profile()`, do not attach active avoidances to the profile object. Unconfirmed avoidance probes must not reach discovery, curator, delight, or recommendation contexts.
 
-In `ProfileUpdatePipeline`, call `avoidance_speculator.observe(raw_events)` with the explicit-negative-only behavior from Task 2, then tick it on the same idle/layer-update cadence as the positive speculator.
+In `ProfileUpdatePipeline`, call `avoidance_speculator.observe(raw_events)` with
+the explicit-negative-only behavior from Task 2, then tick it on the same
+idle/layer-update cadence as the positive speculator. Task 4.5 wires the
+promoted-result writeback once the shared dislike helper exists. The speculator
+must remain IO-free: `promote_ready_avoidances(state)` only moves state and
+returns promoted items.
 
 In `/api/profile-summary`, load `avoidance_state.json` and return `speculative_avoidances`.
 
@@ -507,10 +515,120 @@ git commit -m "feat: wire avoidance probes into soul runtime"
 
 ---
 
+### Task 4.5: Extract Shared Dislike Writeback Helper
+
+**Files:**
+- Add: `src/openbiliclaw/soul/dislike_writeback.py`
+- Modify: `src/openbiliclaw/soul/layer_updaters.py:222-275`
+- Modify: `src/openbiliclaw/soul/pipeline.py:552-686`
+- Test: `tests/test_pipeline_advanced.py` or existing layer-updater tests
+
+**Step 1: Write failing helper tests**
+
+Add tests for:
+
+```python
+async def test_apply_new_dislikes_persists_preference_and_soul_profile(...) -> None:
+    # add one new disliked topic
+    # assert preference_layer.data["disliked_topics"] includes it
+    # assert soul layer and profile files include it
+```
+
+```python
+async def test_apply_new_dislikes_invokes_existing_pool_purge_paths(...) -> None:
+    # fake database exposes purge_pool_by_disliked_topics
+    # fake embedding/LLM services are optional
+    # assert fast purge runs and returned change messages include purge count
+```
+
+```python
+async def test_pipeline_auto_promoted_avoidance_uses_dislike_writeback(...) -> None:
+    # stub avoidance speculator.tick() to return one promoted avoidance
+    # assert preference_layer.data["disliked_topics"] includes the promoted domain
+    # assert the fake pool purge path was called
+```
+
+**Step 2: Run tests to verify failure**
+
+Run:
+
+```bash
+uv run pytest tests/test_pipeline_advanced.py -k "dislike_writeback or avoidance" -v
+```
+
+Expected: FAIL because helper does not exist.
+
+**Step 3: Extract helper**
+
+Create:
+
+```python
+async def apply_new_dislikes(
+    *,
+    memory: MemoryManager,
+    database: object | None,
+    embedding_service: object | None,
+    llm_service: object | None,
+    newly_added: Sequence[str],
+    all_dislikes: Sequence[str] | None = None,
+) -> list[str]:
+    ...
+```
+
+Responsibilities:
+
+- Add `newly_added` into `memory.get_layer("preference").data["disliked_topics"]`
+  with stable order and deduplication.
+- Save the preference layer.
+- Load the persisted `soul` layer as `OnionProfile`, call
+  `populate_from_flat_preference(preference_layer.data)`, update the layer data,
+  save it, then call `memory.sync_profile_files(profile)`.
+- Leave a code comment near this sequence: first persist the layer, then sync
+  derived files.
+- Run the existing purge sequence that is currently inline in
+  `soul/layer_updaters.py`: fast `database.purge_pool_by_disliked_topics`,
+  embedding recall + LLM judge when available, and embedding-only fallback when
+  LLM is unavailable.
+- Return human-readable change messages such as `新增讨厌: ...` and purge counts.
+
+Then modify `soul/layer_updaters.py` so the existing preference-update path
+calls `apply_new_dislikes(...)` instead of owning a separate purge implementation.
+The helper becomes the only writeback/purge path used by:
+
+- preference-layer rebuilds that discover new `disliked_topics`
+- avoidance API confirm
+- avoidance pipeline auto-promote
+
+Then update `ProfileUpdatePipeline._run_speculator_tick()` or the equivalent
+avoidance tick hook: after `avoidance_tick_result.promoted`, call
+`apply_new_dislikes(...)` for the promoted domains/specifics, append a
+`LayerUpdateResult` for changelog visibility, and keep the speculator itself
+free of memory/database side effects.
+
+**Step 4: Run tests**
+
+Run:
+
+```bash
+uv run pytest tests/test_pipeline_advanced.py tests/test_api_app.py -k "dislike_writeback or avoidance_probe" -v
+```
+
+Expected: PASS.
+
+**Step 5: Commit**
+
+```bash
+git add src/openbiliclaw/soul/dislike_writeback.py src/openbiliclaw/soul/layer_updaters.py src/openbiliclaw/soul/pipeline.py tests/test_pipeline_advanced.py tests/test_api_app.py
+git commit -m "refactor: share dislike writeback"
+```
+
+---
+
 ### Task 5: Avoidance Probe API
 
 **Files:**
 - Modify: `src/openbiliclaw/api/app.py:2232-2809`
+- Modify: `src/openbiliclaw/soul/dislike_writeback.py`
 - Test: `tests/test_api_app.py`
 
 **Step 1: Write failing API tests**
@@ -577,7 +695,8 @@ Suggested helper shape:
 - `_record_probe_feedback_history(state_key, append_fn, domain, response, *, get_active, message="")`
 - `_record_probe_cognition(summary, domain, action, *, source="interest_probe", detail="")`
 - `_publish_probe_event(event_type, message, domain)`
-- `_apply_confirmed_avoidance_to_preference(domain, specifics)`
+- `_apply_confirmed_avoidance(domain, specifics)` as a thin API wrapper around
+  `soul.dislike_writeback.apply_new_dislikes(...)`
 
 Add endpoints:
 
@@ -585,41 +704,23 @@ Add endpoints:
 - `GET /api/avoidance-probes/pending`
 - `POST /api/avoidance-probes/respond`
 
-For confirmed avoidance, write to flat preference as the durable source of truth:
+For confirmed avoidance, call the shared helper from Task 4.5. The API endpoint
+should not own preference mutation or pool purge logic.
 
 ```python
-preference_layer = ctx.memory_manager.get_layer("preference")
-topics = list(preference_layer.data.get("disliked_topics", []))
-if domain not in topics:
-    topics.append(domain)
-for specific in specifics:
-    if specific not in topics:
-        topics.append(specific)
-preference_layer.data["disliked_topics"] = topics
-preference_layer.save()
+changes = await apply_new_dislikes(
+    memory=ctx.memory_manager,
+    database=getattr(ctx.memory_manager, "_database", None),
+    embedding_service=getattr(ctx, "embedding_service", None),
+    llm_service=getattr(ctx, "llm_service", None),
+    newly_added=[domain, *specifics],
+)
 ```
 
-Then sync the persisted soul layer from that preference. Do not only mutate the
-object returned by `await ctx.soul_engine.get_profile()`; that object is a
-snapshot and direct append can be lost on the next rebuild.
-
-```python
-from openbiliclaw.soul.profile import OnionProfile
-
-soul_layer = ctx.memory_manager.get_layer("soul")
-if soul_layer.data:
-    profile = OnionProfile.from_dict(soul_layer.data)
-    profile.populate_from_flat_preference(preference_layer.data)
-    soul_layer.data.clear()
-    soul_layer.data.update(profile.to_dict())
-    soul_layer.save()
-    ctx.memory_manager.sync_profile_files(profile)
-```
-
-After the preference write, call the same pool-purge path used for newly added
-`disliked_topics` in `soul/layer_updaters.py`. If extracting that code is
-needed, create a small shared helper rather than duplicating the purge logic in
-`api/app.py`.
+This helper writes the flat preference source of truth, syncs the persisted soul
+layer, and runs the pool purge sequence. Do not only mutate the object returned
+by `await ctx.soul_engine.get_profile()`; that object is a snapshot and direct
+append can be lost on the next rebuild.
 
 **Step 4: Run tests**
 
@@ -634,7 +735,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add src/openbiliclaw/api/app.py tests/test_api_app.py
+git add src/openbiliclaw/api/app.py src/openbiliclaw/soul/dislike_writeback.py tests/test_api_app.py
 git commit -m "feat: add avoidance probe API"
 ```
 
@@ -671,6 +772,12 @@ async def test_proactive_probe_push_publishes_only_one_probe_per_tick() -> None:
     # last_probe_kind should update so the next call prefers the other kind
 ```
 
+```python
+async def test_proactive_probe_push_does_not_record_kind_when_publish_fails() -> None:
+    # selected interest probe has no stream subscribers, so _publish_event returns False
+    # last_probe_kind must remain unchanged and history/cooldown must not be recorded
+```
+
 **Step 2: Run tests to verify failure**
 
 Run:
@@ -683,22 +790,23 @@ Expected: FAIL because controller has no avoidance publisher.
 
 **Step 3: Implement publisher**
 
-Add `_publish_avoidance_probe_if_available()`:
+Refactor publishing into a single selection/publish flow:
 
-- Read `self.soul_engine._avoidance_speculator`.
-- Call `get_active_avoidances()`.
-- Load runtime state.
-- Purge `probed_avoidance_domains` and `probed_avoidance_axes` older than `_PROBE_COOLDOWN_HOURS`.
-- Use `choose_next_avoidance_candidate()`.
-- Publish `avoidance.probe`.
-- Only record history after `_publish_event()` returns truthy.
+- `_select_probe_payload(kind)` returns `None` or a tuple containing the event
+  type, event payload, and an `on_delivered()` callback.
+- For `kind == "interest"`, move the existing candidate-selection/history logic
+  from `_publish_interest_probe_if_available()` into this selector.
+- For `kind == "avoidance"`, select from
+  `self.soul_engine._avoidance_speculator.get_active_avoidances()`, purge stale
+  `probed_avoidance_domains` / `probed_avoidance_axes`, use
+  `choose_next_avoidance_candidate()`, and return an `avoidance.probe` payload.
+- The `on_delivered()` callback records only the history/cooldown for the probe
+  that was actually delivered.
 
 Do not call both positive and negative publishers unconditionally in one loop.
-Instead add an arbiter, for example `_publish_probe_if_available()`, that:
-
-First adjust the existing positive publisher to return `bool` (`True` when it
-actually delivered an `interest.probe`, `False` otherwise). Keep existing
-callers compatible by ignoring the return value where they do not need it.
+Instead add an arbiter `_publish_probe_if_available()` that selects at most one
+payload, publishes it, and invokes the callback only after `_publish_event()`
+returns truthy.
 
 ```python
 async def _publish_probe_if_available(self) -> None:
@@ -706,20 +814,22 @@ async def _publish_probe_if_available(self) -> None:
     last_kind = str(state.get("last_probe_kind", ""))
     order = ("avoidance", "interest") if last_kind == "interest" else ("interest", "avoidance")
     for kind in order:
-        if kind == "interest":
-            delivered = await self._publish_interest_probe_if_available(record_kind=False)
-        else:
-            delivered = await self._publish_avoidance_probe_if_available(record_kind=False)
+        selected = self._select_probe_payload(kind)
+        if selected is None:
+            continue
+        event_type, payload, on_delivered = selected
+        delivered = await self._publish_event(event_type, payload)
         if delivered:
+            on_delivered()
             state = self.memory_manager.load_discovery_runtime_state()
             state["last_probe_kind"] = kind
             self.memory_manager.save_discovery_runtime_state(state)
             return
 ```
 
-The exact implementation can avoid the `record_kind` parameter by extracting a
-shared candidate/publish helper. The behavioral requirement is one probe event
-per proactive tick, alternating polarity when both pools have candidates.
+If publish fails because no stream subscriber is available, do not record
+`last_probe_kind`, probed-domain cooldown, or feedback history. The next loop
+must be free to try the same kind again.
 
 Call only the arbiter from `_loop_proactive_push()`.
 
