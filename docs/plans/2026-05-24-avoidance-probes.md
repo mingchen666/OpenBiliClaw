@@ -404,6 +404,130 @@ git commit -m "feat: generate avoidance probes"
 
 ---
 
+### Task 3.5: Extract Shared Dislike Helpers
+
+**Files:**
+- Add: `src/openbiliclaw/soul/dislike_writeback.py`
+- Modify: `src/openbiliclaw/soul/layer_updaters.py:184-275`
+- Test: `tests/test_pipeline_advanced.py` or existing layer-updater tests
+
+This is a pure refactor before avoidance runtime wiring. Do it before Task 4 so
+there is no commit where an avoidance promote can update `avoidance_state.json`
+without writing `disliked_topics` or purging the candidate pool.
+
+**Step 1: Write failing helper tests**
+
+Add tests for:
+
+```python
+async def test_apply_new_dislikes_persists_preference_and_soul_profile(...) -> None:
+    # add one new disliked topic
+    # assert preference_layer.data["disliked_topics"] includes it
+    # assert soul layer and profile files include it
+```
+
+```python
+async def test_purge_pool_for_new_dislikes_invokes_existing_pool_purge_paths(...) -> None:
+    # fake database exposes purge_pool_by_disliked_topics
+    # fake embedding/LLM services are optional
+    # assert fast purge runs and returned change messages include purge count
+```
+
+```python
+async def test_layer_updater_uses_purge_helper_without_rewriting_preference(...) -> None:
+    # analyzer path already wrote updated_preference and populated the in-memory profile
+    # assert it calls purge_pool_for_new_dislikes(newly_added, all_dislikes)
+    # assert it does not call apply_new_dislikes(), avoiding duplicate flat->onion writes
+```
+
+**Step 2: Run tests to verify failure**
+
+Run:
+
+```bash
+uv run pytest tests/test_pipeline_advanced.py -k "dislike_writeback or purge_pool_for_new_dislikes" -v
+```
+
+Expected: FAIL because helpers do not exist.
+
+**Step 3: Extract helpers with a clear seam**
+
+Create `src/openbiliclaw/soul/dislike_writeback.py` with:
+
+```python
+def merge_new_dislikes_into_preference(
+    *,
+    memory: MemoryManager,
+    topics: Sequence[str],
+) -> tuple[list[str], list[str]]:
+    ...
+
+async def purge_pool_for_new_dislikes(
+    *,
+    database: object | None,
+    embedding_service: object | None,
+    llm_service: object | None,
+    newly_added: Sequence[str],
+    all_dislikes: Sequence[str],
+) -> list[str]:
+    ...
+
+async def apply_new_dislikes(
+    *,
+    memory: MemoryManager,
+    database: object | None,
+    embedding_service: object | None,
+    llm_service: object | None,
+    topics: Sequence[str],
+) -> list[str]:
+    ...
+```
+
+Responsibilities:
+
+- `merge_new_dislikes_into_preference()` performs stable, idempotent set-add into
+  `memory.get_layer("preference").data["disliked_topics"]`, saves the preference
+  layer, and returns `(actually_added, all_dislikes)`.
+- `purge_pool_for_new_dislikes()` owns the existing pool purge sequence that is
+  currently inline in `soul/layer_updaters.py`: fast
+  `database.purge_pool_by_disliked_topics`, embedding recall + LLM judge when
+  available, and embedding-only fallback when LLM is unavailable.
+- `apply_new_dislikes()` is for avoidance confirm / auto-promote paths. It calls
+  `merge_new_dislikes_into_preference()`, loads the persisted `soul` layer as
+  `OnionProfile`, calls `populate_from_flat_preference(preference_layer.data)`,
+  updates the soul layer data, saves it, then calls
+  `memory.sync_profile_files(profile)`. Leave a code comment near this sequence:
+  first persist the layer, then sync derived files. Finally it calls
+  `purge_pool_for_new_dislikes()` for `actually_added`.
+- `apply_new_dislikes()` should no-op the purge when `actually_added` is empty.
+
+Then modify `soul/layer_updaters.py`:
+
+- Keep the existing analyzer path as owner of the full `updated_preference`
+  write and in-memory `profile.populate_from_flat_preference(updated_preference)`.
+- For `newly_added_dislikes`, call only `purge_pool_for_new_dislikes(...)`.
+  Do not call `apply_new_dislikes(...)` from the analyzer path, because the flat
+  preference and onion profile have already been updated there.
+
+**Step 4: Run tests**
+
+Run:
+
+```bash
+uv run pytest tests/test_pipeline_advanced.py -k "dislike_writeback or purge_pool_for_new_dislikes" -v
+```
+
+Expected: PASS.
+
+**Step 5: Commit**
+
+```bash
+git add src/openbiliclaw/soul/dislike_writeback.py src/openbiliclaw/soul/layer_updaters.py tests/test_pipeline_advanced.py
+git commit -m "refactor: share dislike purge helpers"
+```
+
+---
+
 ### Task 4: Wire SoulEngine, Pipeline, Config, And Profile Summary
 
 **Files:**
@@ -415,8 +539,10 @@ git commit -m "feat: generate avoidance probes"
 - Modify: `src/openbiliclaw/cli.py:400-420`
 - Modify: `src/openbiliclaw/api/app.py:1395-1598`
 - Modify: `src/openbiliclaw/integrations/openclaw/bootstrap.py:55-75`
+- Modify: `src/openbiliclaw/soul/dislike_writeback.py`
 - Test: `tests/test_config.py`
 - Test: `tests/test_soul_engine.py`
+- Test: `tests/test_pipeline_advanced.py`
 - Test: `tests/test_api_app.py`
 
 **Step 1: Write failing config tests**
@@ -467,6 +593,15 @@ def test_profile_summary_includes_speculative_avoidances(...) -> None:
 
 Expected: FAIL because profile summary does not load avoidance state.
 
+In `tests/test_pipeline_advanced.py`, add:
+
+```python
+async def test_pipeline_auto_promoted_avoidance_uses_apply_new_dislikes(...) -> None:
+    # stub avoidance_speculator.tick() to return one promoted avoidance
+    # monkeypatch soul.pipeline.apply_new_dislikes or imported helper
+    # assert the helper receives the promoted topics and the fake pool purge path is reachable
+```
+
 **Step 4: Wire engine and profile summary**
 
 In `SoulEngine.__init__`, instantiate:
@@ -487,12 +622,37 @@ Pass to `ProfileUpdatePipeline`.
 
 In `SoulEngine.get_profile()`, do not attach active avoidances to the profile object. Unconfirmed avoidance probes must not reach discovery, curator, delight, or recommendation contexts.
 
-In `ProfileUpdatePipeline`, call `avoidance_speculator.observe(raw_events)` with
-the explicit-negative-only behavior from Task 2, then tick it on the same
-idle/layer-update cadence as the positive speculator. Task 4.5 wires the
-promoted-result writeback once the shared dislike helper exists. The speculator
-must remain IO-free: `promote_ready_avoidances(state)` only moves state and
-returns promoted items.
+In `ProfileUpdatePipeline`, accept an `avoidance_speculator` constructor
+argument and store it separately from the existing positive `_speculator`.
+
+Call `avoidance_speculator.observe(raw_events)` with the explicit-negative-only
+behavior from Task 2. On the same idle/layer-update cadence as the positive
+speculator, call a new sibling method `_run_avoidance_speculator_tick(result)`.
+Do not make `_run_speculator_tick()` polarity-aware; keep the existing positive
+path focused on `profile.interest.likes`.
+
+`_run_avoidance_speculator_tick(result)` should:
+
+- Load the current profile.
+- Pass `avoidance_probe_feedback_history` from runtime state into
+  `avoidance_speculator.tick(...)`.
+- Inspect `avoidance_tick_result.promoted`.
+- Convert each promoted avoidance into writeback topics using the confirmation
+  semantics from the design doc: if valid specifics exist, write those specifics;
+  otherwise write the domain.
+- Put that conversion in a small shared helper, e.g.
+  `topics_for_confirmed_avoidance(avoidance)`, so pipeline auto-promote and API
+  confirm cannot diverge.
+- Call `apply_new_dislikes(...)` from Task 3.5 with
+  `database=getattr(self._memory, "_database", None)`,
+  `embedding_service=self._embedding_service`, and the LLM service available to
+  the pipeline.
+- Append a `LayerUpdateResult` and changelog entry when any topics were added.
+
+The speculator must remain IO-free: `promote_ready_avoidances(state)` only moves
+state and returns promoted items. Task 4's commit must include this writeback
+hook; do not leave an intermediate commit where observe/tick can promote an
+avoidance without updating `disliked_topics`.
 
 In `/api/profile-summary`, load `avoidance_state.json` and return `speculative_avoidances`.
 
@@ -501,7 +661,7 @@ In `/api/profile-summary`, load `avoidance_state.json` and return `speculative_a
 Run:
 
 ```bash
-uv run pytest tests/test_config.py tests/test_api_app.py -k "avoidance_speculation or speculative_avoidances" -v
+uv run pytest tests/test_config.py tests/test_api_app.py tests/test_pipeline_advanced.py -k "avoidance_speculation or speculative_avoidances or auto_promoted_avoidance" -v
 ```
 
 Expected: PASS.
@@ -509,117 +669,8 @@ Expected: PASS.
 **Step 6: Commit**
 
 ```bash
-git add src/openbiliclaw/config.py config.example.toml src/openbiliclaw/soul/engine.py src/openbiliclaw/soul/pipeline.py src/openbiliclaw/api/runtime_context.py src/openbiliclaw/cli.py src/openbiliclaw/api/app.py src/openbiliclaw/integrations/openclaw/bootstrap.py tests/test_config.py tests/test_api_app.py
+git add src/openbiliclaw/config.py config.example.toml src/openbiliclaw/soul/engine.py src/openbiliclaw/soul/pipeline.py src/openbiliclaw/api/runtime_context.py src/openbiliclaw/cli.py src/openbiliclaw/api/app.py src/openbiliclaw/integrations/openclaw/bootstrap.py src/openbiliclaw/soul/dislike_writeback.py tests/test_config.py tests/test_soul_engine.py tests/test_pipeline_advanced.py tests/test_api_app.py
 git commit -m "feat: wire avoidance probes into soul runtime"
-```
-
----
-
-### Task 4.5: Extract Shared Dislike Writeback Helper
-
-**Files:**
-- Add: `src/openbiliclaw/soul/dislike_writeback.py`
-- Modify: `src/openbiliclaw/soul/layer_updaters.py:222-275`
-- Modify: `src/openbiliclaw/soul/pipeline.py:552-686`
-- Test: `tests/test_pipeline_advanced.py` or existing layer-updater tests
-
-**Step 1: Write failing helper tests**
-
-Add tests for:
-
-```python
-async def test_apply_new_dislikes_persists_preference_and_soul_profile(...) -> None:
-    # add one new disliked topic
-    # assert preference_layer.data["disliked_topics"] includes it
-    # assert soul layer and profile files include it
-```
-
-```python
-async def test_apply_new_dislikes_invokes_existing_pool_purge_paths(...) -> None:
-    # fake database exposes purge_pool_by_disliked_topics
-    # fake embedding/LLM services are optional
-    # assert fast purge runs and returned change messages include purge count
-```
-
-```python
-async def test_pipeline_auto_promoted_avoidance_uses_dislike_writeback(...) -> None:
-    # stub avoidance speculator.tick() to return one promoted avoidance
-    # assert preference_layer.data["disliked_topics"] includes the promoted domain
-    # assert the fake pool purge path was called
-```
-
-**Step 2: Run tests to verify failure**
-
-Run:
-
-```bash
-uv run pytest tests/test_pipeline_advanced.py -k "dislike_writeback or avoidance" -v
-```
-
-Expected: FAIL because helper does not exist.
-
-**Step 3: Extract helper**
-
-Create:
-
-```python
-async def apply_new_dislikes(
-    *,
-    memory: MemoryManager,
-    database: object | None,
-    embedding_service: object | None,
-    llm_service: object | None,
-    newly_added: Sequence[str],
-    all_dislikes: Sequence[str] | None = None,
-) -> list[str]:
-    ...
-```
-
-Responsibilities:
-
-- Add `newly_added` into `memory.get_layer("preference").data["disliked_topics"]`
-  with stable order and deduplication.
-- Save the preference layer.
-- Load the persisted `soul` layer as `OnionProfile`, call
-  `populate_from_flat_preference(preference_layer.data)`, update the layer data,
-  save it, then call `memory.sync_profile_files(profile)`.
-- Leave a code comment near this sequence: first persist the layer, then sync
-  derived files.
-- Run the existing purge sequence that is currently inline in
-  `soul/layer_updaters.py`: fast `database.purge_pool_by_disliked_topics`,
-  embedding recall + LLM judge when available, and embedding-only fallback when
-  LLM is unavailable.
-- Return human-readable change messages such as `新增讨厌: ...` and purge counts.
-
-Then modify `soul/layer_updaters.py` so the existing preference-update path
-calls `apply_new_dislikes(...)` instead of owning a separate purge implementation.
-The helper becomes the only writeback/purge path used by:
-
-- preference-layer rebuilds that discover new `disliked_topics`
-- avoidance API confirm
-- avoidance pipeline auto-promote
-
-Then update `ProfileUpdatePipeline._run_speculator_tick()` or the equivalent
-avoidance tick hook: after `avoidance_tick_result.promoted`, call
-`apply_new_dislikes(...)` for the promoted domains/specifics, append a
-`LayerUpdateResult` for changelog visibility, and keep the speculator itself
-free of memory/database side effects.
-
-**Step 4: Run tests**
-
-Run:
-
-```bash
-uv run pytest tests/test_pipeline_advanced.py tests/test_api_app.py -k "dislike_writeback or avoidance_probe" -v
-```
-
-Expected: PASS.
-
-**Step 5: Commit**
-
-```bash
-git add src/openbiliclaw/soul/dislike_writeback.py src/openbiliclaw/soul/layer_updaters.py src/openbiliclaw/soul/pipeline.py tests/test_pipeline_advanced.py tests/test_api_app.py
-git commit -m "refactor: share dislike writeback"
 ```
 
 ---
@@ -628,7 +679,6 @@ git commit -m "refactor: share dislike writeback"
 
 **Files:**
 - Modify: `src/openbiliclaw/api/app.py:2232-2809`
-- Modify: `src/openbiliclaw/soul/dislike_writeback.py`
 - Test: `tests/test_api_app.py`
 
 **Step 1: Write failing API tests**
@@ -674,6 +724,13 @@ def test_avoidance_probe_confirm_records_feedback_history(...) -> None:
     assert memory.runtime_state["avoidance_probe_feedback_history"][0]["response"] == "confirm"
 ```
 
+```python
+def test_avoidance_probe_confirm_uses_apply_new_dislikes(...) -> None:
+    # monkeypatch API module's apply_new_dislikes import
+    # assert confirm calls the shared helper instead of mutating preference inline
+    # assert embedding_service comes from ctx.soul_engine._embedding_service
+```
+
 **Step 2: Run tests to verify failure**
 
 Run:
@@ -695,7 +752,7 @@ Suggested helper shape:
 - `_record_probe_feedback_history(state_key, append_fn, domain, response, *, get_active, message="")`
 - `_record_probe_cognition(summary, domain, action, *, source="interest_probe", detail="")`
 - `_publish_probe_event(event_type, message, domain)`
-- `_apply_confirmed_avoidance(domain, specifics)` as a thin API wrapper around
+- `_apply_confirmed_avoidance(active_avoidance)` as a thin API wrapper around
   `soul.dislike_writeback.apply_new_dislikes(...)`
 
 Add endpoints:
@@ -704,16 +761,16 @@ Add endpoints:
 - `GET /api/avoidance-probes/pending`
 - `POST /api/avoidance-probes/respond`
 
-For confirmed avoidance, call the shared helper from Task 4.5. The API endpoint
+For confirmed avoidance, call the shared helper from Task 3.5. The API endpoint
 should not own preference mutation or pool purge logic.
 
 ```python
 changes = await apply_new_dislikes(
     memory=ctx.memory_manager,
-    database=getattr(ctx.memory_manager, "_database", None),
-    embedding_service=getattr(ctx, "embedding_service", None),
-    llm_service=getattr(ctx, "llm_service", None),
-    newly_added=[domain, *specifics],
+    database=ctx.database or getattr(ctx.memory_manager, "_database", None),
+    embedding_service=getattr(ctx.soul_engine, "_embedding_service", None),
+    llm_service=ctx.llm_service,
+    topics=topics_for_confirmed_avoidance(active_avoidance),
 )
 ```
 
@@ -721,6 +778,10 @@ This helper writes the flat preference source of truth, syncs the persisted soul
 layer, and runs the pool purge sequence. Do not only mutate the object returned
 by `await ctx.soul_engine.get_profile()`; that object is a snapshot and direct
 append can be lost on the next rebuild.
+
+`topics_for_confirmed_avoidance()` should be conservative: if the confirmed
+avoidance has valid specifics, write those specifics; write the domain only when
+there are no specifics or the candidate is explicitly domain-level.
 
 **Step 4: Run tests**
 
@@ -735,7 +796,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add src/openbiliclaw/api/app.py src/openbiliclaw/soul/dislike_writeback.py tests/test_api_app.py
+git add src/openbiliclaw/api/app.py tests/test_api_app.py
 git commit -m "feat: add avoidance probe API"
 ```
 
