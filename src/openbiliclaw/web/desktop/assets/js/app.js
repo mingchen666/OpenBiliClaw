@@ -263,21 +263,47 @@
       }
     }
 
+    const MAIN_PAGE_IDS = ["homePage", "profilePage", "chatPage", "settingsPage"];
+
+    function showMainPage(pageId) {
+      MAIN_PAGE_IDS.forEach((id) => {
+        const page = document.getElementById(id);
+        if (!page) return;
+        if (id === pageId) page.removeAttribute("hidden");
+        else page.setAttribute("hidden", "");
+      });
+      document.body.classList.toggle("profile-page-open", pageId === "profilePage");
+      document.body.classList.toggle("content-page-open", pageId !== "homePage");
+    }
+
     function openHomePage() {
-      document.getElementById("homePage")?.removeAttribute("hidden");
-      document.getElementById("profilePage")?.setAttribute("hidden", "");
-      document.body.classList.remove("profile-page-open");
+      showMainPage("homePage");
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
 
     function openProfilePage() {
       closeMobileMenu();
       document.querySelectorAll(".drawer.is-open, .overlay.is-open").forEach((panel) => closePanel(panel.id));
-      document.getElementById("homePage")?.setAttribute("hidden", "");
-      document.getElementById("profilePage")?.removeAttribute("hidden");
-      document.body.classList.add("profile-page-open");
+      showMainPage("profilePage");
       renderProfileDetails();
       void refreshProfile().catch(() => {});
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function openChatPage() {
+      closeMobileMenu();
+      document.querySelectorAll(".drawer.is-open, .overlay.is-open").forEach((panel) => closePanel(panel.id));
+      showMainPage("chatPage");
+      const input = document.getElementById("chatInput");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      window.setTimeout(() => input?.focus(), 100);
+    }
+
+    function openSettingsPage(panel = "models") {
+      closeMobileMenu();
+      document.querySelectorAll(".drawer.is-open, .overlay.is-open").forEach((drawer) => closePanel(drawer.id));
+      setActiveSettingsPanel(panel || "models");
+      showMainPage("settingsPage");
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
 
@@ -338,10 +364,15 @@
         void refreshProfile().catch(() => {});
       }
       if (id === "activityDrawer") renderActivityHistory();
-      if (id === "settingsModal") setActiveSettingsPanel(options.settingsPanel || "models");
       const panel = document.getElementById(id);
       panel?.classList.add("from-mobile-menu");
       openPanel(id);
+    }
+
+    function openMobilePage(id, options = {}) {
+      if (id === "profilePage") openProfilePage();
+      if (id === "chatPage") openChatPage();
+      if (id === "settingsPage") openSettingsPage(options.settingsPanel || "models");
     }
 
     function returnToMobileMenu(event) {
@@ -2296,7 +2327,7 @@
     });
     document.querySelectorAll("[data-mobile-page]").forEach((button) => {
       button.addEventListener("click", () => {
-        if (button.dataset.mobilePage === "profilePage") openProfilePage();
+        openMobilePage(button.dataset.mobilePage, { settingsPanel: button.dataset.settings });
       });
     });
     document.querySelectorAll("[data-mobile-back]").forEach((button) => {
@@ -2306,7 +2337,7 @@
     safeBind("#profileBtn", "click", openProfilePage);
     safeBind("#homeBtn", "click", openHomePage);
     safeBind("#profileMemoryMoreBtn", "click", loadMoreProfileMemory);
-    safeBind("#chatBtn", "click", () => { closeSideDrawer(); openPanel("chatDrawer"); });
+    safeBind("#chatBtn", "click", openChatPage);
     safeBind("#messagesBtn", "click", () => {
       closeSideDrawer();
       hydrateInboxFromSpeculations(state.profile?.speculative_interests);
@@ -2318,8 +2349,8 @@
     });
     safeBind("#activityBtn", "click", () => { closeSideDrawer(); renderActivityHistory(); openPanel("activityDrawer"); });
     safeBind("#activityMoreBtn", "click", () => loadActivityPage());
-    safeBind("#settingsBtn", "click", () => { closeSideDrawer(); setActiveSettingsPanel("models"); openPanel("settingsModal"); });
-    safeBind("#openSettingsHero", "click", () => { closeSideDrawer(); setActiveSettingsPanel("models"); openPanel("settingsModal"); });
+    safeBind("#settingsBtn", "click", () => openSettingsPage("models"));
+    safeBind("#openSettingsHero", "click", () => openSettingsPage("models"));
     safeBind("#dismissOnReshuffleToggle", "change", (event) => {
       state.dismissOnReshuffle = Boolean(event.target.checked);
       storageSet(DISMISS_ON_RESHUFFLE_KEY, state.dismissOnReshuffle ? "1" : "0");
