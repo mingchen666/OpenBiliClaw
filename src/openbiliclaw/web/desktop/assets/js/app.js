@@ -273,7 +273,14 @@
         else page.setAttribute("hidden", "");
       });
       document.body.classList.toggle("profile-page-open", pageId === "profilePage");
+      document.body.classList.toggle("chat-page-open", pageId === "chatPage");
       document.body.classList.toggle("content-page-open", pageId !== "homePage");
+    }
+
+    function syncTopbarHeight() {
+      const topbar = document.querySelector(".topbar");
+      if (!topbar) return;
+      document.documentElement.style.setProperty("--topbar-height", `${Math.ceil(topbar.getBoundingClientRect().height)}px`);
     }
 
     function openHomePage() {
@@ -2351,6 +2358,8 @@
     safeBind("#activityMoreBtn", "click", () => loadActivityPage());
     safeBind("#settingsBtn", "click", () => openSettingsPage("models"));
     safeBind("#openSettingsHero", "click", () => openSettingsPage("models"));
+    syncTopbarHeight();
+    window.addEventListener("resize", syncTopbarHeight);
     safeBind("#dismissOnReshuffleToggle", "change", (event) => {
       state.dismissOnReshuffle = Boolean(event.target.checked);
       storageSet(DISMISS_ON_RESHUFFLE_KEY, state.dismissOnReshuffle ? "1" : "0");
