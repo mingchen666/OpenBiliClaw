@@ -29,7 +29,7 @@
 
     <aside class="side-drawer" id="sideDrawer" aria-label="侧边菜单" aria-hidden="true">
       <div class="side-drawer-scrim" id="sideDrawerScrim"></div>
-      <div class="side-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="sideDrawerTitle">
+      <div class="side-drawer-panel" aria-labelledby="sideDrawerTitle">
         <div class="side-drawer-head">
           <div>
             <p class="eyebrow">OpenBiliClaw</p>
@@ -37,13 +37,13 @@
           </div>
           <button class="icon-btn" id="sideDrawerClose" type="button" aria-label="关闭侧边菜单">×</button>
         </div>
-        <nav class="side-drawer-nav nav-actions" aria-label="全局功能">
-          <button class="pill-btn nav-action" id="profileBtn" type="button">我的画像</button>
-          <button class="pill-btn nav-action" id="chatBtn" type="button">聊聊口味</button>
-          <button class="pill-btn nav-action" id="messagesBtn" type="button">消息</button>
-          <button class="pill-btn nav-action" id="settingsBtn" type="button">设置</button>
+        <nav class="side-drawer-nav" aria-label="全局功能">
+          <button class="nav-action" id="profileBtn" type="button"><span class="nav-glyph">◎</span><span>我的画像</span></button>
+          <button class="nav-action" id="chatBtn" type="button"><span class="nav-glyph">✦</span><span>聊聊口味</span></button>
+          <button class="nav-action" id="messagesBtn" type="button"><span class="nav-glyph">◌</span><span>消息</span></button>
+          <button class="nav-action" id="settingsBtn" type="button"><span class="nav-glyph">⌁</span><span>设置</span></button>
         </nav>
-        <aside class="hero-panel side-runtime-panel" aria-label="实时运行摘要">
+        <section class="side-section side-runtime-panel" aria-label="实时运行摘要">
           <p class="eyebrow">Runtime</p>
           <h3>推荐池实时看板</h3>
           <p id="runtimeSummary">连接 FastAPI 后，这里会显示候选池、补货和待处理行为信号。</p>
@@ -63,26 +63,13 @@
             <button class="pill-btn dark" id="loadMoreTopBtn" type="button">加载更多推荐</button>
             <button class="pill-btn" id="openSettingsHero" type="button"><span class="badge-dot"></span><span id="statusLabel">已连接本地后端</span></button>
           </div>
-        </aside>
-        <aside class="rail side-summary" aria-label="侧栏摘要">
-          <section class="panel" data-od-id="profile-rail">
-            <p class="eyebrow">Profile</p>
-            <h3>阿B 眼里的你</h3>
-            <div class="profile-chip-row" id="profileChips" style="font-size: 16px;"></div>
-            <p class="video-meta" id="profilePortrait">偏好结构化解释、长视频和跨学科桥接，对“为什么”比“是什么”更敏感。</p>
-            <div class="kv">
-              <div class="kv-row"><span>MBTI 推断</span><strong id="railMbti">INTJ</strong></div>
-              <div class="kv-row"><span>探索开放度</span><strong id="railOpenness">78%</strong></div>
-              <div class="kv-row"><span>深度偏好</span><strong id="railDepth">92%</strong></div>
-            </div>
-          </section>
-          <section class="panel" data-od-id="activity-rail">
-            <p class="eyebrow">Activity</p>
-            <h3>后台刚记住的事</h3>
-            <div class="activity-list" id="activityList"></div>
-            <div class="drawer-actions"><button class="small-btn" id="activityBtn" type="button">查看全部动态</button></div>
-          </section>
-        </aside>
+        </section>
+        <section class="side-section side-activity-section" data-od-id="activity-rail" aria-label="后台动态摘要">
+          <p class="eyebrow">Activity</p>
+          <h3>后台刚记住的事</h3>
+          <div class="activity-list" id="activityList"></div>
+          <div class="drawer-actions"><button class="small-btn" id="activityBtn" type="button">查看全部动态</button></div>
+        </section>
       </div>
     </aside>
 
