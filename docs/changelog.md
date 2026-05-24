@@ -6,6 +6,7 @@
 
 ## v0.3.91 / extension v0.3.48: 挑战式兴趣探针发布（2026-05-25）
 
+- 主页 SEO 全面补齐：`docs/index.html` 增加 canonical、hreflang(zh-CN/en/x-default)、完整 OG + Twitter Card、JSON-LD（SoftwareApplication + SoftwareSourceCode + WebSite）、关键词、theme-color、preconnect；i18n 切换语言时同步覆盖 title / description / og / twitter / locale。首屏 hero 图 `fetchpriority=high`，截图全部 `loading=lazy`+显式宽高，CLS 0.00 / LCP 197ms。Lighthouse 移动 + 桌面四项均 100。新增 `docs/sitemap.xml`（含 image sitemap）、`docs/robots.txt`、`docs/seo.md`（Search Console / Bing 提交清单 + 长期维护要点）。
 - 后端源码版本仍为 v0.3.91；浏览器插件版本提升到 extension v0.3.48，准备发布 `extension-v0.3.48`。
 - 兴趣探针新增 near / lateral / bridge / wildcard 四档挑战距离，system prompt 保留距离定义，运行时按近期历史和画像状态控制探索远近。
 - 探针反馈改成 4-way 语义：`positive`、`weak_positive`、`negative`、`neutral`；聊天、卡片、OpenClaw adapter 和 avoidance probe 的反向语义都走同一套写回分支。

@@ -5,6 +5,7 @@
 ## 项目概览
 
 - [项目主页](index.html) — GitHub Pages 首页，一句话安装、插件下载、GitHub 入口和产品卖点概览
+- [主页 SEO 维护指南](seo.md) — Search Console / Bing 提交清单、sitemap / OG / JSON-LD 长期维护要点
 - [项目规格说明书 (SPEC)](spec.md) — 完整的项目设计与规划
 - [v0.1 开发任务清单](v0.1-todolist.md) — 当前版本的开发主线
 - [架构设计](architecture.md) — 系统架构与模块关系
