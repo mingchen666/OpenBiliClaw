@@ -461,6 +461,9 @@ class RecommendationClickIn(BaseModel):
 
     recommendation_id: int | None = None
     bvid: str = ""
+    content_id: str = ""
+    content_url: str = ""
+    source_platform: str = ""
     title: str = ""
     topic_label: str = ""
     up_name: str = ""

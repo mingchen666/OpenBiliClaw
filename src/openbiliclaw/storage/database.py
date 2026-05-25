@@ -2635,7 +2635,14 @@ class Database:
         self._ensure_fresh_read()
         cursor = self.conn.execute(
             """
-            SELECT r.*, c.title AS title, c.up_name AS up_name
+            SELECT
+                r.*,
+                r.topic AS topic_label,
+                c.title AS title,
+                c.up_name AS up_name,
+                COALESCE(c.content_id, r.bvid) AS content_id,
+                COALESCE(c.content_url, '') AS content_url,
+                COALESCE(c.source_platform, '') AS source_platform
             FROM recommendations AS r
             LEFT JOIN content_cache AS c ON c.bvid = r.bvid OR c.content_id = r.bvid
             WHERE r.id = ?
