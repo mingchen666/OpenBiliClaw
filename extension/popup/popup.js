@@ -4,6 +4,7 @@ import {
   buildFeedbackPayload,
   buildNextCognitionHistoryState,
   buildContentUrl,
+  buildRecommendationClickPayload,
   buildVideoUrl,
   formatRelativeTimestamp,
   getCommentSubmitUiState,
@@ -2924,6 +2925,9 @@ function attachFeedbackRuntimeProgress(statusLine) {
  *   title?: string,
  *   topic_label?: string,
  *   up_name?: string,
+ *   content_id?: string,
+ *   content_url?: string,
+ *   source_platform?: string,
  * }} [context]
  */
 async function openRecommendation(bvid, context = {}) {
@@ -2933,14 +2937,12 @@ async function openRecommendation(bvid, context = {}) {
     return;
   }
   // Fire-and-forget click report (best effort). Runs in parallel with tab.create.
-  void reportRecommendationClick({
-    bvid: bvid || context.content_id || "",
-    title: context.title || "",
-    recommendation_id:
-      typeof context.id === "number" ? context.id : null,
-    topic_label: context.topic_label || "",
-    up_name: context.up_name || "",
-  });
+  void reportRecommendationClick(
+    buildRecommendationClickPayload(
+      { ...context, bvid: bvid || context.bvid || context.content_id || "" },
+      url,
+    ),
+  );
   await chrome.tabs.create({ url });
 }
 
