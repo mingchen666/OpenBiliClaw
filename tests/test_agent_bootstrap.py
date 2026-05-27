@@ -262,6 +262,188 @@ def test_wait_for_cookie_sync_times_out(tmp_path: Path) -> None:
     )
 
 
+def _service_check_runner(payload: dict[str, object]):
+    def runner(
+        _cmd: list[str],
+        *,
+        check: bool = True,
+        cwd: Path | None = None,
+    ) -> bootstrap.CommandResult:
+        return bootstrap.CommandResult(
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    return runner
+
+
+def test_pre_init_service_checks_pass_when_probe_reports_services_ready(tmp_path: Path) -> None:
+    payload = {
+        "services": {
+            "llm": {"available": True, "provider": "deepseek", "error": ""},
+            "embedding": {
+                "available": True,
+                "provider": "ollama",
+                "model": "bge-m3",
+                "error": "",
+            },
+        }
+    }
+
+    result = bootstrap.run_pre_init_service_checks(
+        tmp_path,
+        "local",
+        runner=_service_check_runner(payload),
+    )
+
+    assert result["available"] is True
+    assert result["failed"] == []
+    assert result["services"]["llm"]["provider"] == "deepseek"
+    assert result["services"]["embedding"]["provider"] == "ollama"
+
+
+def test_pre_init_service_checks_fail_when_llm_probe_fails(tmp_path: Path) -> None:
+    payload = {
+        "services": {
+            "llm": {"available": False, "provider": "deepseek", "error": "401 unauthorized"},
+            "embedding": {
+                "available": True,
+                "provider": "ollama",
+                "model": "bge-m3",
+                "error": "",
+            },
+        }
+    }
+
+    result = bootstrap.run_pre_init_service_checks(
+        tmp_path,
+        "local",
+        runner=_service_check_runner(payload),
+    )
+
+    assert result["available"] is False
+    assert result["failed"] == ["llm"]
+    assert result["services"]["llm"]["error"] == "401 unauthorized"
+
+
+def test_pre_init_service_checks_fail_when_embedding_probe_fails(tmp_path: Path) -> None:
+    payload = {
+        "services": {
+            "llm": {"available": True, "provider": "deepseek", "error": ""},
+            "embedding": {
+                "available": False,
+                "provider": "ollama",
+                "model": "bge-m3",
+                "error": "empty embedding vector",
+            },
+        }
+    }
+
+    result = bootstrap.run_pre_init_service_checks(
+        tmp_path,
+        "local",
+        runner=_service_check_runner(payload),
+    )
+
+    assert result["available"] is False
+    assert result["failed"] == ["embedding"]
+    assert result["services"]["embedding"]["error"] == "empty embedding vector"
+
+
+def test_pre_init_service_checks_accept_disabled_embedding(tmp_path: Path) -> None:
+    payload = {
+        "services": {
+            "llm": {"available": True, "provider": "deepseek", "error": ""},
+            "embedding": {
+                "available": True,
+                "provider": "",
+                "model": "",
+                "skipped": True,
+                "error": "",
+            },
+        }
+    }
+
+    result = bootstrap.run_pre_init_service_checks(
+        tmp_path,
+        "local",
+        runner=_service_check_runner(payload),
+    )
+
+    assert result["available"] is True
+    assert result["failed"] == []
+    assert result["services"]["embedding"]["skipped"] is True
+
+
+def test_run_blocks_auto_init_when_pre_init_service_check_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_minimal_config(tmp_path, embedding_provider="ollama", embedding_model="bge-m3")
+    args = bootstrap.build_arg_parser().parse_args(
+        [
+            "--project-dir",
+            str(tmp_path),
+            "--mode",
+            "local",
+            "--skip-install",
+            "--no-xhs",
+            "--no-douyin",
+            "--no-youtube",
+        ]
+    )
+    init_calls: list[object] = []
+
+    monkeypatch.setattr(
+        bootstrap,
+        "ensure_repo_checkout",
+        lambda project_dir, _repo_url, _branch: project_dir,
+    )
+    monkeypatch.setattr(bootstrap, "ensure_config_toml", lambda _project_dir: tmp_path / "config.toml")
+    monkeypatch.setattr(bootstrap, "start_local_backend", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(bootstrap, "wait_for_health", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        bootstrap,
+        "run_pre_init_service_checks",
+        lambda *_args, **_kwargs: {
+            "available": False,
+            "failed": ["embedding"],
+            "services": {
+                "llm": {"available": True, "provider": "openai", "error": ""},
+                "embedding": {
+                    "available": False,
+                    "provider": "ollama",
+                    "model": "bge-m3",
+                    "error": "empty embedding vector",
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "run_init_streaming",
+        lambda *args, **_kwargs: init_calls.append(args) or 0,
+    )
+
+    returncode = bootstrap.run(args)
+
+    output = capsys.readouterr().out
+    status_lines = [
+        json.loads(line.removeprefix("BOOTSTRAP_STATUS: "))
+        for line in output.splitlines()
+        if line.startswith("BOOTSTRAP_STATUS: ")
+    ]
+    assert returncode == 0
+    assert init_calls == []
+    assert any(
+        event["status"] == "service_check_failed"
+        and event["message"] == "pre_init_service_check_failed"
+        for event in status_lines
+    )
+
+
 def test_docker_runtime_config_copy_commands(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     data_dir.mkdir()

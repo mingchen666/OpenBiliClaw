@@ -940,6 +940,206 @@ def run_capture(cmd: list[str], *, check: bool = True, cwd: Path | None = None) 
     return result
 
 
+SERVICE_CHECK_PROBE = r"""
+from __future__ import annotations
+
+import asyncio
+import json
+
+
+async def main() -> None:
+    result = {
+        "services": {
+            "llm": {
+                "available": False,
+                "provider": "",
+                "error": "",
+            },
+            "embedding": {
+                "available": False,
+                "provider": "",
+                "model": "",
+                "skipped": False,
+                "error": "",
+            },
+        }
+    }
+
+    cfg = None
+    registry = None
+    try:
+        from openbiliclaw.config import load_config
+        from openbiliclaw.llm.registry import build_llm_registry
+
+        cfg = load_config()
+        registry = build_llm_registry(cfg)
+        provider = str(cfg.llm.default_provider or registry.default_provider).strip().lower()
+        result["services"]["llm"]["provider"] = provider
+        response = await registry.complete_provider(
+            provider,
+            [{"role": "user", "content": "Reply with OK only."}],
+            temperature=0,
+            max_tokens=8,
+        )
+        if str(getattr(response, "content", "") or "").strip():
+            result["services"]["llm"]["available"] = True
+        else:
+            result["services"]["llm"]["error"] = "empty completion response"
+    except Exception as exc:
+        result["services"]["llm"]["error"] = f"{type(exc).__name__}: {exc}"
+
+    try:
+        from openbiliclaw.config import load_config
+        from openbiliclaw.llm.registry import build_embedding_service, build_llm_registry
+
+        if cfg is None:
+            cfg = load_config()
+        if registry is None:
+            registry = build_llm_registry(cfg)
+
+        embedding_cfg = cfg.llm.embedding
+        provider = str(embedding_cfg.provider or "").strip().lower()
+        model = str(embedding_cfg.model or "").strip()
+        result["services"]["embedding"]["provider"] = provider
+        result["services"]["embedding"]["model"] = model
+        if not provider:
+            result["services"]["embedding"]["available"] = True
+            result["services"]["embedding"]["skipped"] = True
+        else:
+            embedding_service = build_embedding_service(cfg, registry)
+            if embedding_service is None:
+                result["services"]["embedding"]["error"] = (
+                    "embedding service could not be built"
+                )
+            else:
+                vector = await embedding_service.embed("openbiliclaw bootstrap embedding check")
+                if vector:
+                    result["services"]["embedding"]["available"] = True
+                else:
+                    result["services"]["embedding"]["error"] = "empty embedding vector"
+    except Exception as exc:
+        result["services"]["embedding"]["error"] = f"{type(exc).__name__}: {exc}"
+
+    print(json.dumps(result, ensure_ascii=False))
+
+
+asyncio.run(main())
+"""
+
+
+def build_service_check_command(mode: str, project_dir: Path) -> list[str]:
+    """Build the command that probes LLM + embedding readiness."""
+
+    if mode == "docker":
+        return [
+            "docker",
+            "exec",
+            "-i",
+            DOCKER_CONTAINER_NAME,
+            "python",
+            "-c",
+            SERVICE_CHECK_PROBE,
+        ]
+
+    if detect_uv():
+        return ["uv", "run", "python", "-c", SERVICE_CHECK_PROBE]
+
+    if os.name == "nt":
+        venv_python = project_dir / ".venv" / "Scripts" / "python.exe"
+    else:
+        venv_python = project_dir / ".venv" / "bin" / "python"
+    if venv_python.exists():
+        return [str(venv_python), "-c", SERVICE_CHECK_PROBE]
+    return [sys.executable, "-c", SERVICE_CHECK_PROBE]
+
+
+def _parse_service_check_output(stdout: str) -> dict[str, Any]:
+    """Parse the JSON payload from the service-check probe."""
+
+    for line in reversed(stdout.splitlines()):
+        text = line.strip()
+        if not (text.startswith("{") and text.endswith("}")):
+            continue
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    raise ValueError("service check probe did not return JSON")
+
+
+def _normalize_service_entry(raw: Any) -> dict[str, Any]:
+    entry = dict(raw) if isinstance(raw, dict) else {}
+    entry["available"] = bool(entry.get("available", False))
+    entry["provider"] = str(entry.get("provider", "") or "")
+    entry["model"] = str(entry.get("model", "") or "")
+    entry["error"] = str(entry.get("error", "") or "")
+    if "skipped" in entry:
+        entry["skipped"] = bool(entry.get("skipped"))
+    return entry
+
+
+def _service_check_command_failed_result(command: list[str], result: CommandResult) -> dict[str, Any]:
+    error = (result.stderr or result.stdout or "service check command failed").strip()
+    services = {
+        "llm": {
+            "available": False,
+            "provider": "",
+            "model": "",
+            "error": error,
+        },
+        "embedding": {
+            "available": False,
+            "provider": "",
+            "model": "",
+            "skipped": False,
+            "error": error,
+        },
+    }
+    return {
+        "available": False,
+        "failed": ["llm", "embedding"],
+        "services": services,
+        "command": shlex.join(command),
+        "returncode": result.returncode,
+    }
+
+
+def run_pre_init_service_checks(
+    project_dir: Path,
+    mode: str,
+    *,
+    runner: Callable[[list[str]], CommandResult] = run_capture,
+) -> dict[str, Any]:
+    """Probe required AI services before auto-running init."""
+
+    command = build_service_check_command(mode, project_dir)
+    result = runner(command, check=False, cwd=project_dir)
+    if result.returncode != 0:
+        return _service_check_command_failed_result(command, result)
+
+    try:
+        payload = _parse_service_check_output(result.stdout)
+    except (json.JSONDecodeError, ValueError) as exc:
+        failed = CommandResult(returncode=1, stdout=result.stdout, stderr=str(exc))
+        return _service_check_command_failed_result(command, failed)
+
+    raw_services = payload.get("services", {})
+    services = {
+        "llm": _normalize_service_entry(
+            raw_services.get("llm", {}) if isinstance(raw_services, dict) else {}
+        ),
+        "embedding": _normalize_service_entry(
+            raw_services.get("embedding", {}) if isinstance(raw_services, dict) else {}
+        ),
+    }
+    failed_services = [name for name, service in services.items() if not service["available"]]
+    return {
+        "available": not failed_services,
+        "failed": failed_services,
+        "services": services,
+        "command": shlex.join(command),
+        "returncode": result.returncode,
+    }
+
+
 def run_streaming(
     cmd: list[str],
     *,
@@ -2276,6 +2476,31 @@ def run(args: argparse.Namespace) -> int:
                     + ", ".join(init_decisions["missing"])
                 )
                 return 0
+
+            info("Checking LLM provider and embedding service before init...")
+            service_checks = run_pre_init_service_checks(project_dir, mode)
+            if not service_checks["available"]:
+                emit(
+                    BootstrapResult(
+                        "service_check_failed",
+                        "pre_init_service_check_failed",
+                        {**health_details, "service_checks": service_checks},
+                    )
+                )
+                failed = ", ".join(service_checks.get("failed", [])) or "unknown"
+                info(
+                    "Pre-init AI service check failed for: "
+                    f"{failed}. Fix the provider/API key/Ollama/model, then re-run "
+                    "the printed bootstrap command. Init has not been run."
+                )
+                return 0
+            emit(
+                BootstrapResult(
+                    "ok",
+                    "pre_init_service_check_passed",
+                    {**health_details, "service_checks": service_checks},
+                )
+            )
 
             info(
                 "All credentials present — running 'openbiliclaw init' to reach usable state... "
