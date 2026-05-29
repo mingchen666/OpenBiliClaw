@@ -132,6 +132,11 @@ class SupportsEventDatabase(Protocol):
 class SupportsProfileEngine(Protocol):
     async def get_profile(self) -> Any: ...
 
+    # Effective disliked topics (AI dislikes + flat preference dislikes with
+    # user overrides applied). Used by the proactive-delight hard filter so a
+    # manually added dislike filters and a manually removed one does not.
+    def get_effective_disliked_topics(self) -> list[str]: ...
+
     # Optional: the soul engine exposes a ProfileUpdatePipeline that the
     # refresh loop ticks periodically. The attribute may be missing on
     # older test doubles, so callers should `getattr(..., "pipeline", None)`.
@@ -664,14 +669,21 @@ class ContinuousRefreshController:
         }
 
     def _load_disliked_topic_phrases(self) -> list[str]:
-        """Return lowercased disliked-topic substrings from the preference layer.
+        """Return lowercased *effective* disliked-topic substrings.
 
-        Returns an empty list if the layer is missing or the field is
-        unset.  Phrases are used as case-insensitive substring matches
-        against title + tags, so generic entries like '低质内容' won't
-        match anything concrete (which is fine — they're meant for the
-        evaluator, not the proactive push filter).
+        Sourced from the soul engine's ``get_effective_disliked_topics`` —
+        AI dislikes ∪ flat preference dislikes, with user overrides applied
+        (base-then-overlay), so a manually added dislike filters here and a
+        manually removed one does not. Phrases are case-insensitive substring
+        matches against title + tags. Falls back to the raw preference layer
+        for older soul-engine doubles lacking the method.
         """
+        getter = getattr(self.soul_engine, "get_effective_disliked_topics", None)
+        if callable(getter):
+            try:
+                return [str(item).strip().lower() for item in getter() if str(item).strip()]
+            except Exception:
+                return []
         try:
             layer = self.memory_manager.get_layer("preference")
         except Exception:

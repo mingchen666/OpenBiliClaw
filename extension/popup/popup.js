@@ -65,6 +65,8 @@ import {
   respondToAvoidanceProbe,
   respondToDelight,
   respondToInterestProbe,
+  fetchEditState,
+  submitProfileEdit,
   startChatTurn,
   submitFeedback,
   updateConfig,
@@ -160,6 +162,10 @@ const elements = {
   profileEmptyTitle: document.getElementById("profileEmptyTitle"),
   profileEmptyText: document.getElementById("profileEmptyText"),
   profileCard: document.getElementById("profileCard"),
+  profileEditBar: document.getElementById("profileEditBar"),
+  profileEditToggle: document.getElementById("profileEditToggle"),
+  profileEditHint: document.getElementById("profileEditHint"),
+  profileEditPanel: document.getElementById("profileEditPanel"),
   profilePortrait: document.getElementById("profilePortrait"),
   profileTraits: document.getElementById("profileTraits"),
   profileNeeds: document.getElementById("profileNeeds"),
@@ -2628,6 +2634,7 @@ function renderProfileSummary(summary) {
       loadingMore: false,
       loadMoreError: "",
     });
+    syncProfileEditChrome(false);
     return;
   }
 
@@ -2669,6 +2676,326 @@ function renderProfileSummary(summary) {
   // Signals
   renderActiveInsights(elements.profileActiveInsights, summary.active_insights);
   renderRecentAwareness(elements.profileRecentAwareness, summary.recent_awareness);
+  syncProfileEditChrome(true);
+}
+
+// ── Editable profile (Phase 2) ──────────────────────────────────────────
+// Inline edit mode: the display card is hidden and an edit panel is rendered
+// from GET /api/profile/edit-state (un-truncated). Each control posts one
+// deterministic edit to /api/profile/edit and re-renders from the returned
+// edit_state. Edits survive profile rebuilds (server-side overrides overlay).
+
+let profileEditing = false;
+
+const EDIT_FIELD_LABELS = {
+  personality_portrait: "人格画像",
+  "core.core_traits": "核心特质",
+  "core.deep_needs": "深层需求",
+  "values_layer.values": "价值偏好",
+  "values_layer.motivational_drivers": "内在驱动力",
+  likes: "感兴趣的方向",
+  dislikes: "明显会避开",
+  "interest.favorite_up_users": "常看的 UP 主",
+  "role.life_stage": "人生阶段",
+  "role.current_phase": "当前阶段",
+  "surface.cognitive_style": "认知风格",
+};
+const EDIT_FIELD_ORDER = [
+  "personality_portrait",
+  "core.core_traits",
+  "core.deep_needs",
+  "values_layer.values",
+  "values_layer.motivational_drivers",
+  "likes",
+  "dislikes",
+  "interest.favorite_up_users",
+  "role.life_stage",
+  "role.current_phase",
+  "surface.cognitive_style",
+];
+
+function syncProfileEditChrome(initialized) {
+  if (elements.profileEditBar instanceof HTMLElement) {
+    elements.profileEditBar.hidden = !initialized;
+  }
+  if (!initialized && profileEditing) {
+    // Profile vanished while editing — bail out of edit mode quietly.
+    exitProfileEditMode({ refresh: false });
+    return;
+  }
+  if (initialized && profileEditing) {
+    // Stay in edit mode even if a background refresh re-rendered the card.
+    if (elements.profileCard instanceof HTMLElement) elements.profileCard.hidden = true;
+    if (elements.profileEditPanel instanceof HTMLElement) elements.profileEditPanel.hidden = false;
+  }
+}
+
+async function refreshEditPanel() {
+  try {
+    const editState = await fetchEditState();
+    renderEditPanel(elements.profileEditPanel, editState);
+  } catch (err) {
+    console.error("load edit-state failed:", err);
+  }
+}
+
+async function enterProfileEditMode() {
+  profileEditing = true;
+  if (elements.profileCard instanceof HTMLElement) elements.profileCard.hidden = true;
+  if (elements.profileEditPanel instanceof HTMLElement) elements.profileEditPanel.hidden = false;
+  if (elements.profileEditHint instanceof HTMLElement) elements.profileEditHint.hidden = false;
+  if (elements.profileEditToggle instanceof HTMLButtonElement) {
+    elements.profileEditToggle.textContent = "✓ 完成";
+  }
+  await refreshEditPanel();
+}
+
+function exitProfileEditMode({ refresh = true } = {}) {
+  profileEditing = false;
+  if (elements.profileEditPanel instanceof HTMLElement) {
+    elements.profileEditPanel.hidden = true;
+    elements.profileEditPanel.replaceChildren();
+  }
+  if (elements.profileEditHint instanceof HTMLElement) elements.profileEditHint.hidden = true;
+  if (elements.profileEditToggle instanceof HTMLButtonElement) {
+    elements.profileEditToggle.textContent = "✏️ 编辑画像";
+  }
+  if (elements.profileCard instanceof HTMLElement) elements.profileCard.hidden = false;
+  if (refresh) void loadProfileSummary({ force: true });
+}
+
+function bindProfileEditToggle() {
+  if (!(elements.profileEditToggle instanceof HTMLButtonElement)) return;
+  elements.profileEditToggle.addEventListener("click", () => {
+    if (profileEditing) exitProfileEditMode();
+    else void enterProfileEditMode();
+  });
+}
+
+async function applyProfileEdit(payload) {
+  const panel = elements.profileEditPanel;
+  if (panel instanceof HTMLElement) {
+    panel.querySelectorAll("button, input, textarea").forEach((el) => {
+      if (
+        el instanceof HTMLButtonElement ||
+        el instanceof HTMLInputElement ||
+        el instanceof HTMLTextAreaElement
+      ) {
+        el.disabled = true;
+      }
+    });
+  }
+  try {
+    const res = await submitProfileEdit(payload);
+    const next =
+      res && res.edit_state && res.edit_state.initialized
+        ? res.edit_state
+        : await fetchEditState();
+    renderEditPanel(panel, next);
+  } catch (err) {
+    console.error("profile edit failed:", err);
+    void refreshEditPanel();
+  }
+}
+
+function makeEditedBadge() {
+  const badge = document.createElement("span");
+  badge.className = "edit-badge";
+  badge.textContent = "已编辑";
+  return badge;
+}
+
+function makeResetButton(path) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "edit-reset-btn";
+  btn.textContent = "恢复 AI 建议";
+  btn.addEventListener("click", () => void applyProfileEdit({ target: path, op: "reset" }));
+  return btn;
+}
+
+function makeRemovableChip(label, onRemove) {
+  const chip = document.createElement("span");
+  chip.className = "edit-chip";
+  const text = document.createElement("span");
+  text.textContent = label;
+  chip.append(text);
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "edit-chip-remove";
+  remove.textContent = "✕";
+  remove.setAttribute("aria-label", `移除 ${label}`);
+  remove.addEventListener("click", onRemove);
+  chip.append(remove);
+  return chip;
+}
+
+function makeAddRow(placeholder, onAdd) {
+  const row = document.createElement("div");
+  row.className = "edit-add-row";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "edit-add-input";
+  input.placeholder = placeholder;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "action-button edit-add-btn";
+  btn.textContent = "添加";
+  const submit = () => {
+    const value = input.value.trim();
+    if (!value) return;
+    input.value = "";
+    void onAdd(value);
+  };
+  btn.addEventListener("click", submit);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submit();
+    }
+  });
+  row.append(input, btn);
+  return row;
+}
+
+function makeEditFieldBlock(label, edited) {
+  const block = document.createElement("div");
+  block.className = "edit-field";
+  const head = document.createElement("div");
+  head.className = "edit-field-head";
+  const title = document.createElement("span");
+  title.className = "edit-field-label";
+  title.textContent = label;
+  head.append(title);
+  if (edited) head.append(makeEditedBadge());
+  block.append(head);
+  return block;
+}
+
+function renderTextEditField(path, label, field) {
+  const block = makeEditFieldBlock(label, Boolean(field.pinned));
+  const textarea = document.createElement("textarea");
+  textarea.className = "chat-input edit-text-input";
+  textarea.rows = path === "personality_portrait" ? 4 : 2;
+  textarea.value = typeof field.value === "string" ? field.value : "";
+  block.append(textarea);
+
+  if (field.ai_suggestion) {
+    const hint = document.createElement("p");
+    hint.className = "edit-drift-hint";
+    hint.textContent = `AI 当前想更新为：${field.ai_suggestion}`;
+    block.append(hint);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "edit-field-actions";
+  const editSaveBtn = document.createElement("button");
+  editSaveBtn.type = "button";
+  editSaveBtn.className = "action-button action-primary edit-save-btn";
+  editSaveBtn.textContent = "保存";
+  editSaveBtn.addEventListener("click", () => {
+    const value = textarea.value.trim();
+    if (!value) return;
+    void applyProfileEdit({ target: path, op: "set", value });
+  });
+  actions.append(editSaveBtn);
+  if (field.pinned) actions.append(makeResetButton(path));
+  block.append(actions);
+  return block;
+}
+
+function renderListEditField(path, label, field) {
+  const items = Array.isArray(field.items) ? field.items : [];
+  const added = Array.isArray(field.added) ? field.added : [];
+  const removed = Array.isArray(field.removed) ? field.removed : [];
+  const edited = added.length > 0 || removed.length > 0;
+  const block = makeEditFieldBlock(label, edited);
+
+  const chips = document.createElement("div");
+  chips.className = "edit-chip-list";
+  for (const item of items) {
+    chips.append(
+      makeRemovableChip(item, () => applyProfileEdit({ target: path, op: "remove", value: item })),
+    );
+  }
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "edit-empty";
+    empty.textContent = "还没有，添加一个吧";
+    chips.append(empty);
+  }
+  block.append(chips);
+  block.append(makeAddRow("添加一项", (value) => applyProfileEdit({ target: path, op: "add", value })));
+  if (edited) {
+    const actions = document.createElement("div");
+    actions.className = "edit-field-actions";
+    actions.append(makeResetButton(path));
+    block.append(actions);
+  }
+  return block;
+}
+
+function renderInterestEditField(path, label, field) {
+  const domains = Array.isArray(field.domains) ? field.domains : [];
+  const removed = Array.isArray(field.removed_domains) ? field.removed_domains : [];
+  const edited = removed.length > 0 || domains.some((d) => d && d.user_added);
+  const block = makeEditFieldBlock(label, edited);
+
+  const chips = document.createElement("div");
+  chips.className = "edit-chip-list";
+  for (const dom of domains) {
+    if (!dom || !dom.domain) continue;
+    const name = dom.user_added ? `${dom.domain} ＋` : dom.domain;
+    chips.append(
+      makeRemovableChip(name, () =>
+        applyProfileEdit({ target: path, op: "remove", value: dom.domain }),
+      ),
+    );
+  }
+  if (domains.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "edit-empty";
+    empty.textContent = "还没有，添加一个吧";
+    chips.append(empty);
+  }
+  block.append(chips);
+  const placeholder = path === "dislikes" ? "添加要避开的领域" : "添加感兴趣的领域";
+  block.append(makeAddRow(placeholder, (value) => applyProfileEdit({ target: path, op: "add", value })));
+  if (edited) {
+    const actions = document.createElement("div");
+    actions.className = "edit-field-actions";
+    actions.append(makeResetButton(path));
+    block.append(actions);
+  }
+  return block;
+}
+
+function renderEditPanel(container, editState) {
+  if (!(container instanceof HTMLElement)) return;
+  container.replaceChildren();
+  if (!editState || !editState.initialized || !editState.fields) {
+    const note = document.createElement("p");
+    note.className = "profile-edit-note";
+    note.textContent = "画像还没攒起来，先跑一遍 openbiliclaw init 再回来编辑。";
+    container.append(note);
+    return;
+  }
+  const intro = document.createElement("p");
+  intro.className = "profile-edit-note";
+  intro.textContent = "改完即时生效，且不会被后续自动重建覆盖；删错了点「恢复 AI 建议」即可。";
+  container.append(intro);
+
+  const fields = editState.fields;
+  for (const path of EDIT_FIELD_ORDER) {
+    const field = fields[path];
+    if (!field || typeof field !== "object") continue;
+    const label = EDIT_FIELD_LABELS[path] || path;
+    let block = null;
+    if (field.type === "text") block = renderTextEditField(path, label, field);
+    else if (field.type === "list") block = renderListEditField(path, label, field);
+    else if (field.type === "interest") block = renderInterestEditField(path, label, field);
+    if (block) container.append(block);
+  }
 }
 
 function appendChatMessage(role, content, { turnId = "", part = "" } = {}) {
@@ -4418,6 +4745,8 @@ function bindProfileHistoryLoading() {
       void loadMoreCognitionHistory();
     });
   }
+
+  bindProfileEditToggle();
 }
 
 function bindRefreshButton() {

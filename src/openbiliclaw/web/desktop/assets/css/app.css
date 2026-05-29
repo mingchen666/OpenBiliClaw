@@ -653,3 +653,79 @@
 .favorite-btn[aria-pressed="true"] { color: #e8a33d; }
 .favorite-btn[aria-pressed="true"] svg { fill: currentColor; }
 .nav-glyph svg { width: 16px; height: 16px; }
+
+/* ── Editable profile (Phase 3, desktop) ── */
+.profile-edit-bar { display: flex; justify-content: flex-end; margin-bottom: 14px; }
+.profile-edit-note { margin-bottom: 14px; }
+.edit-field {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.edit-field-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.edit-field-label { font-size: 14px; font-weight: 700; color: var(--fg); }
+.edit-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent), white 82%);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+.edit-chip-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.edit-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--fg-2);
+  background: var(--surface-warm);
+}
+.edit-chip-remove {
+  width: 20px; height: 20px;
+  border: 0; border-radius: 50%;
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--meta);
+  font-size: 12px; line-height: 1; cursor: pointer;
+}
+.edit-chip-remove:hover { background: color-mix(in oklab, var(--danger), white 78%); color: var(--danger); }
+.edit-add-row { display: flex; gap: 8px; }
+.edit-add-input {
+  flex: 1; min-width: 0;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border-soft);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 14px;
+}
+.edit-text-input {
+  width: 100%; box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border-soft);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 14px; line-height: 1.6;
+  resize: vertical;
+  margin-bottom: 8px;
+}
+.edit-drift-hint {
+  font-size: 13px;
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent), white 86%);
+  border-radius: 10px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+}
+.edit-field-actions { display: flex; align-items: center; gap: 12px; }
+.edit-reset-btn {
+  border: 0; background: transparent;
+  color: var(--meta);
+  font-size: 13px; text-decoration: underline; cursor: pointer;
+}
+.edit-reset-btn:hover { color: var(--accent); }

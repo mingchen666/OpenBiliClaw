@@ -32,6 +32,7 @@ from .dialogue_insight_analyzer import (
     DialogueInsightAnalyzer,
 )
 from .insight_analyzer import InsightAnalyzer
+from .overrides import ProfileOverrides, apply_edit, apply_overrides
 from .pipeline import ProfileUpdatePipeline
 from .preference_analyzer import PreferenceAnalyzer
 from .profile import (
@@ -52,6 +53,27 @@ SOURCE_LABELS = {
     "feedback": "推荐反馈",
     "chat": "聊天",
     "profile_refresh": "聚合观察",
+    "manual": "手动编辑",
+}
+
+# Human-readable labels for manual-edit cognition summaries, keyed by the
+# editable onion field path / interest polarity.
+_MANUAL_EDIT_LABELS = {
+    "personality_portrait": "人格画像",
+    "core.core_traits": "核心特质",
+    "core.deep_needs": "深层需求",
+    "values_layer.values": "价值观",
+    "values_layer.motivational_drivers": "内在驱动",
+    "surface.cognitive_style": "认知风格",
+    "interest.favorite_up_users": "常看 UP 主",
+    "role.life_stage": "人生阶段",
+    "role.current_phase": "当前阶段",
+    "likes": "喜欢",
+    "dislikes": "不喜欢",
+    "surface.exploration_openness": "探索开放度",
+    "surface.style.quality_sensitivity": "画质敏感度",
+    "surface.style.humor_preference": "幽默偏好",
+    "surface.style.depth_preference": "深度偏好",
 }
 
 
@@ -313,21 +335,229 @@ class SoulEngine:
             return False
 
     async def get_profile(self) -> OnionProfile:
-        """Get the current soul profile.
+        """Get the current *effective* soul profile (AI profile ⊕ user overrides).
 
         Returns:
-            Current OnionProfile from the soul memory layer.
-            Active speculative interests are attached as _active_speculations.
+            The OnionProfile from the soul memory layer with user overrides
+            merged on top. Active speculative interests are attached as
+            ``_active_speculations``.
         """
         soul_data = self._memory.get_layer("soul").data
         if not soul_data:
             raise SoulProfileNotInitializedError("Soul profile has not been initialized yet.")
         profile = OnionProfile.from_dict(soul_data)
+        profile = apply_overrides(profile, self._memory.load_profile_overrides())
         # Attach active speculations so downstream consumers (Discovery) can use them
         active_specs = self._speculator.get_active_speculations()
         if active_specs:
             profile._active_speculations = active_specs  # type: ignore[attr-defined]
         return profile
+
+    async def get_raw_profile(self) -> OnionProfile:
+        """Get the AI-generated profile WITHOUT user overrides.
+
+        Used by the edit-state endpoint and drift detection so the UI can show
+        the AI's current suggestion alongside the user's pinned value.
+        """
+        soul_data = self._memory.get_layer("soul").data
+        if not soul_data:
+            raise SoulProfileNotInitializedError("Soul profile has not been initialized yet.")
+        return OnionProfile.from_dict(soul_data)
+
+    def get_overrides(self) -> ProfileOverrides:
+        """Return the current user-authored profile overrides."""
+        return self._memory.load_profile_overrides()
+
+    def get_effective_disliked_topics(self) -> list[str]:
+        """Effective dislike terms for hard filters.
+
+        Soul-side dislikes are taken from the EFFECTIVE profile (``apply_overrides``)
+        so overlay edits at *every* granularity reflect here — domain add/remove
+        AND per-domain specific add/remove. Flat ``preference.disliked_topics``
+        (which lives outside the soul layer) is unioned in, but suppressed by any
+        overlay dislike removal (domain- or specific-level) so a user-removed term
+        is not re-added by the raw preference layer (F6).
+        """
+        overrides = self._memory.load_profile_overrides()
+        terms: list[str] = []
+        soul_data = self._memory.get_layer("soul").data
+        if soul_data:
+            effective = apply_overrides(OnionProfile.from_dict(soul_data), overrides)
+            for domain in effective.interest.dislikes:
+                terms.append(domain.domain)
+                terms.extend(spec.name for spec in domain.specifics)
+        remove_keys: set[str] = set()
+        dislikes_edit = overrides.interest_edits.get("dislikes")
+        if dislikes_edit is not None:
+            removals = list(dislikes_edit.remove_domains)
+            for spec_edit in dislikes_edit.specific_edits.values():
+                removals.extend(spec_edit.remove)
+            remove_keys = {item.strip().lower() for item in removals if item.strip()}
+        preference_data = self._memory.get_layer("preference").data
+        if isinstance(preference_data, dict):
+            raw_topics = preference_data.get("disliked_topics")
+            if isinstance(raw_topics, list):
+                terms.extend(str(topic) for topic in raw_topics)
+        result: list[str] = []
+        seen: set[str] = set()
+        for term in terms:
+            key = term.strip().lower()
+            if not key or key in seen or key in remove_keys:
+                continue
+            seen.add(key)
+            result.append(term)
+        return result
+
+    async def apply_user_edit(
+        self,
+        *,
+        target: str,
+        op: str,
+        value: object = None,
+        parent: str = "",
+        weight: float | None = None,
+        database: Any | None = None,
+        embedding_service: Any | None = None,
+        llm_service: Any | None = None,
+    ) -> dict[str, object]:
+        """Apply one deterministic user edit to the profile overrides.
+
+        Pipeline: snapshot effective dislikes → fold the edit into the
+        overrides (validated; raises ``ProfileEditError`` on bad input) →
+        persist → if the edit added *new* effective dislikes, purge matching
+        already-pooled content (diff, not the raw value) → sync the matching
+        speculator → record a manual cognition update → refresh the
+        human-readable mirror (re-applies the overlay) and notify both
+        surfaces. Returns ``{ok, target, op}``.
+        """
+        before = set(self.get_effective_disliked_topics())
+
+        overrides = self._memory.load_profile_overrides()
+        updated, _ = apply_edit(
+            overrides, target=target, op=op, value=value, parent=parent, weight=weight
+        )
+        updated.updated_at = datetime.now().isoformat()
+        self._memory.save_profile_overrides(updated)
+
+        after = set(self.get_effective_disliked_topics())
+        newly_added = sorted(after - before)
+        if newly_added:
+            await self._purge_for_new_dislikes(
+                newly_added=newly_added,
+                all_dislikes=sorted(after),
+                database=database,
+                embedding_service=embedding_service,
+                llm_service=llm_service,
+            )
+
+        self._sync_speculators_for_edit(target=target, op=op, value=value)
+        self._record_manual_cognition(target=target, op=op, value=value)
+
+        if self._memory.get_layer("soul").data:
+            self._memory.sync_profile_files(await self.get_raw_profile())
+
+        return {"ok": True, "target": target, "op": op}
+
+    async def _purge_for_new_dislikes(
+        self,
+        *,
+        newly_added: list[str],
+        all_dislikes: list[str],
+        database: Any | None,
+        embedding_service: Any | None,
+        llm_service: Any | None,
+    ) -> None:
+        """Reuse the confirmed-avoidance pool purge for a manual dislike add."""
+        db = database if database is not None else getattr(self._memory, "_database", None)
+        if db is None:
+            logger.info("skip manual-dislike pool purge: no database available")
+            return
+        embedding = embedding_service if embedding_service is not None else self._embedding_service
+        llm = llm_service if llm_service is not None else self._llm_service
+        try:
+            from openbiliclaw.soul.dislike_writeback import purge_pool_for_new_dislikes
+
+            await purge_pool_for_new_dislikes(
+                database=db,
+                embedding_service=embedding,
+                llm_service=llm,
+                newly_added=newly_added,
+                all_dislikes=all_dislikes,
+            )
+        except Exception:
+            logger.exception("manual-dislike pool purge failed")
+
+    def _sync_speculators_for_edit(self, *, target: str, op: str, value: object) -> None:
+        """Keep the interest / avoidance speculators consistent with the edit.
+
+        like add/remove → interest speculator confirm/reject; dislike
+        add/remove → avoidance speculator confirm/reject. Defensive via
+        getattr so older speculator doubles don't break edits.
+        """
+        if not isinstance(value, str) or not value.strip():
+            return
+        domain = value.strip()
+        speculator: Any = None
+        method_name = ""
+        if target == "likes":
+            speculator = self._speculator
+            if op == "add":
+                method_name = "user_confirm_speculation"
+            elif op == "remove":
+                method_name = "user_reject_speculation"
+        elif target == "dislikes":
+            speculator = self._avoidance_speculator
+            if op == "add":
+                method_name = "user_confirm_avoidance"
+            elif op == "remove":
+                method_name = "user_reject_avoidance"
+        if not method_name:
+            return
+        fn = getattr(speculator, method_name, None)
+        if callable(fn):
+            try:
+                fn(domain)
+            except Exception:
+                logger.debug("speculator sync failed: %s %s", target, op, exc_info=True)
+
+    def _record_manual_cognition(self, *, target: str, op: str, value: object) -> None:
+        summary = self._manual_edit_summary(target=target, op=op, value=value)
+        if not summary:
+            return
+        updates = self._memory.load_cognition_updates()
+        updates.insert(
+            0,
+            {
+                "id": f"cognition-{uuid4()}",
+                "kind": "manual_edit",
+                "summary": summary,
+                "impact": "",
+                "reasoning": "",
+                "evidence": "",
+                "context_line": "你手动编辑了画像",
+                "confidence": 1.0,
+                "created_at": datetime.now().isoformat(),
+                "source": "manual",
+                "source_label": "手动编辑",
+                "expand_hint": "summary_only",
+                "notified": False,
+            },
+        )
+        self._memory.save_cognition_updates(updates)
+
+    @staticmethod
+    def _manual_edit_summary(*, target: str, op: str, value: object) -> str:
+        label = _MANUAL_EDIT_LABELS.get(target, target)
+        text = value.strip() if isinstance(value, str) else ""
+        if op == "add" and text:
+            return f"你把「{text}」加进了{label}。"
+        if op == "remove" and text:
+            return f"你把「{text}」从{label}移除了。"
+        if op == "set":
+            return f"你改写了{label}。"
+        if op == "reset":
+            return f"你恢复了{label}的 AI 建议。"
+        return f"你编辑了{label}。"
 
     async def update_from_feedback(self, feedback: dict[str, Any]) -> None:
         """Update soul understanding based on explicit user feedback.

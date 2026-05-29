@@ -127,6 +127,17 @@ export async function fetchProfileSummary({ limit, cursor } = {}) {
   return requestJson(`/profile-summary${qs ? `?${qs}` : ""}`);
 }
 
+export async function fetchEditState() {
+  return requestJson("/profile/edit-state");
+}
+
+export async function submitProfileEdit({ target, op, value = null, parent = "", weight = null }) {
+  return requestJson("/profile/edit", {
+    ...json({ target, op, value, parent, weight }),
+    timeoutMs: 35_000,
+  });
+}
+
 // ── Notifications ───────────────────────────────────────────
 export async function fetchPendingNotifications() {
   return requestJson("/notifications/pending");

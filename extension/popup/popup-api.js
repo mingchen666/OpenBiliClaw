@@ -242,6 +242,25 @@ export async function fetchProfileSummary({ limit, cursor } = {}) {
   return requestJson(`/profile-summary${query ? `?${query}` : ""}`, { method: "GET" });
 }
 
+export async function fetchEditState() {
+  return requestJson("/profile/edit-state", { method: "GET" });
+}
+
+export async function submitProfileEdit({ target, op, value = null, parent = "", weight = null }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 35_000);
+  try {
+    return await requestJson("/profile/edit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, op, value, parent, weight }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function submitFeedback(payload) {
   return requestJson("/feedback", {
     method: "POST",

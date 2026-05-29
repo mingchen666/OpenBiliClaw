@@ -2111,6 +2111,151 @@
       background: rgba(88, 166, 255, 0.22);
     }
 
+    /* ── Editable profile (Phase 2) ── */
+    .profile-edit-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 6px 0 12px;
+    }
+    .profile-edit-toggle {
+      background: rgba(244, 247, 255, 0.92);
+      color: var(--text-secondary);
+      border: 1px solid rgba(230, 236, 245, 0.96);
+      font-weight: 700;
+    }
+    .profile-edit-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .profile-edit-note {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.6;
+      margin: 0 0 12px;
+    }
+    .profile-edit-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .edit-field {
+      background: rgba(248, 250, 255, 0.7);
+      border: 1px solid rgba(230, 236, 245, 0.9);
+      border-radius: 14px;
+      padding: 12px;
+    }
+    .edit-field-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .edit-field-label {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+    .edit-badge {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--brand-strong);
+      background: rgba(255, 240, 246, 0.96);
+      border-radius: 999px;
+      padding: 2px 8px;
+    }
+    .edit-chip-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .edit-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+      padding: 5px 6px 5px 11px;
+      border-radius: 999px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      background: rgba(255, 255, 255, 0.96);
+      border: 1px solid rgba(230, 236, 245, 0.96);
+    }
+    .edit-chip-remove {
+      width: 18px;
+      height: 18px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.06);
+      color: #8b7a6a;
+      font-size: 11px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .edit-chip-remove:hover {
+      background: rgba(239, 122, 134, 0.18);
+      color: #d0455a;
+    }
+    .edit-empty {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin: 0 0 10px;
+    }
+    .edit-add-row {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+    .edit-add-input {
+      flex: 1;
+      min-width: 0;
+      padding: 8px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(223, 231, 244, 0.96);
+      background: rgba(255, 255, 255, 0.98);
+      color: var(--text-main);
+      font-size: 12px;
+    }
+    .edit-add-btn {
+      background: rgba(240, 247, 255, 0.96);
+      color: #397fcb;
+      font-weight: 700;
+      min-height: 36px;
+      padding: 8px 14px;
+    }
+    .edit-text-input {
+      margin-bottom: 8px;
+    }
+    .edit-drift-hint {
+      font-size: 11px;
+      color: #397fcb;
+      background: rgba(240, 247, 255, 0.7);
+      border-radius: 10px;
+      padding: 6px 10px;
+      margin: 0 0 8px;
+      line-height: 1.5;
+    }
+    .edit-field-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .edit-reset-btn {
+      border: 0;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 11px;
+      text-decoration: underline;
+      cursor: pointer;
+    }
+    .edit-reset-btn:hover {
+      color: var(--brand-strong);
+    }
+
     .probe-result {
       font-size: 13px;
       color: #57606a;
@@ -3813,6 +3958,10 @@
           <h2>我感觉你大概是这样的</h2>
           <p>不是光看你点过啥，我主要在看你会为哪种东西停下来。</p>
         </div>
+        <div id="profileEditBar" class="profile-edit-bar" hidden>
+          <button id="profileEditToggle" class="action-button profile-edit-toggle" type="button">✏️ 编辑画像</button>
+          <span id="profileEditHint" class="profile-edit-hint" hidden>改完点「完成」收起</span>
+        </div>
         <div id="profileEmpty" class="empty-state" hidden>
           <h3 id="profileEmptyTitle">画像还没攒起来</h3>
           <p id="profileEmptyText">先跑一遍 openbiliclaw init，再回来看看。</p>
@@ -3932,6 +4081,7 @@
             <div id="profileRecentAwareness" class="awareness-list"></div>
           </div>
         </div>
+        <div id="profileEditPanel" class="profile-edit-panel" hidden></div>
       </section>
 
       <section id="viewChat" class="view" role="tabpanel" aria-labelledby="tabChat" hidden>

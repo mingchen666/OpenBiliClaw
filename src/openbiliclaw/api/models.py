@@ -437,6 +437,9 @@ class ProfileSummaryResponse(BaseModel):
     next_cognition_cursor: str = ""
     active_insights: list[InsightHypothesisOut] = Field(default_factory=list)
     recent_awareness: list[AwarenessNoteOut] = Field(default_factory=list)
+    # User-authored overrides (ProfileOverrides.to_dict()), so the display UI
+    # can badge edited/pinned fields. Empty when the user has made no edits.
+    overrides: dict[str, object] = Field(default_factory=dict)
 
 
 class EventIngestResponse(BaseModel):
@@ -459,6 +462,22 @@ class FeedbackResponse(BaseModel):
     ok: bool
     recommendation_id: int
     feedback_type: str
+
+
+class ProfileEditIn(BaseModel):
+    """One user edit to the AI-generated profile overlay.
+
+    ``target`` is an onion field path (e.g. ``core.core_traits``) or an
+    interest polarity (``likes`` / ``dislikes``). ``op`` ∈
+    {set, add, remove, reset}. ``parent`` targets a specific under an
+    interest domain; ``weight`` pins an interest domain's weight.
+    """
+
+    target: str
+    op: str
+    value: str | float | None = None
+    parent: str = ""
+    weight: float | None = None
 
 
 class WatchLaterAddIn(BaseModel):

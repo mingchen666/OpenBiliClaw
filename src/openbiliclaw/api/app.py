@@ -67,6 +67,7 @@ from openbiliclaw.api.models import (
     PendingDelightResponse,
     PendingNotificationOut,
     PendingNotificationResponse,
+    ProfileEditIn,
     ProfileSummaryResponse,
     RecommendationAppendIn,
     RecommendationClickIn,
@@ -1477,6 +1478,14 @@ def create_app(
         except Exception:
             return ProfileSummaryResponse(initialized=False)
 
+        overrides_summary: dict[str, object] = {}
+        _get_overrides = getattr(ctx.soul_engine, "get_overrides", None)
+        if callable(_get_overrides):
+            try:
+                overrides_summary = _get_overrides().to_dict()
+            except Exception:
+                overrides_summary = {}
+
         from openbiliclaw.api.models import (
             AwarenessNoteOut,
             ContextModeOut,
@@ -1706,7 +1715,57 @@ def create_app(
             next_cognition_cursor=next_cognition_cursor,
             active_insights=active_insights_out,
             recent_awareness=recent_awareness_out,
+            overrides=overrides_summary,
         )
+
+    @app.get("/api/profile/edit-state")
+    async def profile_edit_state() -> dict[str, object]:
+        """Full (un-truncated) editable profile + overrides + drift.
+
+        The edit UI must use this rather than ``/api/profile-summary`` — the
+        latter truncates lists for display, so it cannot reach e.g. the 13th
+        interest or 9th UP.
+        """
+        from openbiliclaw.soul.overrides import build_edit_state
+
+        try:
+            raw = await ctx.soul_engine.get_raw_profile()
+            effective = await ctx.soul_engine.get_profile()
+        except Exception:
+            return {"initialized": False}
+        return build_edit_state(raw, effective, ctx.soul_engine.get_overrides())
+
+    @app.post("/api/profile/edit")
+    async def profile_edit(payload: ProfileEditIn) -> dict[str, object]:
+        """Apply one deterministic user edit to the profile overlay.
+
+        Returns the fresh edit-state inline so the client re-renders without
+        a second round-trip. Embedding / LLM services for the dislike pool
+        purge are resolved inside ``apply_user_edit`` from the soul engine.
+        """
+        from openbiliclaw.soul.overrides import ProfileEditError, build_edit_state
+
+        try:
+            await ctx.soul_engine.apply_user_edit(
+                target=payload.target,
+                op=payload.op,
+                value=payload.value,
+                parent=payload.parent,
+                weight=payload.weight,
+                database=ctx.database,
+            )
+        except ProfileEditError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        try:
+            raw = await ctx.soul_engine.get_raw_profile()
+            effective = await ctx.soul_engine.get_profile()
+            edit_state: dict[str, object] = build_edit_state(
+                raw, effective, ctx.soul_engine.get_overrides()
+            )
+        except Exception:
+            edit_state = {"initialized": False}
+        return {"ok": True, "target": payload.target, "op": payload.op, "edit_state": edit_state}
 
     @app.post("/api/events", response_model=EventIngestResponse)
     async def ingest_events(payload: BehaviorEventBatchIn) -> EventIngestResponse:

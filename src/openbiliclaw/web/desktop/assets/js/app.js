@@ -21,7 +21,9 @@
       sourceShareSuggestion: "/config/source-share-suggestion",
       config: "/config?reveal_keys=true",
       watchLater: "/watch-later",
-      favorites: "/favorites"
+      favorites: "/favorites",
+      profileEdit: "/profile/edit",
+      profileEditState: "/profile/edit-state"
     };
 
     const state = {
@@ -29,6 +31,8 @@
       filter: "全部",
       activeFeedback: null,
       profile: null,
+      editingProfile: false,
+      profileEditState: null,
       activity: null,
       activityItems: [],
       activityCursor: "",
@@ -225,9 +229,23 @@
       element.addEventListener(eventName, handler);
     }
 
+    function locationApiDefault() {
+      try {
+        const loc = window.location;
+        if (loc && /^https?:$/.test(loc.protocol) && loc.hostname) {
+          return { host: loc.hostname, port: loc.port || (loc.protocol === "https:" ? "443" : "80") };
+        }
+      } catch { /* file:// or no window — fall through */ }
+      return { host: "127.0.0.1", port: "8420" };
+    }
+
     function getApiBase() {
-      const host = normalizeBackendHost($("#backendHost")?.value || storageGet("openbiliclaw.webui.backendHost") || "127.0.0.1");
-      const port = String($("#backendPort")?.value || storageGet("openbiliclaw.webui.backendPort") || "8420").trim() || "8420";
+      // Default to the origin the page is served from, so a non-default backend
+      // port "just works" and a profile edit never silently writes to a
+      // different backend on :8420. An explicit saved/typed setting still wins.
+      const def = locationApiDefault();
+      const host = normalizeBackendHost($("#backendHost")?.value || storageGet("openbiliclaw.webui.backendHost") || def.host);
+      const port = String($("#backendPort")?.value || storageGet("openbiliclaw.webui.backendPort") || def.port).trim() || def.port;
       return `http://${host}:${port}/api`;
     }
 
@@ -239,8 +257,9 @@
     }
 
     function persistBackendEndpoint() {
-      const host = normalizeBackendHost($("#backendHost")?.value || "127.0.0.1");
-      const port = String($("#backendPort")?.value || "8420").trim() || "8420";
+      const def = locationApiDefault();
+      const host = normalizeBackendHost($("#backendHost")?.value || def.host);
+      const port = String($("#backendPort")?.value || def.port).trim() || def.port;
       setInput("backendHost", host);
       setInput("backendPort", port);
       storageSet("openbiliclaw.webui.backendHost", host);
@@ -1381,6 +1400,13 @@
         updateProfileMemoryButton();
         return;
       }
+      if (state.editingProfile) {
+        $("#profileDetails").innerHTML = renderProfileEditPanel();
+        bindProfileEditActions();
+        state.profileCognitionHasMore = false;
+        updateProfileMemoryButton();
+        return;
+      }
       syncProfileCognitionState(profile);
       const html = [
         profileItem("这会儿的你", paragraphsHtml(profile.personality_portrait || profile.summary), "profile-portrait-block"),
@@ -1418,8 +1444,189 @@
           profileItem("近期观察到的", awarenessHtml(profile.recent_awareness))
         ])
       ].join("");
-      $("#profileDetails").innerHTML = html;
+      const profileEditBar = `<div class="profile-edit-bar"><button class="pill-btn" type="button" data-profile-edit-toggle="enter">✏️ 编辑画像</button></div>`;
+      $("#profileDetails").innerHTML = profileEditBar + html;
       bindSpeculativeActions();
+      bindProfileEditToggle();
+    }
+
+    // ── Editable profile (Phase 3, desktop) ──────────────────────
+    const PROFILE_EDIT_LABELS = {
+      personality_portrait: "人格素描",
+      "core.core_traits": "核心特质",
+      "core.deep_needs": "深层需求",
+      "values_layer.values": "价值偏好",
+      "values_layer.motivational_drivers": "内在驱动力",
+      likes: "感兴趣的方向",
+      dislikes: "明显会避开",
+      "interest.favorite_up_users": "常看的 UP 主",
+      "role.life_stage": "大致处在什么阶段",
+      "role.current_phase": "这阵子更像在经历什么",
+      "surface.cognitive_style": "认知风格"
+    };
+    const PROFILE_EDIT_ORDER = [
+      "personality_portrait",
+      "core.core_traits",
+      "core.deep_needs",
+      "values_layer.values",
+      "values_layer.motivational_drivers",
+      "likes",
+      "dislikes",
+      "interest.favorite_up_users",
+      "role.life_stage",
+      "role.current_phase",
+      "surface.cognitive_style"
+    ];
+
+    function bindProfileEditToggle() {
+      const btn = document.querySelector('#profileDetails [data-profile-edit-toggle="enter"]');
+      if (btn) btn.addEventListener("click", () => { void enterProfileEdit(); });
+    }
+
+    async function enterProfileEdit() {
+      state.editingProfile = true;
+      state.profileEditState = null;
+      renderProfileDetails();
+      state.profileEditState = await requestJson(ENDPOINTS.profileEditState);
+      renderProfileDetails();
+    }
+
+    async function exitProfileEdit() {
+      state.editingProfile = false;
+      state.profileEditState = null;
+      const fresh = await requestJson(ENDPOINTS.profile);
+      if (fresh) state.profile = fresh;
+      renderProfileDetails();
+    }
+
+    async function applyProfileEdit(payload) {
+      const res = await requestJson(ENDPOINTS.profileEdit, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (res && res.edit_state && res.edit_state.initialized) {
+        state.profileEditState = res.edit_state;
+      } else {
+        const refreshed = await requestJson(ENDPOINTS.profileEditState);
+        if (refreshed) state.profileEditState = refreshed;
+        if (!res) showToast("修改未保存：请检查输入或后端状态");
+      }
+      renderProfileDetails();
+    }
+
+    function profileEditTextField(path, label, field) {
+      const pinned = Boolean(field.pinned);
+      const rows = path === "personality_portrait" ? 4 : 2;
+      return `
+        <div class="edit-field">
+          <div class="edit-field-head"><span class="edit-field-label">${escapeHtml(label)}</span>${pinned ? `<span class="edit-badge">已编辑</span>` : ""}</div>
+          <textarea class="edit-text-input" data-edit-text="${escapeHtml(path)}" rows="${rows}">${escapeHtml(field.value || "")}</textarea>
+          ${field.ai_suggestion ? `<p class="edit-drift-hint">AI 当前想更新为：${escapeHtml(field.ai_suggestion)}</p>` : ""}
+          <div class="edit-field-actions">
+            <button class="pill-btn primary" type="button" data-edit-save="${escapeHtml(path)}">保存</button>
+            ${pinned ? `<button class="edit-reset-btn" type="button" data-edit-reset="${escapeHtml(path)}">恢复 AI 建议</button>` : ""}
+          </div>
+        </div>`;
+    }
+
+    function profileEditListField(path, label, field) {
+      const items = Array.isArray(field.items) ? field.items : [];
+      const edited = (field.added?.length || 0) > 0 || (field.removed?.length || 0) > 0;
+      const chips = items.length
+        ? items.map((it) => `<span class="edit-chip">${escapeHtml(it)}<button class="edit-chip-remove" type="button" data-edit-remove="${escapeHtml(path)}" data-edit-value="${escapeHtml(it)}">✕</button></span>`).join("")
+        : `<p class="video-meta">还没有，添加一个吧</p>`;
+      return `
+        <div class="edit-field">
+          <div class="edit-field-head"><span class="edit-field-label">${escapeHtml(label)}</span>${edited ? `<span class="edit-badge">已编辑</span>` : ""}</div>
+          <div class="edit-chip-list">${chips}</div>
+          <div class="edit-add-row">
+            <input class="edit-add-input" data-edit-add-input="${escapeHtml(path)}" placeholder="添加一项" />
+            <button class="pill-btn" type="button" data-edit-add="${escapeHtml(path)}">添加</button>
+          </div>
+          ${edited ? `<div class="edit-field-actions"><button class="edit-reset-btn" type="button" data-edit-reset="${escapeHtml(path)}">恢复 AI 建议</button></div>` : ""}
+        </div>`;
+    }
+
+    function profileEditInterestField(path, label, field) {
+      const domains = Array.isArray(field.domains) ? field.domains : [];
+      const edited = (field.removed_domains?.length || 0) > 0 || domains.some((d) => d?.user_added);
+      const chips = domains.length
+        ? domains.map((d) => `<span class="edit-chip">${escapeHtml(d.domain)}${d.user_added ? " ＋" : ""}<button class="edit-chip-remove" type="button" data-edit-remove="${escapeHtml(path)}" data-edit-value="${escapeHtml(d.domain)}">✕</button></span>`).join("")
+        : `<p class="video-meta">还没有，添加一个吧</p>`;
+      const placeholder = path === "dislikes" ? "添加要避开的领域" : "添加感兴趣的领域";
+      return `
+        <div class="edit-field">
+          <div class="edit-field-head"><span class="edit-field-label">${escapeHtml(label)}</span>${edited ? `<span class="edit-badge">已编辑</span>` : ""}</div>
+          <div class="edit-chip-list">${chips}</div>
+          <div class="edit-add-row">
+            <input class="edit-add-input" data-edit-add-input="${escapeHtml(path)}" placeholder="${escapeHtml(placeholder)}" />
+            <button class="pill-btn" type="button" data-edit-add="${escapeHtml(path)}">添加</button>
+          </div>
+          ${edited ? `<div class="edit-field-actions"><button class="edit-reset-btn" type="button" data-edit-reset="${escapeHtml(path)}">恢复 AI 建议</button></div>` : ""}
+        </div>`;
+    }
+
+    function renderProfileEditPanel() {
+      const editState = state.profileEditState;
+      let html = `<div class="profile-edit-bar"><button class="pill-btn" type="button" data-profile-edit-toggle="exit">✓ 完成</button></div>`;
+      if (!editState) {
+        html += `<p class="video-meta">加载中…</p>`;
+        return html;
+      }
+      if (!editState.initialized || !editState.fields) {
+        html += `<p class="video-meta">画像还没攒起来，先跑一遍 openbiliclaw init 再回来编辑。</p>`;
+        return html;
+      }
+      html += `<p class="video-meta profile-edit-note">改完即时生效，且不会被后续自动重建覆盖；删错了点「恢复 AI 建议」即可。</p>`;
+      for (const path of PROFILE_EDIT_ORDER) {
+        const field = editState.fields[path];
+        if (!field || typeof field !== "object") continue;
+        const label = PROFILE_EDIT_LABELS[path] || path;
+        if (field.type === "text") html += profileEditTextField(path, label, field);
+        else if (field.type === "list") html += profileEditListField(path, label, field);
+        else if (field.type === "interest") html += profileEditInterestField(path, label, field);
+      }
+      return html;
+    }
+
+    function bindProfileEditActions() {
+      const root = $("#profileDetails");
+      if (!root) return;
+      root.querySelector('[data-profile-edit-toggle="exit"]')?.addEventListener("click", () => { void exitProfileEdit(); });
+      root.querySelectorAll("[data-edit-remove]").forEach((btn) => {
+        btn.addEventListener("click", () => void applyProfileEdit({ target: btn.dataset.editRemove, op: "remove", value: btn.dataset.editValue }));
+      });
+      root.querySelectorAll("[data-edit-reset]").forEach((btn) => {
+        btn.addEventListener("click", () => void applyProfileEdit({ target: btn.dataset.editReset, op: "reset" }));
+      });
+      root.querySelectorAll("[data-edit-add]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const path = btn.dataset.editAdd;
+          const input = root.querySelector(`[data-edit-add-input="${path}"]`);
+          const value = input?.value.trim();
+          if (!value) return;
+          void applyProfileEdit({ target: path, op: "add", value });
+        });
+      });
+      root.querySelectorAll("[data-edit-add-input]").forEach((input) => {
+        input.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          const value = input.value.trim();
+          if (!value) return;
+          void applyProfileEdit({ target: input.dataset.editAddInput, op: "add", value });
+        });
+      });
+      root.querySelectorAll("[data-edit-save]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const path = btn.dataset.editSave;
+          const textarea = root.querySelector(`[data-edit-text="${path}"]`);
+          const value = textarea?.value.trim();
+          if (!value) return;
+          void applyProfileEdit({ target: path, op: "set", value });
+        });
+      });
     }
 
     async function loadMoreProfileMemory() {

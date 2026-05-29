@@ -4,6 +4,23 @@
 
 ---
 
+## 可编辑用户画像 · Phase 2/3：插件 + Web 编辑 UI（2026-05-29）
+
+- **三端可编辑画像 UI**：插件 side panel、移动 Web（`/m`）、桌面 Web（`/web`）画像页都新增「编辑画像」开关，进入后是由未截断的 `GET /api/profile/edit-state` 驱动的编辑面板——chip 增删（核心特质 / 深层需求 / 价值观 / 内在驱动 / 认知风格 / 常看 UP）、兴趣树领域增删（喜欢 / 不喜欢）、长文改写（人格素描 / 人生阶段 / 当前阶段）。
+- **确定性 + 可撤销**：每个控件 POST 一次 `/api/profile/edit`，从返回的 `edit_state` 即时重渲染；文本固定项显示「AI 想更新此项」漂移建议，任一改过的字段可「恢复 AI 建议」（reset）。编辑抗画像重建（后端覆盖层）。
+- **覆盖三套前端**：实现时发现桌面 Web（`/web`，`web/desktop/`）与移动 SPA（`/m`，`web/`）是**两套独立前端**（Phase 1 设计文档曾误以为同一套），本期分别接入；插件为第三套。
+- 测试：插件新增 `tests/popup-profile-edit.test.ts`（typecheck + 347 例全绿）；三端 JS `node --check` 通过；后端编辑 API over-the-wire E2E 13/13。对应 issue #19。
+
+## 可编辑用户画像 · Phase 1：后端覆盖层（2026-05-29）
+
+- **新增 `soul/overrides.py` 覆盖层**：用户对画像的手动编辑写入独立 `data/memory/profile_overrides.json`，AI 画像照常存 `soul.json`。**有效画像 = AI 画像 ⊕ 用户覆盖**，在读收口 `SoulEngine.get_profile()` 与镜像收口 `MemoryManager.sync_profile_files()` 叠加——三条画像重建落点不变，用户编辑天然不被重建覆盖。
+- **确定性字段级编辑**：`apply_edit` 归约器支持文本固定、标量固定、列表增删、兴趣树增删/权重固定，含校验与 add/remove 互斥；`apply_overrides` 纯函数确定性合并，列表 remove 持续抑制 AI 再次推断出的同项。
+- **删/拉黑真实影响推荐**：用户加入 `interest.dislikes` 的项经 `get_effective_disliked_topics()`（base-then-overlay，remove 最后生效，不被 raw preference 反向打穿）驱动 proactive delight 硬过滤；新增拉黑还会复用 `purge_pool_for_new_dislikes` 清掉已入池命中内容（按编辑前后差集触发，重复添加不重复清池）。
+- **新增 API**：`POST /api/profile/edit`（一次确定性编辑，非法输入 422，返回最新 edit-state）、`GET /api/profile/edit-state`（**未截断**全量可编辑字段 + 覆盖标注 + 文本/标量固定项的 AI 漂移建议，编辑 UI 数据源）；`GET /api/profile-summary` 新增 `overrides` 标注（展示态，保持截断、向后兼容）。
+- **两套 speculator 同步**：手动 like add/remove 同步正向 `InterestSpeculator`，dislike add/remove 同步 `AvoidanceSpeculator`，避免画像与猜测系统打架；每次编辑记一条 `source=manual` cognition。
+- 测试：新增 `tests/test_overrides.py` 等共约 30 例（合并 / 抗重建 / 校验 / 有效 dislikes / 清池差集 / speculator 同步 / API 全量与截断）；后端 1843 passed 全绿，改动文件 ruff + mypy 干净。
+- 说明：本期仅后端；插件端与 PC/移动 Web 编辑 UI 为 Phase 2/3。设计与实现计划见 `docs/plans/2026-05-29-editable-profile-design.md` 与 `docs/plans/2026-05-29-editable-profile.md`。对应 issue #19。
+
 ## v0.3.95 / extension v0.3.54: embedding 默认值兜底 + 语义去重未启用提示（2026-05-29）
 
 - 修复「embedding 服务静默禁用 → 刷到换皮重复视频」的根因。bvid 级去重一直 100% 生效（同一 bvid 不会重复推荐），但同一内容的不同 ID（跨平台镜像 / 转载 / 同名系列）只能靠 embedding 语义去重 catch，而 embedding 一旦悬空就只剩日志一行警告、用户无感知。

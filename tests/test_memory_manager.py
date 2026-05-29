@@ -20,6 +20,64 @@ def test_initialize_sets_up_database(tmp_path: Path) -> None:
     assert events == []
 
 
+def test_profile_overrides_roundtrip(tmp_path: Path) -> None:
+    from openbiliclaw.soul.overrides import ListEdit, ProfileOverrides
+
+    memory = MemoryManager(tmp_path)
+    memory.initialize()
+
+    ov = ProfileOverrides(list_edits={"core.core_traits": ListEdit(add=["务实"])})
+    memory.save_profile_overrides(ov)
+
+    loaded = memory.load_profile_overrides()
+    assert loaded.list_edits["core.core_traits"].add == ["务实"]
+
+
+def test_load_profile_overrides_missing_returns_empty(tmp_path: Path) -> None:
+    memory = MemoryManager(tmp_path)
+    memory.initialize()
+
+    assert memory.load_profile_overrides().is_empty()
+
+
+def test_sync_profile_files_renders_effective_profile(tmp_path: Path) -> None:
+    from openbiliclaw.soul.overrides import ProfileOverrides, apply_edit
+    from openbiliclaw.soul.profile import OnionProfile
+
+    memory = MemoryManager(tmp_path)
+    memory.initialize()
+
+    ov, _ = apply_edit(
+        ProfileOverrides(), target="personality_portrait", op="set", value="我自己写的画像"
+    )
+    memory.save_profile_overrides(ov)
+
+    # Sync the raw AI profile (as a rebuild would) — different portrait text.
+    memory.sync_profile_files(OnionProfile(personality_portrait="AI 生成的画像"))
+
+    md = (tmp_path / "memory" / "soul_profile.md").read_text(encoding="utf-8")
+    assert "我自己写的画像" in md
+    assert "AI 生成的画像" not in md
+
+
+def test_sync_profile_files_applies_overlay_on_dict_input(tmp_path: Path) -> None:
+    from openbiliclaw.soul.overrides import ProfileOverrides, apply_edit
+    from openbiliclaw.soul.profile import OnionProfile
+
+    memory = MemoryManager(tmp_path)
+    memory.initialize()
+
+    ov, _ = apply_edit(
+        ProfileOverrides(), target="personality_portrait", op="set", value="覆盖文案"
+    )
+    memory.save_profile_overrides(ov)
+
+    memory.sync_profile_files(OnionProfile(personality_portrait="原始").to_dict())
+
+    md = (tmp_path / "memory" / "soul_profile.md").read_text(encoding="utf-8")
+    assert "覆盖文案" in md
+
+
 @pytest.mark.asyncio
 async def test_propagate_event_persists_to_sqlite(tmp_path: Path) -> None:
     memory = MemoryManager(tmp_path)
@@ -679,3 +737,14 @@ def test_memory_layer_load_uses_utf8_even_when_default_locale_is_gbk(
     monkeypatch.setattr(builtins, "open", real_open)
     reloaded = json_module.loads(layer_path.read_text(encoding="utf-8"))
     assert reloaded["summary"] == "更新后的画像 ✨"
+
+
+def test_load_profile_overrides_corrupt_file_returns_empty(tmp_path: Path) -> None:
+    memory = MemoryManager(tmp_path)
+    memory.initialize()
+    path = tmp_path / "memory" / "profile_overrides.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ this is not valid json", encoding="utf-8")
+
+    # Corrupt overrides must not raise (which would degrade the profile API).
+    assert memory.load_profile_overrides().is_empty()

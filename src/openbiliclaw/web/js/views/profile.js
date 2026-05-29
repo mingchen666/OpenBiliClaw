@@ -3,7 +3,13 @@
  * expandable cognition cards, speculative interest/avoidance actions.
  */
 
-import { fetchProfileSummary, respondToProbe, respondToAvoidanceProbe } from "../api.js";
+import {
+  fetchProfileSummary,
+  respondToProbe,
+  respondToAvoidanceProbe,
+  fetchEditState,
+  submitProfileEdit,
+} from "../api.js";
 import {
   normalizeProfileSummary,
   normalizeMbtiDimensions,
@@ -24,6 +30,8 @@ const PROFILE_REFRESH_DEBOUNCE_MS = 1000;
 let profileRefreshTimer = null;
 let profileRefreshInFlight = false;
 let profileRefreshPending = false;
+let editing = false;
+let editState = null;
 
 // ── Escape helper ────────────────────────────────────────────
 function esc(s) {
@@ -31,6 +39,38 @@ function esc(s) {
   el.textContent = s;
   return el.innerHTML;
 }
+
+function escAttr(s) {
+  return esc(String(s)).replace(/"/g, "&quot;");
+}
+
+// Editable fields (Phase 3): onion paths + interest polarities, in display order.
+const EDIT_FIELD_LABELS = {
+  personality_portrait: "人格素描",
+  "core.core_traits": "核心特质",
+  "core.deep_needs": "深层需求",
+  "values_layer.values": "价值观",
+  "values_layer.motivational_drivers": "内在驱动力",
+  likes: "感兴趣的方向",
+  dislikes: "明显会避开",
+  "interest.favorite_up_users": "关注的 UP",
+  "role.life_stage": "人生阶段",
+  "role.current_phase": "当前阶段",
+  "surface.cognitive_style": "认知风格",
+};
+const EDIT_FIELD_ORDER = [
+  "personality_portrait",
+  "core.core_traits",
+  "core.deep_needs",
+  "values_layer.values",
+  "values_layer.motivational_drivers",
+  "likes",
+  "dislikes",
+  "interest.favorite_up_users",
+  "role.life_stage",
+  "role.current_phase",
+  "surface.cognitive_style",
+];
 
 function chipList(items, cls = "") {
   if (!items?.length) return "";
@@ -61,7 +101,13 @@ function render() {
     return;
   }
 
-  let html = "";
+  if (editing) {
+    $root.innerHTML = renderEditPanelHtml();
+    bindEditActions();
+    return;
+  }
+
+  let html = `<div class="profile-edit-bar"><button class="profile-edit-toggle" data-edit-toggle="enter">✏️ 编辑画像</button></div>`;
 
   // Portrait
   html += section("\u4EBA\u683C\u7D20\u63CF", `<div class="profile-portrait">${esc(p.personality_portrait)}</div>`);
@@ -198,6 +244,7 @@ function render() {
   $root.innerHTML = html;
 
   // Bind events
+  $root.querySelector('[data-edit-toggle="enter"]')?.addEventListener("click", () => void enterEdit());
   $root.querySelector("#load-more-cognition")?.addEventListener("click", loadMoreCognition);
   bindSpecInterestActions();
   bindSpecAvoidanceActions();
@@ -379,6 +426,168 @@ function bindCognitionExpand() {
       const idx = Number(card.dataset.cogIdx);
       expandedCognitionIdx = expandedCognitionIdx === idx ? null : idx;
       render();
+    });
+  }
+}
+
+// ── Editable profile (Phase 3) ───────────────────────────────
+// Edit mode swaps the display for an edit panel rendered from
+// GET /api/profile/edit-state (un-truncated). Each control posts one
+// deterministic op to /api/profile/edit and re-renders from edit_state.
+// Edits survive profile rebuilds (server-side overrides overlay).
+
+async function enterEdit() {
+  editing = true;
+  editState = null;
+  render();
+  try {
+    editState = await fetchEditState();
+  } catch {
+    editState = { initialized: false };
+  }
+  render();
+}
+
+function exitEdit() {
+  editing = false;
+  editState = null;
+  loadData();
+}
+
+async function applyEdit(payload) {
+  try {
+    const res = await submitProfileEdit(payload);
+    editState = res?.edit_state?.initialized ? res.edit_state : await fetchEditState();
+  } catch {
+    try {
+      editState = await fetchEditState();
+    } catch {
+      /* keep current editState */
+    }
+  }
+  render();
+}
+
+function renderTextEditField(path, label, field) {
+  const pinned = Boolean(field.pinned);
+  const rows = path === "personality_portrait" ? 4 : 2;
+  return `
+    <div class="edit-field">
+      <div class="edit-field-head"><span class="edit-field-label">${esc(label)}</span>${pinned ? `<span class="edit-badge">已编辑</span>` : ""}</div>
+      <textarea class="edit-text-input" data-edit-text="${escAttr(path)}" rows="${rows}">${esc(field.value || "")}</textarea>
+      ${field.ai_suggestion ? `<p class="edit-drift-hint">AI 当前想更新为：${esc(field.ai_suggestion)}</p>` : ""}
+      <div class="edit-field-actions">
+        <button class="edit-save-btn" data-edit-save="${escAttr(path)}">保存</button>
+        ${pinned ? `<button class="edit-reset-btn" data-edit-reset="${escAttr(path)}">恢复 AI 建议</button>` : ""}
+      </div>
+    </div>`;
+}
+
+function renderListEditField(path, label, field) {
+  const items = Array.isArray(field.items) ? field.items : [];
+  const edited = (field.added?.length || 0) > 0 || (field.removed?.length || 0) > 0;
+  const chips = items.length
+    ? items
+        .map(
+          (it) =>
+            `<span class="edit-chip">${esc(it)}<button class="edit-chip-remove" data-edit-remove="${escAttr(path)}" data-edit-value="${escAttr(it)}">✕</button></span>`,
+        )
+        .join("")
+    : `<p class="edit-empty">还没有，添加一个吧</p>`;
+  return `
+    <div class="edit-field">
+      <div class="edit-field-head"><span class="edit-field-label">${esc(label)}</span>${edited ? `<span class="edit-badge">已编辑</span>` : ""}</div>
+      <div class="edit-chip-list">${chips}</div>
+      <div class="edit-add-row">
+        <input class="edit-add-input" data-edit-add-input="${escAttr(path)}" placeholder="添加一项" />
+        <button class="edit-add-btn" data-edit-add="${escAttr(path)}">添加</button>
+      </div>
+      ${edited ? `<div class="edit-field-actions"><button class="edit-reset-btn" data-edit-reset="${escAttr(path)}">恢复 AI 建议</button></div>` : ""}
+    </div>`;
+}
+
+function renderInterestEditField(path, label, field) {
+  const domains = Array.isArray(field.domains) ? field.domains : [];
+  const edited = (field.removed_domains?.length || 0) > 0 || domains.some((d) => d?.user_added);
+  const chips = domains.length
+    ? domains
+        .map(
+          (d) =>
+            `<span class="edit-chip">${esc(d.domain)}${d.user_added ? " ＋" : ""}<button class="edit-chip-remove" data-edit-remove="${escAttr(path)}" data-edit-value="${escAttr(d.domain)}">✕</button></span>`,
+        )
+        .join("")
+    : `<p class="edit-empty">还没有，添加一个吧</p>`;
+  const placeholder = path === "dislikes" ? "添加要避开的领域" : "添加感兴趣的领域";
+  return `
+    <div class="edit-field">
+      <div class="edit-field-head"><span class="edit-field-label">${esc(label)}</span>${edited ? `<span class="edit-badge">已编辑</span>` : ""}</div>
+      <div class="edit-chip-list">${chips}</div>
+      <div class="edit-add-row">
+        <input class="edit-add-input" data-edit-add-input="${escAttr(path)}" placeholder="${esc(placeholder)}" />
+        <button class="edit-add-btn" data-edit-add="${escAttr(path)}">添加</button>
+      </div>
+      ${edited ? `<div class="edit-field-actions"><button class="edit-reset-btn" data-edit-reset="${escAttr(path)}">恢复 AI 建议</button></div>` : ""}
+    </div>`;
+}
+
+function renderEditPanelHtml() {
+  let html = `<div class="profile-edit-bar"><button class="profile-edit-toggle" data-edit-toggle="exit">✓ 完成</button></div>`;
+  if (!editState) {
+    html += `<div style="padding:24px"><div class="spinner"></div></div>`;
+    return html;
+  }
+  if (!editState.initialized || !editState.fields) {
+    html += `<div class="profile-edit-note">画像还没攒起来，先跑一遍 <code>openbiliclaw init</code> 再回来编辑。</div>`;
+    return html;
+  }
+  html += `<div class="profile-edit-note">改完即时生效，且不会被后续自动重建覆盖；删错了点「恢复 AI 建议」即可。</div>`;
+  for (const path of EDIT_FIELD_ORDER) {
+    const field = editState.fields[path];
+    if (!field || typeof field !== "object") continue;
+    const label = EDIT_FIELD_LABELS[path] || path;
+    if (field.type === "text") html += renderTextEditField(path, label, field);
+    else if (field.type === "list") html += renderListEditField(path, label, field);
+    else if (field.type === "interest") html += renderInterestEditField(path, label, field);
+  }
+  return html;
+}
+
+function bindEditActions() {
+  $root.querySelector('[data-edit-toggle="exit"]')?.addEventListener("click", exitEdit);
+
+  for (const btn of $root.querySelectorAll("[data-edit-remove]")) {
+    btn.addEventListener("click", () =>
+      void applyEdit({ target: btn.dataset.editRemove, op: "remove", value: btn.dataset.editValue }),
+    );
+  }
+  for (const btn of $root.querySelectorAll("[data-edit-reset]")) {
+    btn.addEventListener("click", () => void applyEdit({ target: btn.dataset.editReset, op: "reset" }));
+  }
+  for (const btn of $root.querySelectorAll("[data-edit-add]")) {
+    btn.addEventListener("click", () => {
+      const path = btn.dataset.editAdd;
+      const input = $root.querySelector(`[data-edit-add-input="${path}"]`);
+      const value = input?.value.trim();
+      if (!value) return;
+      void applyEdit({ target: path, op: "add", value });
+    });
+  }
+  for (const input of $root.querySelectorAll("[data-edit-add-input]")) {
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const value = input.value.trim();
+      if (!value) return;
+      void applyEdit({ target: input.dataset.editAddInput, op: "add", value });
+    });
+  }
+  for (const btn of $root.querySelectorAll("[data-edit-save]")) {
+    btn.addEventListener("click", () => {
+      const path = btn.dataset.editSave;
+      const ta = $root.querySelector(`[data-edit-text="${path}"]`);
+      const value = ta?.value.trim();
+      if (!value) return;
+      void applyEdit({ target: path, op: "set", value });
     });
   }
 }

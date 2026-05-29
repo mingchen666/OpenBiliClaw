@@ -840,6 +840,162 @@ body {
 .chip.success { background: var(--lime-soft); color: var(--success); }
 .chip.warning { background: var(--warning-soft); color: #d97706; }
 
+/* ── Editable profile (Phase 3) ───────────────────────────── */
+.profile-edit-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+.profile-edit-toggle {
+  border: none;
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+.profile-edit-toggle:active { opacity: 0.7; }
+.profile-edit-note {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+.edit-field {
+  background: var(--surface);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.edit-field-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.edit-field-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+.edit-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--brand);
+  background: var(--brand-soft);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.edit-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.edit-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: var(--sky-soft);
+  color: var(--sky);
+}
+.edit-chip-remove {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.edit-chip-remove:active { background: rgba(239, 122, 134, 0.2); color: var(--danger); }
+.edit-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+.edit-add-row {
+  display: flex;
+  gap: 8px;
+}
+.edit-add-input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text-main);
+  font-size: 16px; /* ≥16px prevents iOS Safari auto-zoom */
+}
+.edit-add-input:focus { outline: none; box-shadow: var(--focus-ring); }
+.edit-add-btn {
+  border: none;
+  border-radius: 12px;
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  background: var(--sky-soft);
+  color: var(--sky);
+}
+.edit-text-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text-main);
+  font-size: 16px;
+  line-height: 1.5;
+  resize: vertical;
+  margin-bottom: 8px;
+}
+.edit-text-input:focus { outline: none; box-shadow: var(--focus-ring); }
+.edit-drift-hint {
+  font-size: 12px;
+  color: var(--sky);
+  background: var(--sky-soft);
+  border-radius: 10px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+.edit-field-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.edit-save-btn {
+  border: none;
+  border-radius: 12px;
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  background: var(--brand);
+  color: #fff;
+}
+.edit-save-btn:active { opacity: 0.7; }
+.edit-reset-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.edit-reset-btn:active { color: var(--brand); }
+
 /* ── MBTI ─────────────────────────────────────────────────── */
 .mbti-type {
   font-size: 28px;
