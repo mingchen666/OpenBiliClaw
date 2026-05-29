@@ -197,8 +197,14 @@ class _FakeDatabase:
 
 
 class _FakeSoulEngine:
+    def __init__(self, disliked: list[str] | None = None) -> None:
+        self._disliked = list(disliked or [])
+
     async def get_profile(self) -> dict[str, object]:
         return {"profile": "ok"}
+
+    def get_effective_disliked_topics(self) -> list[str]:
+        return list(self._disliked)
 
 
 class _FakeDiscoveryEngine:
@@ -690,6 +696,45 @@ async def test_refresh_controller_uses_shared_delight_threshold_for_runtime_quer
     assert pending is not None
     assert database.count_delight_thresholds == [DEFAULT_DELIGHT_THRESHOLD]
     assert database.get_delight_thresholds == [DEFAULT_DELIGHT_THRESHOLD]
+
+
+def test_load_disliked_topic_phrases_reads_effective_dislikes() -> None:
+    controller = ContinuousRefreshController(
+        memory_manager=_FakeMemoryManager(),
+        database=_FakeDatabase([]),
+        soul_engine=_FakeSoulEngine(disliked=["营销号", "标题党"]),
+        discovery_engine=_FakeDiscoveryEngine(),
+        recommendation_engine=_FakeRecommendationEngine(),
+    )
+    assert controller._load_disliked_topic_phrases() == ["营销号", "标题党"]
+
+
+def test_get_pending_delight_skips_effective_disliked_candidate() -> None:
+    candidate = {
+        "bvid": "BV1MKT",
+        "title": "震惊！营销号的标题党",
+        "delight_reason": "r",
+        "delight_score": 0.72,
+        "delight_hook": "h",
+        "cover_url": "https://example.com/c.jpg",
+    }
+    blocked = ContinuousRefreshController(
+        memory_manager=_FakeMemoryManager(),
+        database=_FakeDatabase([], delight_candidate=candidate, delight_count=1),
+        soul_engine=_FakeSoulEngine(disliked=["营销号"]),
+        discovery_engine=_FakeDiscoveryEngine(),
+        recommendation_engine=_FakeRecommendationEngine(),
+    )
+    assert blocked.get_pending_delight() is None
+
+    allowed = ContinuousRefreshController(
+        memory_manager=_FakeMemoryManager(),
+        database=_FakeDatabase([], delight_candidate=candidate, delight_count=1),
+        soul_engine=_FakeSoulEngine(),
+        discovery_engine=_FakeDiscoveryEngine(),
+        recommendation_engine=_FakeRecommendationEngine(),
+    )
+    assert allowed.get_pending_delight() is not None
 
 
 def test_runtime_status_reports_pool_readiness_counts() -> None:
