@@ -5663,3 +5663,97 @@ def test_probe_chat_sentiment_uses_plain_text_llm_call() -> None:
     assert kwargs["caller"] == "api.sentiment"
     assert kwargs["max_tokens"] == 8
     assert kwargs["json_mode"] is False
+
+
+class TestProfileEditEndpoints:
+    """End-to-end tests for the editable-profile API (real SoulEngine)."""
+
+    def _client(self, tmp_path: Path) -> object:
+        from fastapi.testclient import TestClient
+
+        from openbiliclaw.llm.base import LLMResponse
+        from openbiliclaw.memory.manager import MemoryManager
+        from openbiliclaw.soul.engine import SoulEngine
+        from openbiliclaw.soul.profile import (
+            CoreLayer,
+            InterestDomain,
+            InterestLayer,
+            OnionProfile,
+        )
+
+        class _Reg:
+            async def complete(
+                self,
+                messages: list[dict[str, str]],
+                *,
+                temperature: float = 0.7,
+                max_tokens: int = 4096,
+                json_mode: bool = False,
+                reasoning_effort: str | None = None,
+                model: str | None = None,
+            ) -> LLMResponse:
+                return LLMResponse(content="{}", provider="openai")
+
+        memory = MemoryManager(tmp_path / "data")
+        memory.initialize()
+        engine = SoulEngine(llm=_Reg(), memory=memory)
+        profile = OnionProfile(
+            core=CoreLayer(core_traits=["完美主义"]),
+            interest=InterestLayer(
+                likes=[InterestDomain(domain=f"领域{i}", weight=0.5) for i in range(14)],
+                favorite_up_users=[f"UP{i}" for i in range(10)],
+            ),
+        )
+        layer = memory.get_layer("soul")
+        layer.data.clear()
+        layer.data.update(profile.to_dict())
+        layer.save()
+        app = create_app(memory_manager=memory, database=memory._database, soul_engine=engine)
+        return TestClient(app)
+
+    def test_edit_state_returns_untruncated_fields(self, tmp_path: Path) -> None:
+        client = self._client(tmp_path)
+        resp = client.get("/api/profile/edit-state")  # type: ignore[attr-defined]
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["initialized"] is True
+        # un-truncated: summary caps likes at 12 / favorite_up at 8; edit-state must not
+        assert len(body["fields"]["likes"]["domains"]) == 14
+        assert len(body["fields"]["interest.favorite_up_users"]["items"]) == 10
+
+    def test_edit_adds_dislike_and_reflects_in_returned_state(self, tmp_path: Path) -> None:
+        client = self._client(tmp_path)
+        resp = client.post(  # type: ignore[attr-defined]
+            "/api/profile/edit",
+            json={"target": "dislikes", "op": "add", "value": "营销号"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        domains = body["edit_state"]["fields"]["dislikes"]["domains"]
+        assert any(d["domain"] == "营销号" and d["user_added"] for d in domains)
+
+    def test_edit_invalid_target_returns_422(self, tmp_path: Path) -> None:
+        client = self._client(tmp_path)
+        resp = client.post(  # type: ignore[attr-defined]
+            "/api/profile/edit",
+            json={"target": "core.bogus", "op": "add", "value": "x"},
+        )
+        assert resp.status_code == 422
+
+    def test_edit_set_then_reset_text_field(self, tmp_path: Path) -> None:
+        client = self._client(tmp_path)
+        client.post(  # type: ignore[attr-defined]
+            "/api/profile/edit",
+            json={"target": "personality_portrait", "op": "set", "value": "我的画像"},
+        )
+        state = client.get("/api/profile/edit-state").json()  # type: ignore[attr-defined]
+        assert state["fields"]["personality_portrait"]["value"] == "我的画像"
+        assert state["fields"]["personality_portrait"]["pinned"] is True
+
+        client.post(  # type: ignore[attr-defined]
+            "/api/profile/edit",
+            json={"target": "personality_portrait", "op": "reset"},
+        )
+        state2 = client.get("/api/profile/edit-state").json()  # type: ignore[attr-defined]
+        assert state2["fields"]["personality_portrait"]["pinned"] is False

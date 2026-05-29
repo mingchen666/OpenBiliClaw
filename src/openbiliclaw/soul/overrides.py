@@ -449,6 +449,28 @@ def _set_scalar_field(profile: OnionProfile, path: str, value: float) -> None:
         profile.surface.style.depth_preference = clamped
 
 
+def _get_text_field(profile: OnionProfile, path: str) -> str:
+    if path == "personality_portrait":
+        return profile.personality_portrait
+    if path == "role.life_stage":
+        return profile.role.life_stage
+    if path == "role.current_phase":
+        return profile.role.current_phase
+    return ""
+
+
+def _get_scalar_field(profile: OnionProfile, path: str) -> float:
+    if path == "surface.exploration_openness":
+        return profile.surface.exploration_openness
+    if path == "surface.style.quality_sensitivity":
+        return profile.surface.style.quality_sensitivity
+    if path == "surface.style.humor_preference":
+        return profile.surface.style.humor_preference
+    if path == "surface.style.depth_preference":
+        return profile.surface.style.depth_preference
+    return 0.0
+
+
 def apply_overrides(profile: OnionProfile, overrides: ProfileOverrides) -> OnionProfile:
     """Return the effective profile = AI ``profile`` ⊕ user ``overrides``.
 
@@ -685,3 +707,75 @@ def apply_edit(
         raise ProfileEditError(f"未知字段: {target}")
 
     return ov, EditResult(ok=True, target=target, op=op)
+
+
+# ---------------------------------------------------------------------------
+# Edit-state view: full (un-truncated) editable fields + overrides + drift.
+# ---------------------------------------------------------------------------
+
+
+def build_edit_state(
+    raw: OnionProfile, effective: OnionProfile, overrides: ProfileOverrides
+) -> dict[str, object]:
+    """Assemble the full editable-profile view for the edit UI.
+
+    Unlike ``/api/profile-summary`` (which truncates lists for display), this
+    returns *every* editable field un-truncated, annotated with override state
+    (``pinned`` / ``added`` / ``removed`` / ``user_added``) and, for pinned
+    text/scalar fields, the AI's current value as ``ai_suggestion`` when it
+    drifts from the pin (so the UI can offer "AI 想更新此项").
+    """
+    fields: dict[str, object] = {}
+
+    for path in TEXT_FIELDS:
+        eff_val = _get_text_field(effective, path)
+        raw_val = _get_text_field(raw, path)
+        pinned = path in overrides.text_pins
+        fields[path] = {
+            "type": "text",
+            "value": eff_val,
+            "pinned": pinned,
+            "ai_suggestion": raw_val if (pinned and raw_val and raw_val != eff_val) else "",
+        }
+
+    for path in SCALAR_FIELDS:
+        eff_val_f = _get_scalar_field(effective, path)
+        raw_val_f = _get_scalar_field(raw, path)
+        pinned = path in overrides.scalar_pins
+        fields[path] = {
+            "type": "scalar",
+            "value": eff_val_f,
+            "pinned": pinned,
+            "ai_suggestion": raw_val_f if (pinned and abs(raw_val_f - eff_val_f) > 1e-9) else None,
+        }
+
+    for path in LIST_FIELDS:
+        list_edit = overrides.list_edits.get(path)
+        fields[path] = {
+            "type": "list",
+            "items": list(_get_list_field(effective, path)),
+            "added": list(list_edit.add) if list_edit else [],
+            "removed": list(list_edit.remove) if list_edit else [],
+        }
+
+    for polarity in INTEREST_POLARITIES:
+        domains = effective.interest.likes if polarity == "likes" else effective.interest.dislikes
+        interest_edit = overrides.interest_edits.get(polarity)
+        added_keys = (
+            {_norm(d.domain) for d in interest_edit.add_domains} if interest_edit else set()
+        )
+        fields[polarity] = {
+            "type": "interest",
+            "domains": [
+                {
+                    "domain": dom.domain,
+                    "weight": dom.weight,
+                    "specifics": [spec.name for spec in dom.specifics],
+                    "user_added": _norm(dom.domain) in added_keys,
+                }
+                for dom in domains
+            ],
+            "removed_domains": list(interest_edit.remove_domains) if interest_edit else [],
+        }
+
+    return {"initialized": True, "fields": fields}

@@ -461,6 +461,22 @@ class FeedbackResponse(BaseModel):
     feedback_type: str
 
 
+class ProfileEditIn(BaseModel):
+    """One user edit to the AI-generated profile overlay.
+
+    ``target`` is an onion field path (e.g. ``core.core_traits``) or an
+    interest polarity (``likes`` / ``dislikes``). ``op`` ∈
+    {set, add, remove, reset}. ``parent`` targets a specific under an
+    interest domain; ``weight`` pins an interest domain's weight.
+    """
+
+    target: str
+    op: str
+    value: str | float | None = None
+    parent: str = ""
+    weight: float | None = None
+
+
 class WatchLaterAddIn(BaseModel):
     """Payload to bookmark a video."""
 
