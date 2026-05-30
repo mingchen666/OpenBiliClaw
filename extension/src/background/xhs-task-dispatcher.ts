@@ -96,6 +96,7 @@ let currentTaskId: string | null = null;
 let currentTask: XhsTask | null = null;
 let bootstrapNavigationCount = 0;
 let bootstrapDebugSteps: unknown[] = [];
+let dispatcherDebugEvents: unknown[] = [];
 let taskUpdateListener: ((tabId: number, changeInfo: { status?: string }) => void) | null = null;
 let taskNavigationFallbackId: ReturnType<typeof setTimeout> | null = null;
 
@@ -126,24 +127,37 @@ export function isValidTask(task: unknown): task is XhsTask {
   return true;
 }
 
+function bootstrapScrollableScopeCount(task: XhsTask): number {
+  const scopes =
+    Array.isArray(task.scopes) && task.scopes.length > 0
+      ? task.scopes
+      : (["saved", "liked"] as XhsBootstrapScope[]);
+  const count = scopes.filter((scope) => scope === "saved" || scope === "liked").length;
+  return Math.max(1, count);
+}
+
 export function computeTaskTimeoutMs(task: XhsTask): number {
   if (task.type !== "bootstrap_profile") return TASK_TIMEOUT_MS;
   const rounds =
     typeof task.max_scroll_rounds === "number" && Number.isFinite(task.max_scroll_rounds)
       ? Math.max(0, Math.floor(task.max_scroll_rounds))
       : 0;
+  const roundBudget = rounds * bootstrapScrollableScopeCount(task);
   if (typeof task.scroll_wait_ms === "number" && Number.isFinite(task.scroll_wait_ms)) {
     const scrollWaitMs = Math.min(
       Math.max(Math.floor(task.scroll_wait_ms), MIN_BOOTSTRAP_SCROLL_WAIT_MS),
       MAX_BOOTSTRAP_SCROLL_WAIT_MS,
     );
     return Math.min(
-      Math.max(TASK_TIMEOUT_MS, TASK_TIMEOUT_MS + rounds * (scrollWaitMs + 500) * 2),
+      Math.max(TASK_TIMEOUT_MS, TASK_TIMEOUT_MS + roundBudget * (scrollWaitMs + 500) * 2),
       BOOTSTRAP_MAX_EXTENDED_TASK_TIMEOUT_MS,
     );
   }
   return Math.min(
-    Math.max(TASK_TIMEOUT_MS, TASK_TIMEOUT_MS + rounds * BOOTSTRAP_SCROLL_TIMEOUT_PER_ROUND_MS),
+    Math.max(
+      TASK_TIMEOUT_MS,
+      TASK_TIMEOUT_MS + roundBudget * BOOTSTRAP_SCROLL_TIMEOUT_PER_ROUND_MS,
+    ),
     BOOTSTRAP_MAX_TASK_TIMEOUT_MS,
   );
 }
@@ -191,6 +205,33 @@ function extractBootstrapDebugSteps(debug: unknown): unknown[] {
   if (!isRecord(bootstrap)) return [];
   const steps = bootstrap.steps;
   return Array.isArray(steps) ? steps : [];
+}
+
+function recordDispatcherDebug(event: string, data: Record<string, unknown> = {}): void {
+  dispatcherDebugEvents.push({
+    event,
+    at_ms: Date.now(),
+    task_id: currentTaskId,
+    navigation_count: bootstrapNavigationCount,
+    ...data,
+  });
+  if (dispatcherDebugEvents.length > 40) {
+    dispatcherDebugEvents = dispatcherDebugEvents.slice(-40);
+  }
+}
+
+function buildTimeoutDebug(task: XhsTask): Record<string, unknown> {
+  const debug: Record<string, unknown> = {
+    xhs_dispatcher: {
+      reason: "timeout",
+      timeout_ms: computeTaskTimeoutMs(task),
+      events: dispatcherDebugEvents,
+    },
+  };
+  if (bootstrapDebugSteps.length > 0) {
+    debug.xhs_bootstrap = { steps: bootstrapDebugSteps };
+  }
+  return debug;
 }
 
 function mergeBootstrapDebugIntoResult(result: XhsTaskResult): XhsTaskResult {
@@ -261,6 +302,7 @@ function cleanupTask(): void {
   currentTask = null;
   bootstrapNavigationCount = 0;
   bootstrapDebugSteps = [];
+  dispatcherDebugEvents = [];
   taskInFlight = false;
   releaseDispatcherMutex("xhs");
 }
@@ -272,7 +314,14 @@ function armTaskTimeout(task: XhsTask): void {
   }
   taskTimeoutId = setTimeout(() => {
     if (currentTaskId === task.id) {
-      void reportTaskResult({ task_id: task.id, urls: [], status: "error", error: "timeout" });
+      recordDispatcherDebug("timeout_fired", { timeout_ms: computeTaskTimeoutMs(task) });
+      void reportTaskResult({
+        task_id: task.id,
+        urls: [],
+        status: "error",
+        error: "timeout",
+        debug: buildTimeoutDebug(task),
+      });
       cleanupTask();
     }
   }, computeTaskTimeoutMs(task));
@@ -280,16 +329,23 @@ function armTaskTimeout(task: XhsTask): void {
 
 async function sendExecuteMessageToTab(tabId: number, task: XhsTask): Promise<void> {
   if (shouldActivateBeforeExecute(task)) {
+    recordDispatcherDebug("activate_tab_before_execute", { tab_id: tabId });
     await chrome.tabs.update(tabId, { active: true });
   }
+  recordDispatcherDebug("send_execute_message", {
+    tab_id: tabId,
+    page: buildTaskUrl(task) ?? "",
+  });
   await chrome.tabs.sendMessage(tabId, {
     action: "XHS_TASK_EXECUTE",
     data: buildExecuteMessageData(task),
   });
+  recordDispatcherDebug("send_execute_message_done", { tab_id: tabId });
 }
 
 function handleExecuteMessageFailure(task: XhsTask): void {
   if (currentTaskId !== task.id) return;
+  recordDispatcherDebug("send_execute_message_failed");
   void reportTaskResult({
     task_id: task.id,
     urls: [],
@@ -315,6 +371,7 @@ function armClickedNavigationFallback(task: XhsTask, tabId: number): void {
       chrome.tabs.onUpdated.removeListener(taskUpdateListener);
       taskUpdateListener = null;
     }
+    recordDispatcherDebug("clicked_navigation_fallback_send", { tab_id: tabId });
     void sendExecuteMessageToTab(tabId, task).catch(() => handleExecuteMessageFailure(task));
   }, BOOTSTRAP_CLICKED_NAVIGATION_FALLBACK_MS);
 }
@@ -332,6 +389,7 @@ function armTaskLoadListener(task: XhsTask): void {
     chrome.tabs.onUpdated.removeListener(listener);
     if (taskUpdateListener === listener) taskUpdateListener = null;
     clearNavigationFallback();
+    recordDispatcherDebug("tab_load_complete", { tab_id: updatedTabId });
     void sendExecuteMessageToTab(updatedTabId, task).catch(() =>
       handleExecuteMessageFailure(task),
     );
@@ -349,6 +407,7 @@ export async function executeTask(task: XhsTask): Promise<void> {
   taskInFlight = true;
   currentTaskId = task.id;
   currentTask = task;
+  recordDispatcherDebug("task_started", { timeout_ms: computeTaskTimeoutMs(task) });
 
   const url = buildTaskUrl(task);
   if (!url) {
@@ -369,6 +428,11 @@ export async function executeTask(task: XhsTask): Promise<void> {
     });
     taskTabId = tab.id ?? null;
     ownsTaskTab = taskTabId !== null;
+    recordDispatcherDebug("task_tab_created", {
+      tab_id: taskTabId ?? "",
+      url,
+      active: task.type === "bootstrap_profile",
+    });
   } catch {
     await reportTaskResult({ task_id: task.id, urls: [], status: "error", error: "tab_create_failed" });
     cleanupTask();
@@ -384,7 +448,14 @@ export async function executeTask(task: XhsTask): Promise<void> {
 
 export async function handleTaskResult(result: XhsTaskResult): Promise<void> {
   if (!taskInFlight || result.task_id !== currentTaskId) return;
+  recordDispatcherDebug("task_result_received", {
+    status: result.status,
+    has_next_url: Boolean(result.next_url),
+    url_count: result.urls.length,
+    note_count: Array.isArray(result.notes) ? result.notes.length : 0,
+  });
   if (currentTask?.type === "bootstrap_profile" && result.status === "partial") {
+    bootstrapDebugSteps.push(...extractBootstrapDebugSteps(result.debug));
     await reportTaskResult(result);
     return;
   }

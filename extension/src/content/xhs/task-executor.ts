@@ -581,7 +581,7 @@ async function loadProfileTabsForScopes(
 
   for (const scope of scopes) {
     const labels = bootstrapProfileTabLabels(scope);
-    if (!labels) continue;
+    if (labels.length === 0) continue;
     const state = extractBootstrapStateFromDocument(doc);
     if (state) {
       const current = extractBootstrapNotesFromState(state, [scope], { maxItemsPerScope });

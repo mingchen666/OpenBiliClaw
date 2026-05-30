@@ -69,6 +69,15 @@ test("computeTaskTimeoutMs keeps normal tasks short and scales bootstrap scrolli
       type: "bootstrap_profile",
       max_scroll_rounds: 30,
     }),
+    180_000,
+  );
+  assert.equal(
+    computeTaskTimeoutMs({
+      id: "t-bootstrap-scroll-single-scope",
+      type: "bootstrap_profile",
+      scopes: ["saved"],
+      max_scroll_rounds: 30,
+    }),
     120_000,
   );
   assert.equal(
