@@ -4,7 +4,7 @@
 
 ---
 
-## v0.3.96 / extension v0.3.55: 插件收藏 / 稍后再看状态同步修复（2026-05-30）
+## v0.3.97 / extension v0.3.57: 局域网密码门禁 + 语义去重就绪探活与横幅修复（2026-05-31）
 
 - 新增局域网 / 远程访问的**可选密码门禁**。配置走新 TOML 段 `[api.auth]`（`ApiAuthConfig`）：`enabled` 总开关、`password_hash`（scrypt）、`session_secret`（HMAC 签名密钥，首次启用自动生成）、`session_ttl_hours`（0=永不过期 / 记住登录）、`trust_loopback`（默认 true，本机免登录、扩展不受影响）、`trusted_proxies` 与 `allowed_bearer_origins`（仅 TOML）。撤销纪元 `auth_epoch` 与密码指纹存 SQLite `auth_state` 表，不进 config。后端为 `auth_core.py`（标准库 scrypt + HMAC 无状态 token + 反代/Origin 解析）+ `api/auth.py`（`create_app()` 内注册的 HTTP 中间件 + `/api/auth/{status,login,logout}` 路由），门禁挡所有其他 `/api/*`（含 `runtime-stream` WS、`image-proxy`），`/api/health` 与静态壳保持公开。
 - 凭据默认走 HttpOnly cookie `obc_session`（同源 fetch/img/WS 自动携带），跨源限时 Bearer 为允许列表内的逃生通道；CSRF 对 cookie 鉴权的非安全方法强制 `Origin==Host` + 头 `X-OBC-Auth`。改密 / `--logout-all` / `--rotate-secret` 经 `auth_epoch` 真正撤销所有设备，永不过期登录不会因重启被误撤销。`session_secret` / `password_hash` 永不经 `GET /api/config` 返回。

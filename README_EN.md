@@ -17,12 +17,11 @@
 
 ---
 
-## 📌 Editable Profile · Edit Mode Across All 3 Surfaces (2026-05-29)
+## 📌 LAN Password Gate + Semantic-Dedup Banner Fix (2026-05-31)
 
-- **✏️ Edit your own profile** — extension / mobile / desktop profile pages get an "Edit profile" mode: add/remove core traits, values, interest domains, favorite UPs, and rewrite prose like your persona sketch.
-- **🛡️ Edits survive rebuilds** — changes live in a separate overrides layer the AI's re-derivation can't wipe; hit "Restore AI suggestion" to revert any field.
-- **🎯 Delete/block hits recs instantly** — "disliked" domains enter the hard filter and purge already-pooled matches, no waiting for the next learning cycle.
-- **🤝 Collaborate with the AI** — pin a text field and, if the AI has a newer take, it surfaces "AI wants to update this" for you to accept or ignore.
+- **🔒 Optional password gate for LAN / remote access** — one login across web, mobile web, and the extension; loopback (localhost) stays password-free, the extension is unaffected, and a password change instantly revokes every device session.
+- **🧭 The "semantic dedup off" banner finally tells the truth** — `/api/health` now does a live probe: a missing model (404) honestly reports degraded, and once embedding is configured the banner auto-clears when the panel regains focus instead of nagging forever.
+- **🩹 Fixed the banner that could never be hidden** — `.embedding-banner` (and siblings) stayed visible because `display:flex` beat `[hidden]`; a global `[hidden]` reset fixes the whole class.
 
 Full changelog: [docs/changelog.md](docs/changelog.md).
 
