@@ -125,7 +125,10 @@ export function createSavedToggleRegistry({ labels = {}, onChange = null } = {})
     const version = mutationVersions.get(key) || 0;
     try {
       const result = await loadStatus(key);
-      if ((mutationVersions.get(key) || 0) !== version) {
+      // Drop a stale hydration if a mutation ran (version bumped) OR is still
+      // in flight (busy) since this GET started: its server snapshot may predate
+      // the write and would otherwise roll a just-confirmed toggle back to stale.
+      if (busyBvids.has(key) || (mutationVersions.get(key) || 0) !== version) {
         return result;
       }
       if (result && typeof result.saved === "boolean") {
@@ -150,6 +153,10 @@ export function createSavedToggleRegistry({ labels = {}, onChange = null } = {})
       const finalSaved = result && typeof result.saved === "boolean"
         ? result.saved
         : optimisticSaved;
+      // Bump again before applying the confirmed state: invalidates any
+      // hydration whose status GET started during this write and resolves
+      // after busy clears (busy check alone misses that window).
+      nextVersion(key);
       applySaved(key, finalSaved);
       if (typeof onChange === "function") {
         onChange({ bvid: key, saved: finalSaved });

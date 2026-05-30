@@ -158,6 +158,49 @@ test("popup saved toggle registry pruneDetached sweeps removed buttons across re
   assert.equal(detached.getAttribute("aria-pressed"), "false");
 });
 
+test("popup saved toggle registry keeps a confirmed toggle when a hydration started mid-write resolves stale", async () => {
+  // Regression: a re-render registers a fresh button (and its status GET) AFTER
+  // the optimistic toggle but while the add/remove write is still in flight. The
+  // GET reads a pre-write snapshot and resolves after the write succeeds. Without
+  // bumping the mutation version on write success, the captured version still
+  // matches and the stale GET rolls the just-confirmed toggle back.
+  const button = fakeButton();
+  let resolveAdd: (value: { saved: boolean }) => void = () => {};
+  const addResult = new Promise<{ saved: boolean }>((resolve) => {
+    resolveAdd = resolve;
+  });
+  let resolveStatus: (value: { saved: boolean }) => void = () => {};
+  const staleStatus = new Promise<{ saved: boolean }>((resolve) => {
+    resolveStatus = resolve;
+  });
+  const registry = createSavedToggleRegistry({
+    labels: { checkedTitle: "取消收藏", uncheckedTitle: "收藏" },
+  });
+
+  registry.registerButton("BV1MIDWRITE", button);
+
+  // Start a toggle whose write stays pending; the synchronous optimistic update
+  // runs before the first await.
+  const toggling = registry.toggle("BV1MIDWRITE", {
+    add: async () => addResult,
+    remove: async () => ({ saved: false }),
+  });
+  assert.equal(button.getAttribute("aria-pressed"), "true"); // optimistic applied
+
+  // Mid-write re-render: a hydration captures the post-optimistic version and
+  // reads a stale (pre-write) snapshot.
+  const hydration = registry.hydrateStatus("BV1MIDWRITE", () => staleStatus);
+
+  // Write succeeds first, then the stale status resolves — it must not roll back.
+  resolveAdd({ saved: true });
+  await toggling;
+  resolveStatus({ saved: false });
+  await hydration;
+
+  assert.equal(button.getAttribute("aria-pressed"), "true");
+  assert.equal(button.title, "取消收藏");
+});
+
 test("popup saved toggle registry lets concurrent lazy status calls share the same version", async () => {
   const first = fakeButton();
   const second = fakeButton();
