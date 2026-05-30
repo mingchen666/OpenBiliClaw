@@ -1177,6 +1177,17 @@ class Database:
         ``get_pool_candidates`` so concentrated topic groups don't inflate
         the displayed count beyond what ``serve()`` can actually load.
         """
+        return len(
+            self._load_available_pool_candidate_rows(
+                max_per_topic_group=max_per_topic_group,
+                xhs_self_nickname=xhs_self_nickname,
+            )
+        )
+
+    def _load_available_pool_candidate_rows(
+        self, *, max_per_topic_group: int = 3, xhs_self_nickname: str = ""
+    ) -> list[dict[str, Any]]:
+        """Load rows counted by the frontend-visible pool availability gate."""
         self._ensure_fresh_read()
         guard_sql = _xhs_self_author_guard_sql()
         guard_params = _xhs_self_author_guard_params(xhs_self_nickname)
@@ -1242,17 +1253,86 @@ class Database:
                 guard_params,
             )
         viewed_content_keys = self.get_recent_viewed_content_keys()
-        return sum(
-            1
-            for row in cursor.fetchall()
-            if str(row["bvid"]).strip()
-            and not self._is_viewed_row(dict(row), viewed_content_keys)
-            and _is_linkable_pool_source(
+        rows: list[dict[str, Any]] = []
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            if not str(row_dict.get("bvid", "")).strip():
+                continue
+            if self._is_viewed_row(row_dict, viewed_content_keys):
+                continue
+            if not _is_linkable_pool_source(
                 row["source"],
                 row["source_platform"],
                 row["content_url"],
-            )
+            ):
+                continue
+            rows.append(row_dict)
+        return rows
+
+    def count_pool_available_candidates_by_source(
+        self, *, max_per_topic_group: int = 3, xhs_self_nickname: str = ""
+    ) -> dict[str, int]:
+        """Return frontend-visible pool availability grouped by source family."""
+        rows = self._load_available_pool_candidate_rows(
+            max_per_topic_group=max_per_topic_group,
+            xhs_self_nickname=xhs_self_nickname,
         )
+        counts: dict[str, int] = defaultdict(int)
+        for row in rows:
+            source_family = _pool_source_family(row["source"], row["source_platform"])
+            counts[source_family] += 1
+        return dict(counts)
+
+    def _load_pool_raw_material_rows(self) -> list[dict[str, Any]]:
+        """Load raw fresh material rows governed by the raw ceiling."""
+        self._ensure_fresh_read()
+        cursor = self.conn.execute(
+            """
+            SELECT
+                bvid,
+                source,
+                source_platform,
+                content_url,
+                relevance_score,
+                last_scored_at,
+                pool_expression,
+                pool_topic_label,
+                style_key,
+                topic_group
+            FROM content_cache
+            WHERE COALESCE(pool_status, 'fresh') = 'fresh'
+              AND COALESCE(feedback_type, '') != 'dislike'
+              AND NOT EXISTS (
+                SELECT 1 FROM recommendations AS r WHERE r.bvid = content_cache.bvid
+              )
+            """
+        )
+        viewed_content_keys = self.get_recent_viewed_content_keys()
+        rows: list[dict[str, Any]] = []
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            if not str(row_dict.get("bvid", "")).strip():
+                continue
+            if self._is_viewed_row(row_dict, viewed_content_keys):
+                continue
+            rows.append(row_dict)
+        return rows
+
+    def count_pool_raw_material_candidates(self) -> int:
+        """Return raw fresh material count used for raw-ceiling headroom."""
+        return len(self._load_pool_raw_material_rows())
+
+    def count_pool_raw_material_by_source(self) -> dict[str, int]:
+        """Return raw fresh material grouped by source family.
+
+        Unlike ``count_pool_candidates_by_source()``, this intentionally counts
+        pending/unopenable rows such as XHS notes waiting for ``xsec_token``.
+        """
+        counts: dict[str, int] = defaultdict(int)
+        for row in self._load_pool_raw_material_rows():
+            source_family = _pool_source_family(row["source"], row["source_platform"])
+            counts[source_family] += 1
+        return dict(counts)
 
     def count_pool_readiness(self, *, xhs_self_nickname: str = "") -> dict[str, int]:
         """Return pool inventory split by immediately servable and pending rows.
@@ -1732,39 +1812,13 @@ class Database:
         if target <= 0:
             return 0
 
-        cursor = self.conn.execute(
-            """
-            SELECT bvid, source, source_platform, content_url, relevance_score, last_scored_at
-            FROM content_cache
-            WHERE COALESCE(pool_status, 'fresh') = 'fresh'
-              AND COALESCE(feedback_type, '') != 'dislike'
-              AND NOT EXISTS (
-                SELECT 1 FROM recommendations AS r WHERE r.bvid = content_cache.bvid
-              )
-            """
-        )
-        viewed_content_keys = self.get_recent_viewed_content_keys()
-        rows = [
-            dict(row)
-            for row in cursor.fetchall()
-            if not self._is_viewed_row(dict(row), viewed_content_keys)
-            and _is_linkable_pool_source(
-                row["source"],
-                row["source_platform"],
-                row["content_url"],
-            )
-        ]
+        rows = self._load_pool_raw_material_rows()
         if len(rows) <= target:
             return 0
 
         ranked = sorted(
             rows,
-            key=lambda row: (
-                -float(row.get("relevance_score", 0.0) or 0.0),
-                -self._sort_timestamp_score(str(row.get("last_scored_at", ""))),
-                1 if str(row.get("source", "") or "") == "explore" else 0,
-                str(row.get("bvid", "")),
-            ),
+            key=self._pool_trim_keep_key,
         )
 
         if source_share_quotas:
@@ -1867,33 +1921,11 @@ class Database:
         if not clean_quotas:
             return 0
 
-        cursor = self.conn.execute(
-            """
-            SELECT bvid, source, source_platform, content_url, relevance_score, last_scored_at
-            FROM content_cache
-            WHERE COALESCE(pool_status, 'fresh') = 'fresh'
-              AND COALESCE(feedback_type, '') != 'dislike'
-              AND NOT EXISTS (
-                SELECT 1 FROM recommendations AS r WHERE r.bvid = content_cache.bvid
-              )
-            """
-        )
-        viewed_content_keys = self.get_recent_viewed_content_keys()
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for row in cursor.fetchall():
-            bvid = str(row["bvid"]).strip()
-            row_dict = dict(row)
-            if not bvid or self._is_viewed_row(row_dict, viewed_content_keys):
-                continue
-            if not _is_linkable_pool_source(
-                row["source"],
-                row["source_platform"],
-                row["content_url"],
-            ):
-                continue
+        for row in self._load_pool_raw_material_rows():
             source_family = _pool_source_family(row["source"], row["source_platform"])
             if source_family in clean_quotas:
-                grouped[source_family].append(dict(row))
+                grouped[source_family].append(row)
 
         overflow_rows: list[dict[str, Any]] = []
         for source_family, rows in grouped.items():
@@ -1902,12 +1934,7 @@ class Database:
                 continue
             ranked = sorted(
                 rows,
-                key=lambda row: (
-                    -float(row.get("relevance_score", 0.0) or 0.0),
-                    -self._sort_timestamp_score(str(row.get("last_scored_at", ""))),
-                    1 if str(row.get("source", "") or "") == "explore" else 0,
-                    str(row.get("bvid", "")),
-                ),
+                key=self._pool_trim_keep_key,
             )
             overflow_rows.extend(ranked[quota:])
 
@@ -1947,21 +1974,31 @@ class Database:
         *,
         target: int,
         source_share_quotas: dict[str, int],
+        raw_source_share_quotas: dict[str, int] | None = None,
     ) -> int:
         """Move suppressed candidates back to fresh for under-quota source families.
 
         This is a source-balance repair pass for pools that are already full but
         uneven. It only reactivates rows that are otherwise eligible for the
-        recommendation pool; the caller should run ``trim_pool_to_target_count``
-        afterwards if the fresh pool rises above ``target``.
+        recommendation pool. Reactivation is driven by frontend-available
+        deficits, but bounded by raw-material headroom so pending rows already
+        occupying a source's raw ceiling do not trigger more fresh inventory.
         """
         if target <= 0 or not source_share_quotas:
             return 0
 
-        current_counts = self.count_pool_candidates_by_source()
+        current_counts = self.count_pool_available_candidates_by_source()
+        raw_counts = self.count_pool_raw_material_by_source()
+        raw_quotas = raw_source_share_quotas or source_share_quotas
         deficits = {
-            source_family: min(target, max(0, int(quota)))
-            - int(current_counts.get(source_family, 0))
+            source_family: min(
+                min(target, max(0, int(quota))) - int(current_counts.get(source_family, 0)),
+                max(
+                    0,
+                    int(raw_quotas.get(source_family, quota))
+                    - int(raw_counts.get(source_family, 0)),
+                ),
+            )
             for source_family, quota in source_share_quotas.items()
             if int(quota) > 0
         }
@@ -2135,6 +2172,31 @@ class Database:
             return datetime.fromisoformat(normalized).timestamp()
         except ValueError:
             return 0.0
+
+    def _pool_trim_keep_key(self, row: dict[str, Any]) -> tuple[int, int, float, float, int, str]:
+        """Sort fresh raw material from most worth keeping to least.
+
+        Raw-ceiling trims include pending rows, so servability has to outrank
+        relevance: never keep an unopenable row over an openable one from the
+        same trim candidate set just because the pending row has a higher score.
+        """
+        linkable = _is_linkable_pool_source(
+            row.get("source"),
+            row.get("source_platform"),
+            row.get("content_url"),
+        )
+        ready = all(
+            str(row.get(field, "") or "").strip()
+            for field in ("pool_expression", "pool_topic_label", "style_key", "topic_group")
+        )
+        return (
+            0 if linkable else 1,
+            0 if ready else 1,
+            -float(row.get("relevance_score", 0.0) or 0.0),
+            -self._sort_timestamp_score(str(row.get("last_scored_at", ""))),
+            1 if str(row.get("source", "") or "") == "explore" else 0,
+            str(row.get("bvid", "")),
+        )
 
     def mark_pool_items_shown(self, bvids: list[str]) -> None:
         """Mark discovery-pool items as already shown in recommendations."""

@@ -530,7 +530,7 @@ discovery 不是“把整个找片过程都交给 LLM”。当前实现里，LLM
 | M119 style_key 风格标注 | ✅ | discovery 入池时会按标题/描述轻规则补 `style_key`，为推荐层的风格多样性约束提供稳定信号 |
 | M120 候选池来源交错取样 | ✅ | `get_pool_candidates()` 现在会按 `search / trending / related_chain / explore` 交错取样，避免候选窗口被单一来源刷满 |
 | M122 来源优先补齐与风格误判修正 | ✅ | 池子压缩时会优先保留不同 `source` 的候选，再限制重复 `style`；同时补强 `style_key` 规则，减少硬内容误判成 `light_chat` |
-| M123 按平台缺口补池子 | ✅ | runtime 在补货时会先按 `[scheduler.pool_source_shares]` 统计平台族余量；默认保存的 B 站 / 小红书 / 抖音 / YouTube share = 8 / 1 / 1 / 1，但默认只有 B 站启用，disabled 平台会从有效配比中剔除。B 站缺口会合并四个策略到一次 discover()，再用 `strategy_limits` 把同一个平台缺口分摊给各策略；小红书 / 抖音缺口分别交给对应 producer；YouTube 缺口交给 `YoutubeDiscoveryProducer` 独立 loop，按每日执行 ledger 调用 `yt_search` / `yt_trending` / `yt_channel`；超配额平台族会被压回目标内 |
+| M123 按平台缺口补池子 | ✅ | runtime 在补货时会先按 `[scheduler.pool_source_shares]` 统计平台族余量；默认保存的 B 站 / 小红书 / 抖音 / YouTube share = 8 / 1 / 1 / 1，但默认只有 B 站启用，disabled 平台会从有效配比中剔除。B 站缺口会按前端真实可换来源数计算，并用 raw-material headroom 夹住请求量，再合并四个策略到一次 discover()；小红书 / 抖音缺口分别交给对应 producer；YouTube 缺口交给 `YoutubeDiscoveryProducer` 独立 loop，按每日执行 ledger 调用 `yt_search` / `yt_trending` / `yt_channel`；超 raw-ceiling 配额的平台族才会被压回 raw 配额内 |
 | runtime 调度参数配置 | ✅ | 后台 discovery 不使用 `discovery_cron`；`ContinuousRefreshController` 从 `[scheduler]` 读取 `refresh_check_interval_seconds`、`signal_event_threshold`、`trending_refresh_hours`、`explore_refresh_hours`、`discovery_limit` 和 `proactive_push_interval_seconds`，配置热重载后重建 controller 生效 |
 | M124 LLM 评估窗口控费 | ✅ | runtime 按平台自身缺口传递补货 limit；各策略在 LLM 评估前把候选窗口收缩到 `max(6, limit*2)`、上限 90，少量补货时不再把几十条候选送去评分后立刻 suppressed；batch parser 兼容 fenced JSON、回显输入后追加结果、NDJSON object 序列，避免退回 N 次单条评估 |
 | v0.3.74 eval-batch JSON 容错统一 | ✅ | `_evaluate_batch` 改用 `llm.json_utils.extract_llm_json_list()`，在原 fenced / echo / JSONL 基础上统一兼容 `results/items/data/output/scores/evaluations` wrapper、MiMo malformed `{ [ ... ] }` 数组包裹和 schema echo 后最终结果；解析失败仍按原有降级路径处理，不把示例 JSON 当作真实评分 |
@@ -707,23 +707,27 @@ hints = snapshot.to_prompt_hints()
 
 ```python
 source_targets = controller._source_target_counts()
+raw_source_targets = controller._raw_source_target_counts()
 # 默认有效 [scheduler.pool_source_shares] = 8 且 pool_target=600 时：
 # {
 #     "bilibili": 600,
 # }
+# raw_source_targets 会使用 raw ceiling=max(target*2, target+120)，
+# 即默认 B 站 raw ceiling quota = 1200。
 # 如果显式启用 XHS / Douyin / YouTube，对应平台会按保存的 share 获得
 # 独立 target，并由各自 producer 或 strategy 补池。
 
 database.reactivate_under_quota_pool_sources(
     target=600,
     source_share_quotas=source_targets,
+    raw_source_share_quotas=raw_source_targets,
 )
 database.trim_pool_source_overflow(
-    source_share_quotas=source_targets,
+    source_share_quotas=raw_source_targets,
 )
 database.trim_pool_to_target_count(
-    target=600,
-    source_share_quotas=source_targets,
+    target=controller._raw_material_ceiling(),
+    source_share_quotas=raw_source_targets,
 )
 distribution_counts = database.get_pool_distribution_counts()
 ```
@@ -732,8 +736,9 @@ distribution_counts = database.get_pool_distribution_counts()
 
 - 配额单位是“平台族”，不是 raw `content_cache.source`。B 站的 `search` / `related_chain` / `trending` / `explore` 统一计入 `bilibili`；小红书的 `xhs-extension-*` 统一计入 `xiaohongshu`；抖音的 `dy-plugin-*` / `douyin*` 统一计入 `douyin`。
 - B 站缺口仍由 `ContentDiscoveryEngine.discover()` 的四个策略补齐；小红书缺口由 `XhsTaskProducer` / 浏览器插件任务链补齐；抖音缺口由 runtime `DouyinDiscoveryProducer` 调用 `DouyinDiscoveryService(cache=True)`，小缺口用 feed / hot 快速补零散名额，大缺口优先 search / hot 后台插件签名链路补池。
-- 如果池子已满但 `xiaohongshu` 或 `douyin` 低于配额，`reactivate_under_quota_pool_sources()` 会优先从 `pool_status='suppressed'` 且可打开的高分小平台候选中复活一批；如果某个平台族超过配额，`trim_pool_source_overflow()` 会先把该族压回目标内，即使总池子还没有达到 `pool_target_count`。
-- `trim_pool_to_target_count()` 继续负责总量硬上限：单轮 discovery 超过总池子目标时，会在平台配额保护后把总量裁回 `pool_target_count`。
+- 如果池子可换数未满但 `xiaohongshu` 或 `douyin` 低于可换配额，`reactivate_under_quota_pool_sources()` 会优先从 `pool_status='suppressed'` 且可打开的高分小平台候选中复活一批，但会同时检查 raw ceiling headroom，避免 XHS pending 库存已经占满 raw 配额时继续复活。
+- `trim_pool_source_overflow()` 和 `trim_pool_to_target_count()` 使用 raw ceiling 配额，而不是前端可换目标；trim 会先丢 non-linkable、再丢 non-ready，最后才按 relevance / recency 排序，避免为了保留高分 pending 行而删掉可打开候选。
+- B 站补货缺口使用 `count_pool_available_candidates_by_source()`，它与 `count_pool_candidates()` 同口径应用预生成 / 分类 / linkability / 最近看过过滤和全局 topic window；raw headroom 使用 `count_pool_raw_material_by_source()`，包含 XHS pending / 未整理素材，但同样排除最近看过和已推荐内容。
 - B 站补货 limit 使用 `bilibili` 平台自身缺口，而不是“总池子缺口”；例如总池子缺 57 条但 B 站只缺 5 条时，本轮 B 站 discovery 总目标只请求 5 条，并分摊为 `search=2, related_chain=1, trending=1, explore=1`，避免四个策略各自按 5 条去过采样和 LLM 评估。
 - 如果 B 站 search 已进入 `v_voucher` / `412` cooldown，本轮 Search / Explore / RelatedChain 内部的搜索分支会直接跳过；Trending 和 RelatedChain 的相关推荐 API 仍可继续提供候选，不会因为 search 风控把整轮 B 站 discovery 卡死。
 - 手动 refresh 也走同一套平台缺口计划：如果 B 站已经达到平台配额，而缺口属于小红书或抖音，手动刷新不会再强行跑 B 站 discovery 后又被 source cap 立刻 suppressed。

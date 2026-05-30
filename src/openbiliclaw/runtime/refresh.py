@@ -87,6 +87,11 @@ class SupportsEventDatabase(Protocol):
     def count_pool_candidates(self, *, xhs_self_nickname: str = "") -> int: ...
     def count_pool_readiness(self, *, xhs_self_nickname: str = "") -> dict[str, int]: ...
     def count_pool_candidates_by_source(self) -> dict[str, int]: ...
+    def count_pool_available_candidates_by_source(
+        self, *, max_per_topic_group: int = 3, xhs_self_nickname: str = ""
+    ) -> dict[str, int]: ...
+    def count_pool_raw_material_candidates(self) -> int: ...
+    def count_pool_raw_material_by_source(self) -> dict[str, int]: ...
     def get_pool_distribution_counts(self) -> dict[str, dict[str, int]]: ...
     def trim_explore_cluster_overflow(self, *, max_per_cluster: int = 3) -> int: ...
     def trim_topic_group_overflow(self, *, max_per_group: int) -> int: ...
@@ -102,6 +107,7 @@ class SupportsEventDatabase(Protocol):
         *,
         target: int,
         source_share_quotas: dict[str, int],
+        raw_source_share_quotas: dict[str, int] | None = None,
     ) -> int: ...
     def evict_stale_pool_items(self, *, max_age_days: int = 14) -> int: ...
     def get_notification_candidate(
@@ -249,6 +255,7 @@ class ContinuousRefreshController:
     # to DEBUG when nothing actually changed since the previous tick.
     # INFO fires only when the count or top-group rotates.
     _last_pool_maintenance_fingerprint: tuple[int, int, str] = (-1, -1, "")
+    _warned_pool_count_fallbacks: set[str] = field(default_factory=set, init=False)
     # Last pool_available count emitted via the runtime event stream so
     # popup-side ``mergeRuntimeStatusEvent`` only re-renders when the
     # number actually changes — see ``_publish_pool_status_if_changed``.
@@ -464,12 +471,14 @@ class ContinuousRefreshController:
         )
 
     def _enforce_pool_cap(self) -> bool:
-        """Trim any overflow and report whether the pool is at/above target.
+        """Run pool maintenance and report whether frontend availability is at target.
 
-        Returns ``True`` when the pool sits at or above ``pool_target_count``
-        *after* trimming, signalling the caller to skip discovery. A return of
-        ``False`` means there is room to replenish.
+        ``pool_target_count`` is a frontend-visible availability floor, not the
+        raw material cap. Raw rows may exceed it until ``_raw_material_ceiling``.
         """
+        source_targets = self._source_target_counts()
+        raw_source_targets = self._raw_source_target_counts()
+
         # Cross-source topic_group quota runs every tick, not just inside
         # _run_refresh_plan: when pool sits at cap, refresh exits before
         # discover, so the in-plan trim would never fire and pre-existing
@@ -482,13 +491,13 @@ class ContinuousRefreshController:
         except Exception:
             logger.exception("trim_topic_group_overflow failed")
 
-        source_targets = self._source_target_counts()
         reactivate_fn = getattr(self.database, "reactivate_under_quota_pool_sources", None)
         if callable(reactivate_fn):
             try:
                 reactivated = reactivate_fn(
                     target=self.pool_target_count,
                     source_share_quotas=source_targets,
+                    raw_source_share_quotas=raw_source_targets,
                 )
                 if reactivated > 0:
                     # Demote to DEBUG when the count is identical to the
@@ -518,7 +527,7 @@ class ContinuousRefreshController:
         if callable(trim_source_overflow_fn):
             try:
                 source_overflow_suppressed = trim_source_overflow_fn(
-                    source_share_quotas=source_targets,
+                    source_share_quotas=raw_source_targets,
                 )
                 if source_overflow_suppressed > 0:
                     logger.info(
@@ -534,27 +543,33 @@ class ContinuousRefreshController:
         pool_available = self.database.count_pool_candidates(
             xhs_self_nickname=self._xhs_self_nickname()
         )
-        if pool_available > self.pool_target_count:
-            trimmed = 0
-            try:
-                trimmed = self.database.trim_pool_to_target_count(
-                    target=self.pool_target_count,
-                    source_share_quotas=source_targets,
-                )
-            except Exception:
-                logger.exception("trim_pool_to_target_count failed")
-            pool_available = self.database.count_pool_candidates()
+        raw_ceiling = self._raw_material_ceiling()
+        trimmed = 0
+        try:
+            trimmed = self.database.trim_pool_to_target_count(
+                target=raw_ceiling,
+                source_share_quotas=raw_source_targets,
+            )
+        except Exception:
+            logger.exception("trim_pool_to_target_count failed")
+        if trimmed > 0:
+            pool_available = self.database.count_pool_candidates(
+                xhs_self_nickname=self._xhs_self_nickname()
+            )
             logger.info(
-                "enforce_pool_cap: trimmed=%s, pool_available=%s, target=%s",
+                "enforce_pool_cap: raw_trimmed=%s, pool_available=%s, target=%s, raw_ceiling=%s",
                 trimmed,
                 pool_available,
                 self.pool_target_count,
+                raw_ceiling,
             )
         else:
             logger.debug(
-                "enforce_pool_cap: no trim needed, pool_available=%s, target=%s",
+                "enforce_pool_cap: no raw trim needed, "
+                "pool_available=%s, target=%s, raw_ceiling=%s",
                 pool_available,
                 self.pool_target_count,
+                raw_ceiling,
             )
         return pool_available >= self.pool_target_count
 
@@ -859,9 +874,9 @@ class ContinuousRefreshController:
         if profile is None:
             return
         try:
-            before_pool_count = int(self.database.count_pool_candidates(
-                xhs_self_nickname=self._xhs_self_nickname()
-            ))
+            before_pool_count = int(
+                self.database.count_pool_candidates(xhs_self_nickname=self._xhs_self_nickname())
+            )
         except Exception:
             before_pool_count = -1
         try:
@@ -1530,9 +1545,7 @@ class ContinuousRefreshController:
         cutoff = (now - timedelta(hours=self._PROBE_COOLDOWN_HOURS)).isoformat()
         probed = {d: t for d, t in probed.items() if t > cutoff}
         probed_axes = {axis: t for axis, t in probed_axes.items() if t > cutoff}
-        probed_distance_bands = {
-            mode: t for mode, t in probed_distance_bands.items() if t > cutoff
-        }
+        probed_distance_bands = {mode: t for mode, t in probed_distance_bands.items() if t > cutoff}
 
         top = choose_next_probe_candidate(
             specs,
@@ -1649,8 +1662,7 @@ class ContinuousRefreshController:
         if specifics:
             specific_hint = "（比如：" + "、".join(specifics[:3]) + "）"
         question = (
-            f"我猜【{domain}】{specific_hint}可能是你想避开的方向"
-            f"——{reason} 这个判断准不准？"
+            f"我猜【{domain}】{specific_hint}可能是你想避开的方向——{reason} 这个判断准不准？"
             if reason
             else f"我感觉【{domain}】{specific_hint}可能不是你想看的方向，这个判断准不准？"
         )
@@ -1717,45 +1729,107 @@ class ContinuousRefreshController:
         return "正在继续给你补候选"
 
     def _build_source_replenishment_plan(self) -> list[tuple[list[str], int]]:
-        source_counts = self.database.count_pool_candidates_by_source()
+        source_available_counts = self._count_pool_available_candidates_by_source()
+        source_raw_counts = self._count_pool_raw_material_by_source()
         target_counts = self._source_target_counts()
+        raw_target_counts = self._raw_source_target_counts()
         plan: list[tuple[list[str], int]] = []
         for source in _PLATFORM_SOURCE_ORDER:
-            deficit = max(
-                0,
-                int(target_counts.get(source, 0))
-                - self._platform_source_count(source_counts, source),
+            requested = self._source_requested_count(
+                source,
+                source_available_counts=source_available_counts,
+                source_raw_counts=source_raw_counts,
+                target_counts=target_counts,
+                raw_target_counts=raw_target_counts,
             )
-            if deficit <= 0:
+            if requested <= 0:
                 continue
             if source == "bilibili":
                 # Bilibili is a platform quota now, but its implementation
                 # still fans out through four established strategy names.
-                plan.append((list(_BILIBILI_DISCOVERY_SOURCES), deficit))
+                plan.append((list(_BILIBILI_DISCOVERY_SOURCES), requested))
         return plan
 
-    def _source_target_counts(self) -> dict[str, int]:
+    def _raw_material_ceiling(self) -> int:
+        return max(self.pool_target_count * 2, self.pool_target_count + 120)
+
+    def _source_target_counts(self, *, total: int | None = None) -> dict[str, int]:
+        target_total = self.pool_target_count if total is None else max(0, int(total))
         shares = self._normalized_pool_source_shares()
         total_share = sum(shares.values())
-        remaining = self.pool_target_count
+        remaining = target_total
         targets: dict[str, int] = {}
         items = list(shares.items())
         for index, (source, share) in enumerate(items):
             if index == len(items) - 1:
                 targets[source] = remaining
                 break
-            count = round(self.pool_target_count * share / total_share)
+            count = round(target_total * share / total_share)
             count = min(remaining, count)
             targets[source] = count
             remaining -= count
         return targets
 
+    def _raw_source_target_counts(self) -> dict[str, int]:
+        return self._source_target_counts(total=self._raw_material_ceiling())
+
     def _source_deficit(self, source_family: str) -> int:
-        source_counts = self.database.count_pool_candidates_by_source()
-        target_counts = self._source_target_counts()
-        target = int(target_counts.get(source_family, 0))
-        current = self._platform_source_count(source_counts, source_family)
-        return max(0, target - current)
+        return self._source_requested_count(source_family)
+
+    def _source_requested_count(
+        self,
+        source_family: str,
+        *,
+        source_available_counts: dict[str, int] | None = None,
+        source_raw_counts: dict[str, int] | None = None,
+        target_counts: dict[str, int] | None = None,
+        raw_target_counts: dict[str, int] | None = None,
+    ) -> int:
+        if source_available_counts is None:
+            source_available_counts = self._count_pool_available_candidates_by_source()
+        if source_raw_counts is None:
+            source_raw_counts = self._count_pool_raw_material_by_source()
+        if target_counts is None:
+            target_counts = self._source_target_counts()
+        if raw_target_counts is None:
+            raw_target_counts = self._raw_source_target_counts()
+
+        available_target = int(target_counts.get(source_family, 0))
+        current_available = self._platform_source_count(source_available_counts, source_family)
+        available_deficit = max(0, available_target - current_available)
+        raw_target = int(raw_target_counts.get(source_family, 0))
+        current_raw = self._platform_source_count(source_raw_counts, source_family)
+        raw_headroom = max(0, raw_target - current_raw)
+        return max(0, min(available_deficit, raw_headroom))
+
+    def _count_pool_available_candidates_by_source(self) -> dict[str, int]:
+        count_fn = getattr(self.database, "count_pool_available_candidates_by_source", None)
+        if callable(count_fn):
+            try:
+                counts = count_fn(xhs_self_nickname=self._xhs_self_nickname())
+            except TypeError:
+                counts = count_fn()
+            return {str(source): int(count) for source, count in dict(counts).items()}
+        self._warn_pool_count_fallback_once("available_by_source")
+        return self.database.count_pool_candidates_by_source()
+
+    def _count_pool_raw_material_by_source(self) -> dict[str, int]:
+        count_fn = getattr(self.database, "count_pool_raw_material_by_source", None)
+        if callable(count_fn):
+            counts = count_fn()
+            return {str(source): int(count) for source, count in dict(counts).items()}
+        self._warn_pool_count_fallback_once("raw_material_by_source")
+        return self.database.count_pool_candidates_by_source()
+
+    def _warn_pool_count_fallback_once(self, key: str) -> None:
+        if key in self._warned_pool_count_fallbacks:
+            return
+        self._warned_pool_count_fallbacks.add(key)
+        logger.warning(
+            "pool source count fallback used for %s; production should expose available/raw "
+            "source counters to avoid raw-count deadlocks",
+            key,
+        )
 
     def _platform_source_count(self, source_counts: dict[str, int], source_family: str) -> int:
         if source_family == "bilibili":

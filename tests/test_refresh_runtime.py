@@ -11,6 +11,7 @@ from openbiliclaw.recommendation.delight import DEFAULT_DELIGHT_THRESHOLD
 from openbiliclaw.runtime.events import RuntimeEventHub
 from openbiliclaw.runtime.presence import PresenceTracker
 from openbiliclaw.runtime.refresh import ContinuousRefreshController
+from openbiliclaw.storage.database import Database
 
 _MULTI_SOURCE_SHARES = {"bilibili": 8, "xiaohongshu": 1, "douyin": 1}
 
@@ -24,6 +25,27 @@ class _FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+def _seed_visible_pool_row(
+    db: Database,
+    bvid: str,
+    *,
+    source: str = "search",
+    topic_group: str = "测试分组",
+    relevance_score: float = 0.5,
+) -> None:
+    db.cache_content(
+        bvid,
+        title=bvid,
+        up_name="UP",
+        source=source,
+        relevance_score=relevance_score,
+        pool_expression="测试推荐文案",
+        pool_topic_label="测试主题",
+        style_key="tutorial",
+        topic_group=topic_group,
+    )
 
 
 class _FakeMemoryManager:
@@ -57,6 +79,8 @@ class _FakeDatabase:
         *,
         pool_count: int = 30,
         source_counts: dict[str, int] | None = None,
+        source_available_counts: dict[str, int] | None = None,
+        source_raw_counts: dict[str, int] | None = None,
         pool_raw_count: int | None = None,
         pool_pending_count: int = 0,
         reactivate_pool_count: int = 0,
@@ -68,14 +92,24 @@ class _FakeDatabase:
         self.pool_raw_count = pool_raw_count
         self.pool_pending_count = pool_pending_count
         self.source_counts = source_counts or {}
+        self.source_available_counts = (
+            dict(source_available_counts)
+            if source_available_counts is not None
+            else dict(self.source_counts)
+        )
+        self.source_raw_counts = (
+            dict(source_raw_counts) if source_raw_counts is not None else dict(self.source_counts)
+        )
         self.reactivate_pool_count = reactivate_pool_count
         self.delight_candidate = delight_candidate
         self.delight_count = delight_count
         self.count_delight_thresholds: list[float] = []
         self.get_delight_thresholds: list[float] = []
+        self.trim_target: int | None = None
         self.trim_source_share_quotas: dict[str, int] | None = None
         self.trim_overflow_source_share_quotas: dict[str, int] | None = None
         self.reactivate_source_share_quotas: dict[str, int] | None = None
+        self.reactivate_raw_source_share_quotas: dict[str, int] | None = None
         self.distribution_counts: dict[str, dict[str, int]] = {
             "topic_group": {"科技": 3},
             "style_key": {"deep_dive": 2},
@@ -122,6 +156,17 @@ class _FakeDatabase:
     def count_pool_candidates_by_source(self) -> dict[str, int]:
         return dict(self.source_counts)
 
+    def count_pool_available_candidates_by_source(
+        self, *, max_per_topic_group: int = 3, xhs_self_nickname: str = ""
+    ) -> dict[str, int]:
+        return dict(self.source_available_counts)
+
+    def count_pool_raw_material_candidates(self) -> int:
+        return self.pool_count if self.pool_raw_count is None else self.pool_raw_count
+
+    def count_pool_raw_material_by_source(self) -> dict[str, int]:
+        return dict(self.source_raw_counts)
+
     def get_pool_distribution_counts(self) -> dict[str, dict[str, int]]:
         return {axis: dict(counts) for axis, counts in self.distribution_counts.items()}
 
@@ -136,10 +181,16 @@ class _FakeDatabase:
         *,
         target: int,
         source_share_quotas: dict[str, int],
+        raw_source_share_quotas: dict[str, int] | None = None,
     ) -> int:
         self.reactivate_source_share_quotas = dict(source_share_quotas)
+        self.reactivate_raw_source_share_quotas = (
+            dict(raw_source_share_quotas) if raw_source_share_quotas is not None else None
+        )
         reactivated = max(0, self.reactivate_pool_count)
         self.pool_count += reactivated
+        if self.pool_raw_count is not None:
+            self.pool_raw_count += reactivated
         self.reactivate_pool_count = 0
         return reactivated
 
@@ -149,13 +200,18 @@ class _FakeDatabase:
         target: int,
         source_share_quotas: dict[str, int] | None = None,
     ) -> int:
+        self.trim_target = target
         self.trim_source_share_quotas = (
             dict(source_share_quotas) if source_share_quotas is not None else None
         )
-        if self.pool_count <= target:
+        raw_count = self.pool_count if self.pool_raw_count is None else self.pool_raw_count
+        if raw_count <= target:
             return 0
-        trimmed = self.pool_count - target
-        self.pool_count = target
+        trimmed = raw_count - target
+        if self.pool_raw_count is None:
+            self.pool_count = target
+        else:
+            self.pool_raw_count = target
         return trimmed
 
     def trim_pool_source_overflow(self, *, source_share_quotas: dict[str, int]) -> int:
@@ -1730,7 +1786,7 @@ async def test_force_refresh_skips_when_pool_at_cap() -> None:
     assert discovery.calls == []
 
 
-async def test_refresh_trims_pool_overflow_before_skipping() -> None:
+async def test_refresh_skips_discovery_when_available_pool_is_at_target_floor() -> None:
     database = _FakeDatabase([], pool_count=50)
     controller = ContinuousRefreshController(
         memory_manager=_FakeMemoryManager(),
@@ -1744,7 +1800,8 @@ async def test_refresh_trims_pool_overflow_before_skipping() -> None:
     result = await controller.refresh_if_needed()
 
     assert result["reason"] == "pool_at_cap"
-    assert database.pool_count == 30  # trimmed back down to target
+    assert database.pool_count == 50
+    assert database.trim_target == 150
 
 
 def test_source_target_counts_use_platform_default_shares() -> None:
@@ -1799,6 +1856,121 @@ def test_source_replenishment_plan_maps_bilibili_deficit_to_bilibili_strategies(
     assert controller._build_source_replenishment_plan() == [
         (["search", "related_chain", "trending", "explore"], 300)
     ]
+
+
+def test_source_replenishment_plan_uses_frontend_available_source_counts() -> None:
+    controller = ContinuousRefreshController(
+        memory_manager=_FakeMemoryManager(),
+        database=_FakeDatabase(
+            [],
+            pool_count=246,
+            source_counts={"bilibili": 300},
+            source_available_counts={"bilibili": 246},
+            source_raw_counts={"bilibili": 300},
+        ),
+        soul_engine=_FakeSoulEngine(),
+        discovery_engine=_FakeDiscoveryEngine(),
+        recommendation_engine=_FakeRecommendationEngine(),
+        pool_target_count=300,
+    )
+
+    assert controller._build_source_replenishment_plan() == [
+        (["search", "related_chain", "trending", "explore"], 54)
+    ]
+
+
+def test_source_replenishment_plan_clamps_requested_count_by_raw_headroom() -> None:
+    controller = ContinuousRefreshController(
+        memory_manager=_FakeMemoryManager(),
+        database=_FakeDatabase(
+            [],
+            pool_count=250,
+            source_available_counts={"bilibili": 250},
+            source_raw_counts={"bilibili": 570},
+        ),
+        soul_engine=_FakeSoulEngine(),
+        discovery_engine=_FakeDiscoveryEngine(),
+        recommendation_engine=_FakeRecommendationEngine(),
+        pool_target_count=300,
+    )
+
+    assert controller._build_source_replenishment_plan() == [
+        (["search", "related_chain", "trending", "explore"], 30)
+    ]
+
+
+def test_source_replenishment_plan_stops_when_raw_headroom_is_zero() -> None:
+    controller = ContinuousRefreshController(
+        memory_manager=_FakeMemoryManager(),
+        database=_FakeDatabase(
+            [],
+            pool_count=270,
+            source_available_counts={"bilibili": 270},
+            source_raw_counts={"bilibili": 600},
+        ),
+        soul_engine=_FakeSoulEngine(),
+        discovery_engine=_FakeDiscoveryEngine(),
+        recommendation_engine=_FakeRecommendationEngine(),
+        pool_target_count=300,
+    )
+
+    assert controller._build_source_replenishment_plan() == []
+    assert controller._source_deficit("bilibili") == 0
+
+
+def test_real_database_enforce_then_replenish_reaches_available_target(
+    tmp_path,
+) -> None:
+    db = Database(tmp_path / "pool.db")
+    db.initialize()
+
+    for group_index in range(82):
+        for rank in range(3):
+            _seed_visible_pool_row(
+                db,
+                f"BVBASE{group_index:02d}{rank}",
+                topic_group=f"topic-{group_index}",
+                relevance_score=1.0 - rank / 100,
+            )
+    for index in range(54):
+        _seed_visible_pool_row(
+            db,
+            f"BVEXTRA{index:02d}",
+            topic_group=f"topic-{index % 18}",
+            relevance_score=0.10,
+        )
+
+    controller = ContinuousRefreshController(
+        memory_manager=_FakeMemoryManager(),
+        database=db,
+        soul_engine=_FakeSoulEngine(),
+        discovery_engine=_FakeDiscoveryEngine(),
+        recommendation_engine=_FakeRecommendationEngine(),
+        pool_target_count=300,
+    )
+
+    assert db.count_pool_candidates() == 246
+    assert db.count_pool_candidates_by_source() == {"bilibili": 300}
+    assert db.count_pool_raw_material_by_source() == {"bilibili": 300}
+    assert controller._build_source_replenishment_plan() == [
+        (["search", "related_chain", "trending", "explore"], 54)
+    ]
+
+    assert controller._enforce_pool_cap() is False
+    assert db.count_pool_raw_material_by_source() == {"bilibili": 300}
+
+    for index in range(54):
+        _seed_visible_pool_row(
+            db,
+            f"BVNEW{index:02d}",
+            topic_group=f"new-topic-{index}",
+            relevance_score=0.80,
+        )
+
+    assert controller._enforce_pool_cap() is True
+    assert db.count_pool_candidates() == 300
+    assert db.count_pool_raw_material_by_source() == {"bilibili": 354}
+    db.close()
 
 
 def test_disabled_bilibili_share_skips_bilibili_refresh_strategies() -> None:
@@ -2035,8 +2207,8 @@ async def test_youtube_producer_skips_when_youtube_at_quota() -> None:
     assert producer.calls == []
 
 
-def test_pool_cap_trim_receives_xhs_family_quota() -> None:
-    database = _FakeDatabase([], pool_count=650)
+def test_pool_cap_total_trim_receives_raw_ceiling_source_quotas() -> None:
+    database = _FakeDatabase([], pool_count=650, pool_raw_count=1300)
     controller = ContinuousRefreshController(
         memory_manager=_FakeMemoryManager(),
         database=database,
@@ -2048,10 +2220,12 @@ def test_pool_cap_trim_receives_xhs_family_quota() -> None:
     )
 
     assert controller._enforce_pool_cap() is True
+    assert database.trim_target == 1200
     assert database.trim_source_share_quotas is not None
-    assert database.trim_source_share_quotas["bilibili"] == 480
-    assert database.trim_source_share_quotas["xiaohongshu"] == 60
-    assert database.trim_source_share_quotas["douyin"] == 60
+    assert database.trim_source_share_quotas["bilibili"] == 960
+    assert database.trim_source_share_quotas["xiaohongshu"] == 120
+    assert database.trim_source_share_quotas["douyin"] == 120
+    assert database.pool_raw_count == 1200
 
 
 def test_pool_cap_enforces_platform_caps_even_when_ready_pool_below_target() -> None:
@@ -2068,9 +2242,9 @@ def test_pool_cap_enforces_platform_caps_even_when_ready_pool_below_target() -> 
 
     assert controller._enforce_pool_cap() is False
     assert database.trim_overflow_source_share_quotas == {
-        "bilibili": 480,
-        "xiaohongshu": 60,
-        "douyin": 60,
+        "bilibili": 960,
+        "xiaohongshu": 120,
+        "douyin": 120,
     }
 
 
@@ -2091,23 +2265,23 @@ def test_pool_cap_reactivates_under_quota_sources_before_trim() -> None:
     assert database.reactivate_source_share_quotas["bilibili"] == 480
     assert database.reactivate_source_share_quotas["xiaohongshu"] == 60
     assert database.reactivate_source_share_quotas["douyin"] == 60
+    assert database.reactivate_raw_source_share_quotas is not None
+    assert database.reactivate_raw_source_share_quotas["bilibili"] == 960
+    assert database.reactivate_raw_source_share_quotas["xiaohongshu"] == 120
+    assert database.reactivate_raw_source_share_quotas["douyin"] == 120
     assert database.trim_source_share_quotas is not None
-    assert database.pool_count == 600
+    assert database.trim_source_share_quotas["bilibili"] == 960
+    assert database.pool_count == 620
 
 
-async def test_run_refresh_plan_enforces_cap_when_discovery_overshoots() -> None:
+async def test_run_refresh_plan_enforces_raw_ceiling_when_discovery_overshoots() -> None:
     """Regression: the per-strategy ``current_pool_count >= target`` check
     only prevents *starting* a strategy when already at cap. Within a
     single ``discover()`` call the pool can overshoot freely (long-tail
-    LLM eval batches add 50-100 rows per strategy in production). Before
-    this fix, ``_run_refresh_plan`` only ran topic / cluster / age trims
-    afterward — none of which cap the absolute total — and the periodic
-    ``_enforce_pool_cap`` tick in ``run_forever`` was blocked by the
-    refresh's own long lock, so the popup routinely saw
-    ``pool_available_count`` drift past ``pool_target_count`` (e.g. 668
-    with target=600 in production). After the fix, every refresh plan
-    ends with an explicit ``_enforce_pool_cap()`` call so the pool sits
-    at ≤ target before the popup re-fetches.
+    LLM eval batches add 50-100 rows per strategy in production). The
+    frontend-visible count is allowed to overshoot the target floor, but
+    post-refresh enforcement must still cap raw material at the raw
+    ceiling.
     """
 
     class OvershootingDiscovery(_FakeDiscoveryEngine):
@@ -2122,12 +2296,20 @@ async def test_run_refresh_plan_enforces_cap_when_discovery_overshoots() -> None
             limit: int = 30,
         ) -> list[dict[str, object]]:
             self.calls.append((profile, strategies, limit))
-            # Single strategy adds 25 rows — pool jumps from 25 to 50,
-            # overshooting target=30 by 20.
+            # Single strategy adds 25 rows. Available jumps from 25 to 50
+            # and raw jumps from 145 to 170, above raw ceiling 150.
             self.database.pool_count += 25
+            if self.database.pool_raw_count is not None:
+                self.database.pool_raw_count += 25
             return [{"bvid": "BV-y", "relevance_score": 0.5}]
 
-    database = _FakeDatabase([], pool_count=25)
+    database = _FakeDatabase(
+        [],
+        pool_count=25,
+        pool_raw_count=145,
+        source_available_counts={"bilibili": 25},
+        source_raw_counts={"bilibili": 145},
+    )
     discovery = OvershootingDiscovery(database)
     controller = ContinuousRefreshController(
         memory_manager=_FakeMemoryManager(),
@@ -2140,10 +2322,8 @@ async def test_run_refresh_plan_enforces_cap_when_discovery_overshoots() -> None
 
     await controller.force_refresh()
 
-    # The post-refresh _enforce_pool_cap call must trim back to target.
-    assert database.pool_count <= 30, (
-        f"pool overshoot not enforced: {database.pool_count} > target=30"
-    )
+    assert database.pool_count == 50
+    assert database.pool_raw_count == 150
 
 
 async def test_run_refresh_plan_stops_midway_when_cap_hit() -> None:

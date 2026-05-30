@@ -481,6 +481,52 @@ class TestDatabase:
             assert len(xhs_fresh) == 2
             db.close()
 
+    def test_trim_pool_source_overflow_sheds_pending_xhs_before_linkable_rows(self) -> None:
+        """Raw-ceiling source trim should drop unopenable XHS rows first."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            for i in range(50):
+                _seed_visible(
+                    db,
+                    f"xhs-linkable-{i}",
+                    title=f"linkable {i}",
+                    up_name="XHS",
+                    source="xhs-extension-task",
+                    source_platform="xiaohongshu",
+                    content_id=f"xhs-linkable-{i}",
+                    content_url=(
+                        f"https://www.xiaohongshu.com/explore/xhs-linkable-{i}?xsec_token=ABC="
+                    ),
+                    relevance_score=0.10 + i / 1000,
+                )
+            for i in range(60):
+                _seed_visible(
+                    db,
+                    f"xhs-pending-{i}",
+                    title=f"pending {i}",
+                    up_name="XHS",
+                    source="xhs-extension-task",
+                    source_platform="xiaohongshu",
+                    content_id=f"xhs-pending-{i}",
+                    content_url=f"https://www.xiaohongshu.com/explore/xhs-pending-{i}",
+                    relevance_score=0.90 + i / 1000,
+                )
+
+            suppressed = db.trim_pool_source_overflow(source_share_quotas={"xiaohongshu": 60})
+
+            assert suppressed == 50
+            rows = db.get_cached_content(limit=120)
+            by_bvid = {row["bvid"]: row for row in rows}
+            assert all(by_bvid[f"xhs-linkable-{i}"]["pool_status"] == "fresh" for i in range(50))
+            pending_suppressed = sum(
+                1 for i in range(60) if by_bvid[f"xhs-pending-{i}"]["pool_status"] == "suppressed"
+            )
+            assert pending_suppressed == 50
+            assert db.count_pool_raw_material_by_source() == {"xiaohongshu": 60}
+            db.close()
+
     def test_trim_pool_legacy_score_only_when_no_quotas(self) -> None:
         """Without source_share_quotas, the trim must keep its old score-first
         behavior — that's the path used by callers that don't care about
@@ -783,6 +829,53 @@ class TestDatabase:
             )
             assert search_fresh == 3
             assert db.count_pool_candidates() == 6
+            db.close()
+
+    def test_reactivate_under_quota_pool_sources_respects_raw_material_capacity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            for i in range(3):
+                _seed_visible(
+                    db,
+                    f"xhs-pending-capacity-{i}",
+                    title=f"pending {i}",
+                    source="xhs-extension-task",
+                    source_platform="xiaohongshu",
+                    content_id=f"xhs-pending-capacity-{i}",
+                    content_url=f"https://www.xiaohongshu.com/explore/xhs-pending-capacity-{i}",
+                    relevance_score=0.90,
+                )
+            for i in range(3):
+                _seed_visible(
+                    db,
+                    f"xhs-suppressed-capacity-{i}",
+                    title=f"suppressed {i}",
+                    source="xhs-extension-task",
+                    source_platform="xiaohongshu",
+                    content_id=f"xhs-suppressed-capacity-{i}",
+                    content_url=(
+                        f"https://www.xiaohongshu.com/explore/xhs-suppressed-capacity-{i}"
+                        "?xsec_token=ABC="
+                    ),
+                    relevance_score=0.80,
+                )
+                db._execute_write(
+                    "UPDATE content_cache SET pool_status = 'suppressed' WHERE bvid = ?",
+                    (f"xhs-suppressed-capacity-{i}",),
+                )
+
+            reactivated = db.reactivate_under_quota_pool_sources(
+                target=3,
+                source_share_quotas={"xiaohongshu": 3},
+                raw_source_share_quotas={"xiaohongshu": 3},
+            )
+
+            assert reactivated == 0
+            assert db.count_pool_raw_material_by_source() == {"xiaohongshu": 3}
             db.close()
 
     def test_purge_pool_by_disliked_topics_matches_topic_key_exact(self) -> None:
@@ -1390,6 +1483,127 @@ class TestDatabase:
 
             db.close()
 
+    def test_count_pool_available_candidates_by_source_uses_global_topic_window(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            _seed_visible(
+                db,
+                "BV-SHARED-1",
+                title="共享主题 1",
+                source="search",
+                topic_group="共享主题",
+                relevance_score=0.99,
+            )
+            _seed_visible(
+                db,
+                "xhs-shared-1",
+                title="共享主题 2",
+                source="xhs-extension-task",
+                source_platform="xiaohongshu",
+                content_id="xhs-shared-1",
+                content_url="https://www.xiaohongshu.com/explore/xhs-shared-1?xsec_token=ABC=",
+                topic_group="共享主题",
+                relevance_score=0.98,
+            )
+            _seed_visible(
+                db,
+                "BV-SHARED-2",
+                title="共享主题 3",
+                source="related_chain",
+                topic_group="共享主题",
+                relevance_score=0.97,
+            )
+            _seed_visible(
+                db,
+                "xhs-shared-2",
+                title="共享主题 4",
+                source="xhs-extension-search",
+                source_platform="xiaohongshu",
+                content_id="xhs-shared-2",
+                content_url="https://www.xiaohongshu.com/explore/xhs-shared-2?xsec_token=ABC=",
+                topic_group="共享主题",
+                relevance_score=0.96,
+            )
+            _seed_visible(
+                db,
+                "dy-other-1",
+                title="其他主题",
+                source="dy-plugin-search",
+                source_platform="douyin",
+                content_id="dy-other-1",
+                content_url="https://www.douyin.com/video/dy-other-1",
+                topic_group="其他主题",
+                relevance_score=0.50,
+            )
+
+            counts = db.count_pool_available_candidates_by_source()
+
+            assert counts == {"bilibili": 2, "xiaohongshu": 1, "douyin": 1}
+            assert sum(counts.values()) == db.count_pool_candidates()
+            db.close()
+
+    def test_count_pool_raw_material_counts_pending_xhs_and_excludes_viewed_rows(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.initialize()
+
+            _seed_visible(db, "BV-RAW", title="B 站素材", source="search")
+            _seed_visible(
+                db,
+                "xhs-linkable-raw",
+                title="可打开小红书",
+                source="xhs-extension-task",
+                source_platform="xiaohongshu",
+                content_id="xhs-linkable-raw",
+                content_url=(
+                    "https://www.xiaohongshu.com/explore/xhs-linkable-raw?xsec_token=ABC="
+                ),
+            )
+            _seed_visible(
+                db,
+                "xhs-pending-raw",
+                title="等待 token 小红书",
+                source="xhs-extension-task",
+                source_platform="xiaohongshu",
+                content_id="xhs-pending-raw",
+                content_url="https://www.xiaohongshu.com/explore/xhs-pending-raw",
+            )
+            _seed_visible(
+                db,
+                "xhs-viewed-raw",
+                title="看过的小红书",
+                source="xhs-extension-task",
+                source_platform="xiaohongshu",
+                content_id="xhs-viewed-raw",
+                content_url="https://www.xiaohongshu.com/explore/xhs-viewed-raw",
+            )
+            _seed_visible(db, "BV-RECOMMENDED", title="已推荐", source="search")
+            db.insert_recommendation(
+                "BV-RECOMMENDED",
+                confidence=0.9,
+                expression="已经推过",
+                topic="测试",
+            )
+            db.insert_event(
+                "view",
+                title="看过的小红书",
+                url="https://www.xiaohongshu.com/explore/xhs-viewed-raw",
+                metadata={"source_platform": "xiaohongshu", "note_id": "xhs-viewed-raw"},
+            )
+
+            counts = db.count_pool_raw_material_by_source()
+
+            assert db.count_pool_raw_material_candidates() == 3
+            assert counts == {"bilibili": 1, "xiaohongshu": 2}
+            assert sum(counts.values()) == db.count_pool_raw_material_candidates()
+            db.close()
+
     def test_update_pool_copy_makes_row_visible_in_pool(self) -> None:
         """v0.3.57+: round-trip — empty-copy row stays hidden until
         update_pool_copy fills both fields, then becomes visible."""
@@ -1976,9 +2190,7 @@ class TestDatabase:
                 source_platform="bilibili",
             )
 
-            count = db.count_pool_candidates(
-                max_per_topic_group=0, xhs_self_nickname="Me"
-            )
+            count = db.count_pool_candidates(max_per_topic_group=0, xhs_self_nickname="Me")
             assert count == 2  # xhs_other + BV_bili
 
             readiness = db.count_pool_readiness(xhs_self_nickname="Me")
@@ -2007,9 +2219,7 @@ class TestDatabase:
             rows = db.get_pool_candidates(limit=10, xhs_self_nickname="")
             assert any(r["bvid"] == "xhs_row" for r in rows)
 
-            count = db.count_pool_candidates(
-                max_per_topic_group=0, xhs_self_nickname=""
-            )
+            count = db.count_pool_candidates(max_per_topic_group=0, xhs_self_nickname="")
             assert count >= 1
 
             db.close()
@@ -2047,14 +2257,10 @@ class TestDatabase:
                 source_platform="xiaohongshu",
             )
 
-            eval_rows = db.get_pool_candidates_needing_evaluation(
-                limit=20, xhs_self_nickname="Me"
-            )
+            eval_rows = db.get_pool_candidates_needing_evaluation(limit=20, xhs_self_nickname="Me")
             assert not any(r["bvid"] == "xhs_self_eval" for r in eval_rows)
 
-            copy_rows = db.get_pool_candidates_needing_copy(
-                limit=20, xhs_self_nickname="Me"
-            )
+            copy_rows = db.get_pool_candidates_needing_copy(limit=20, xhs_self_nickname="Me")
             assert not any(r["bvid"] == "xhs_self_copy" for r in copy_rows)
 
             db.close()

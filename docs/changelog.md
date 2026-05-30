@@ -6,6 +6,10 @@
 
 ## v0.3.96 / extension v0.3.55: 插件收藏 / 稍后再看状态同步修复（2026-05-30）
 
+- 修复候选池 `pool_target_count` 卡在 raw B 站库存而前端可换数到不了目标的问题：补池来源缺口改用 `count_pool_available_candidates_by_source()`，与 `count_pool_candidates()` 同口径应用预生成 / 分类 / 可打开 / 最近看过过滤和全局 topic window；B 站 raw=300 但 frontend available=246 时会继续请求 54 条，而不是误判已满。
+- 候选池 cap 从“raw 等于 `pool_target_count`”拆成“前端可换目标 + raw material ceiling”：raw 库存可增长到 `max(pool_target_count * 2, pool_target_count + 120)`，请求侧按 raw headroom 夹住，cap 侧用 raw ceiling quotas 修剪，避免从 300 死锁挪到 600 churn。
+- XHS pending 库存纳入 raw material 统计和 raw trim：未带 `xsec_token` 的小红书行会消耗 raw headroom，达到 raw 配额后 producer / reactivation 停止继续加货；raw trim 采用 least-servable-first，先丢不可打开 / 未就绪行，再按 relevance / recency 排序，避免保留 pending 行却删掉可打开候选。
+- 测试：新增 storage 层 available-by-source parity、raw-material parity、pending XHS trim / reactivation 回归；refresh runtime 新增 available 缺口、raw headroom clamp、raw ceiling cap 和真实 SQLite 300 raw / 246 available → 300 available 的端到端回归。
 - 修复插件 side panel 里收藏 / 稍后再看的当前会话同步问题：新增 `popup-saved-sync.js`，把推荐卡的稍后再看、惊喜横幅的稍后再看 / 收藏、收藏列表移除接到同一套 bvid 状态注册表，任一按钮写入成功后所有可见按钮会同步 `aria-pressed`、标题和文本状态。
 - 修复旧懒加载状态覆盖新状态的竞态：按钮渲染后发出的 `GET /api/watch-later/{bvid}` / `GET /api/favorites/{bvid}` 如果在用户刚 toggle 或收藏列表加载 / 移除之后才返回，不再把 UI 状态回滚到旧值；并补充并发懒加载查询不会互相作废的回归测试。
 - 修复状态注册表的按钮泄漏：推荐卡与惊喜横幅每次重渲染都会为同一 bvid 注册新按钮，旧的已脱离 DOM 的按钮此前不会被回收。现在 `syncButtons` 在每次状态同步时剪除 `isConnected === false` 的条目，并在推荐列表 / 惊喜横幅 `replaceChildren` 后调用 `pruneDetached()` 主动扫除，避免注册表随会话无限增长、`syncButtons` 退化为 O(累计渲染数)。
