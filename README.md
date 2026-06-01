@@ -106,19 +106,19 @@
     <td align="center" width="50%">
       <img src="docs/images/desktop-home.png" width="480" /><br/>
       <b>桌面推荐首页</b><br/>
-      <sub>Runtime 看板 · 惊喜推荐轮播 · 画像侧栏</sub>
+      <sub>惊喜推荐 Hero · 为你推荐网格 · 朋友式推荐理由</sub>
     </td>
     <td align="center" width="50%">
       <img src="docs/images/desktop-cards.png" width="480" /><br/>
-      <b>横向双卡片推荐流</b><br/>
-      <sub>封面左 + 推荐理由右 · 喜欢 / 不感兴趣 / 聊一聊</sub>
+      <b>推荐卡片网格</b><br/>
+      <sub>封面 + 推荐理由 · 喜欢 / 不感兴趣 / 稍后 / 收藏 / 聊一聊</sub>
     </td>
   </tr>
   <tr>
     <td align="center" colspan="2">
       <img src="docs/images/desktop-profile.png" width="480" /><br/>
-      <b>画像详情面板</b><br/>
-      <sub>核心特质 · MBTI 推断 · 兴趣树 · 猜测兴趣 · 认知风格</sub>
+      <b>画像 + 实时看板</b><br/>
+      <sub>侧栏 Runtime 看板 + 后台动态 · 人格素描 · 核心特质 · MBTI 推断</sub>
     </td>
   </tr>
 </table>
@@ -130,13 +130,13 @@
     <td align="center" width="33%">
       <img src="docs/images/mobile-recommend.png" width="210" /><br/>
       <b>手机推荐页</b><br/>
-      <sub>惊喜推荐 · 推荐原因环绕头图</sub><br/>
-      <sub>看看 / 喜欢 / 不感兴趣 / 聊一聊</sub>
+      <sub>惊喜推荐 + 池子状态 · 朋友式推荐原因</sub><br/>
+      <sub>看看 / 喜欢 / 稍后 / 收藏 / 不感兴趣 / 聊一聊</sub>
     </td>
     <td align="center" width="33%">
       <img src="docs/images/mobile-profile.png" width="210" /><br/>
       <b>手机画像页</b><br/>
-      <sub>核心画像、兴趣、认知更新</sub>
+      <sub>人格素描 · 核心特质 · 深层需求 · MBTI</sub>
     </td>
     <td align="center" width="33%">
       <img src="docs/images/mobile-chat.png" width="210" /><br/>
@@ -243,7 +243,7 @@ openbiliclaw start
 
 > 首次运行 `openbiliclaw init` 时会询问是否允许局域网访问（默认 Y）。如果选了 N 或想改回来，编辑 `config.toml` 的 `[api].host`（`0.0.0.0` = 局域网可达，`127.0.0.1` = 仅本机）。
 
-页面包含「推荐 / 画像 / 对话」三个底部 Tab，推荐页支持「换一批 / 加载更多 / 喜欢 / 不感兴趣 / 写一句 / 聊一聊」，画像页展示核心画像、兴趣和认知更新，对话页与插件共享主聊天历史。
+页面包含「推荐 / 稍后 / 收藏 / 画像 / 对话」五个底部 Tab：推荐页支持「换一批 / 加载更多 / 喜欢 / 不感兴趣 / 稍后再看 / 收藏 / 写一句 / 聊一聊」，稍后和收藏页管理「稍后再看 / 收藏」列表，画像页展示人格素描、核心特质、兴趣和认知更新，对话页与插件共享主聊天历史。
 
 <details>
 <summary>不用 AI 助手：直接跑一句话安装脚本</summary>
@@ -552,7 +552,7 @@ OpenBiliClaw/
 ├── extension/                 # Chrome 浏览器插件 (B 站 + 小红书 + 抖音 + YouTube + 降级配置修复)
 ├── skills/                    # 内置 Skill 定义
 ├── docs/                      # 项目文档
-└── tests/                     # 测试 (800+)
+└── tests/                     # 测试 (1900+)
 ```
 
 ## 🛠️ 技术栈

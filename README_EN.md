@@ -17,6 +17,14 @@
 
 ---
 
+## 💬 Community
+
+<p align="center">
+  <img src="docs/images/user-community-qrcode.png" width="200" alt="User community QR code" />
+</p>
+
+---
+
 ## 📌 Delight Positive Feedback Stays Visible Across Clients (2026-06-01)
 
 - **Positive delight feedback no longer removes the card** — Like, Favorite, Watch Later, Chat, and Open keep the current card visible across all three clients.
@@ -56,7 +64,36 @@ All data lives in a single SQLite file on your disk. LLM calls use your own API 
 > | Explains why | "Guess you'll like" | None | Friend-like explanations |
 > | Customizable | No | Low | Swap LLMs / edit profile / write Skills |
 
-## 🖥️ Desktop Web Preview
+## 📸 Feature Preview
+
+Three core surfaces: the browser extension handles in-page interaction and login sessions, the Desktop Web (`/web`) gives you a big-screen recommendation home, and the Mobile Web (`/m`) is built for phones. Both web surfaces only call your local API — cookie sync and platform tasks still run through the extension.
+
+<table>
+  <tr>
+    <td align="center" width="25%">
+      <img src="docs/images/screenshot-recommend.png" width="200" /><br/>
+      <b>Smart Recommendations</b><br/>
+      <sub>Friend-like explanations of why you'd enjoy it</sub>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/images/screenshot-profile-portrait.png" width="200" /><br/>
+      <b>Soul Profile</b><br/>
+      <sub>Deep personality analysis in natural language</sub>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/images/screenshot-profile-traits.png" width="200" /><br/>
+      <b>Structured Traits</b><br/>
+      <sub>MBTI · core traits · deep needs</sub>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/images/screenshot-chat.png" width="200" /><br/>
+      <b>Chat Tuning</b><br/>
+      <sub>Tell it what you want to see</sub>
+    </td>
+  </tr>
+</table>
+
+### 🖥️ Desktop Web Preview
 
 After starting the backend, open `http://127.0.0.1:8420/web` (or just `http://127.0.0.1:8420/`, which redirects automatically) for a full-screen recommendation dashboard.
 
@@ -65,37 +102,37 @@ After starting the backend, open `http://127.0.0.1:8420/web` (or just `http://12
     <td align="center" width="50%">
       <img src="docs/images/desktop-home.png" width="480" /><br/>
       <b>Desktop Home</b><br/>
-      <sub>Runtime dashboard · delight carousel · profile sidebar</sub>
+      <sub>Delight hero · recommendation grid · friend-like reasons</sub>
     </td>
     <td align="center" width="50%">
       <img src="docs/images/desktop-cards.png" width="480" /><br/>
-      <b>Horizontal Dual-Card Feed</b><br/>
-      <sub>Cover left + reason right · like / skip / chat</sub>
+      <b>Recommendation Card Grid</b><br/>
+      <sub>Cover + reason · like / skip / watch later / favorite / chat</sub>
     </td>
   </tr>
   <tr>
     <td align="center" colspan="2">
       <img src="docs/images/desktop-profile.png" width="480" /><br/>
-      <b>Profile Detail Panel</b><br/>
-      <sub>Core traits · MBTI · interest tree · speculative interests · cognitive style</sub>
+      <b>Profile + Live Dashboard</b><br/>
+      <sub>Sidebar runtime board + activity · personality sketch · core traits · MBTI</sub>
     </td>
   </tr>
 </table>
 
-## 📱 Mobile Web Preview
+### 📱 Mobile Web Preview
 
 <table>
   <tr>
     <td align="center" width="33%">
       <img src="docs/images/mobile-recommend.png" width="210" /><br/>
       <b>Recommendations</b><br/>
-      <sub>Delight candidate · reason around cover</sub><br/>
-      <sub>View / like / not interested / chat</sub>
+      <sub>Delight + pool status · friend-like reason</sub><br/>
+      <sub>View / like / later / save / not interested / chat</sub>
     </td>
     <td align="center" width="33%">
       <img src="docs/images/mobile-profile.png" width="210" /><br/>
       <b>Profile</b><br/>
-      <sub>Core profile, interests, and cognition updates</sub>
+      <sub>Personality sketch · core traits · deep needs · MBTI</sub>
     </td>
     <td align="center" width="33%">
       <img src="docs/images/mobile-chat.png" width="210" /><br/>
@@ -104,6 +141,31 @@ After starting the backend, open `http://127.0.0.1:8420/web` (or just `http://12
     </td>
   </tr>
 </table>
+
+<details>
+<summary>More screenshots</summary>
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/images/screenshot-recommend-feedback.png" width="200" /><br/>
+      <b>Recommendation Feedback</b><br/>
+      <sub>Like / more like this / less / not interested</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/images/screenshot-profile-values.png" width="200" /><br/>
+      <b>Values & Interests</b><br/>
+      <sub>Inner drivers · speculative interest directions</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/images/screenshot-profile-style.png" width="200" /><br/>
+      <b>Cognitive Style</b><br/>
+      <sub>Information processing · content taste</sub>
+    </td>
+  </tr>
+</table>
+
+</details>
 
 ## 🚀 Quick Start
 
@@ -158,7 +220,7 @@ Please follow https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/do
 
 The agent will clone the repo, install dependencies, start the backend with the LAN-accessible default bind (`0.0.0.0:8420`), run a health check, and ask a few questions with defaults. Before auto-init, it verifies that both the configured LLM provider and embedding service answer real lightweight calls; if either fails, init is blocked until you fix the service. If unsure, pick the default. Xiaohongshu, Douyin, and YouTube signals are used in the initial profile only when you explicitly opt in.
 
-If the backend runs on another machine in your LAN, set the extension's "Backend host" field to that machine's LAN IP, for example `192.168.1.100`.
+Chrome Web Store / AMO builds only declare local-backend permissions, so keep the extension pointed at `127.0.0.1` / `localhost`. To reach the Mobile Web from your phone, start the backend with `openbiliclaw start --host 0.0.0.0 --port 8420` — the extension QR code will prefer your computer's LAN IP. Pointing the extension directly at another LAN machine or a remote domain needs a developer build with the matching host permission, or a future optional-permission toggle.
 
 ### 3. Log in to content platforms in the same browser
 
@@ -177,7 +239,7 @@ openbiliclaw start
 
 > During `openbiliclaw init`, you'll be asked whether to allow LAN access (default Y). If you chose N or want to change it later, edit `[api].host` in `config.toml` (`0.0.0.0` = LAN-reachable, `127.0.0.1` = local only).
 
-The app has three bottom tabs: Recommendations, Profile, and Chat. Recommendations support reshuffle, load more, like, not interested, comments, and contextual chat. Profile shows the core profile, interests, and cognition updates. Chat shares the main chat history with the extension.
+The app has five bottom tabs: Recommendations, Watch Later, Favorites, Profile, and Chat. Recommendations support reshuffle, load more, like, not interested, watch later, favorite, comments, and contextual chat. Watch Later and Favorites manage your saved lists. Profile shows the personality sketch, core traits, interests, and cognition updates. Chat shares the main chat history with the extension.
 
 <details>
 <summary>No AI agent: run the one-line installer yourself</summary>
@@ -483,7 +545,7 @@ OpenBiliClaw/
 ├── extension/                 # Chrome browser extension (Bilibili + XHS + Douyin + YouTube + degraded config recovery)
 ├── skills/                    # Built-in Skill definitions
 ├── docs/                      # Documentation
-└── tests/                     # Tests (650+)
+└── tests/                     # Tests (1900+)
 ```
 
 ## 🛠️ Tech Stack
@@ -496,7 +558,9 @@ OpenBiliClaw/
 | Bilibili API | Custom client (WBI signing · v_voucher auto-recovery · rate control) |
 | Xiaohongshu | Extension DOM/state extraction + task dispatch; scrolling init imports open `/explore` in the foreground, click the page's profile entry, then use bounded scrolling and partial batches; no backend crawling |
 | Douyin | Extension DOM + MAIN-world fetch/API harvester + task dispatch; init imports post / favorite / like / follow signals; search / hot / feed discovery use background tabs and the logged-in plugin signer; no backend crawling |
+| YouTube | Extension DOM task dispatch reads watch history / subscriptions / likes; Google Takeout can import older data offline |
 | Storage | SQLite + Embedding vector index |
+| Containerization | Docker Compose (backend) |
 | Agent Framework | Lightweight custom framework |
 
 ## 📖 Documentation
@@ -516,10 +580,10 @@ Latest: **v0.3.91 / extension v0.3.64: saved-list thumbnails and narrow header f
 
 ## 🗺️ Roadmap
 
-OpenBiliClaw aims to be your **personalized entry point to the entire web**. Started on Bilibili, v0.3.0 shipped Xiaohongshu and generic-Web adapters; next:
+OpenBiliClaw aims to be your **personalized entry point to the entire web**. Started on Bilibili, it now ships Xiaohongshu, Douyin, and YouTube init signals, Douyin search / hot / feed discovery, and a generic-Web adapter; next:
 
 - **More content sources** — Zhihu, V2EX, Weibo, various BBS / forums; each platform is a `SourceAdapter` and the architecture is proven extensible
-- **Cross-platform interest fusion** — your mechanical-keyboard interest from Bilibili + your coffee-gear interest from Xiaohongshu = one complete you. Profile fusion stops your interests from being fragmented across silos
+- **Cross-platform interest fusion** — your mechanical-keyboard interest from Bilibili + your coffee-gear interest from Xiaohongshu + your short-video taste from Douyin likes/favorites + your long-form watching and subscriptions from YouTube = one complete you. Profile fusion stops your interests from being fragmented across silos
 - **Smarter cross-source discovery** — "you started following coffee gear on Xiaohongshu, here's a hand-drip documentary on Bilibili you might love"
 - **Community ecosystem** — user-defined SourceAdapters, shared discovery strategies, contributed platform adapters
 
