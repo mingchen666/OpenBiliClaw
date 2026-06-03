@@ -8,6 +8,7 @@
 
 - 修复桌面 Web `/web` 在下滑浏览时推荐卡片会突然整批替换的 bug：根因是桌面前端把「后端推荐池更新」当成了「整页推荐需重新同步」。`web/desktop/assets/js/app.js` 的 runtime-stream 处理器收到 `refresh.pool_updated`（以及后端实际从不下发的 `recommendation.reshuffled`）时会调用 `scheduleBackendHydration()` → `hydrateFromBackend()`，后者无条件执行 `state.videos = normalizeRecommendationList(...)`，用 `/api/recommendations` 的「最新 top 窗口」（`created_at DESC, id DESC`）替换当前列表——把用户「加载更多」追加的历史卡片一并冲掉。此问题在 2026-05-27（`79042ce`）已对插件 popup 和移动 Web `recommend.js` 修过，但桌面 Web（早 5 天于 05-22 创建）当时被漏掉。现在 `refresh.pool_updated` / `recommendation.reshuffled` 不再触发 hydrate，只保留 `config_reloaded` / `init_completed` 这类真·重新水合流程；池子数量 / header 仍由处理器开头无条件的 `applyRuntimeStatus(...)` 更新，用户主动「换一批」/「加载更多」/反馈删除继续各自直接改 `state.videos`，行为与移动 Web、插件对齐。
 - 测试：`tests/test_desktop_web_pool_status.py` 新增 `test_desktop_pool_update_does_not_replace_recommendation_list`，断言桌面 hydrate 触发列表不含 `refresh.pool_updated` / `recommendation.reshuffled` 且保留 `config_reloaded` / `init_completed`；扩展端 `runtime-refresh-coalescing.test.ts` 补桌面对称守卫（此前只校验 hydrate 被防抖、未校验 pool_updated 不应触发 hydrate，正是这次 bug 溜过的原因）。同步 `docs/diagrams/web-architecture.html` runtime-stream 合并刷新说明。
+- 精简 README 中英文「内容发现引擎」章节:把原本三段实现规格式长文(端点路径、`dy-plugin-*` 源码标签、`source_bootstrap_state.json`、`max(target*2, target+120)` 等内部记账)改写为「安全取数 / 多样性选择 / 候选池计数」三段面向用户的功能介绍,并清理平台表里的 `单源 smoke` / `hot-related` / `discovery producer` 黑话;深层实现细节仍以 `docs/modules/discovery.md` 为准,CN/EN 同步。
 
 ## v0.3.98: Ollama 作 chat fallback 时识别修复（2026-06-02）
 
