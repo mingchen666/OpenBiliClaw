@@ -20,6 +20,7 @@
 - YouTube steady-state producer 在 `daily_*_budget = 0` 时以本轮 `limit` 作为策略执行预算；显式正数仍按 SQLite ledger 做每日剩余额度，便于需要严格限流的用户手动恢复上限。插件设置页、API 配置模型、CLI fallback、`config.example.toml` 和配置参考同步更新。
 - 项目主页（GitHub Pages `docs/index.html`）新增 GitHub Star 强引导：顶栏常驻 Star 胶囊按钮 + 结尾专属 Star CTA 卡片，两处均显示实时星标数（GitHub API + sessionStorage 缓存，拉取失败时优雅隐藏、不留占位符，按钮始终可用）；复用页面现有 i18n 实现中英双语 + 响应式，沿用 `--pink` / `--yellow` 品牌色与胶囊按钮风格。纯增量改动，不涉及接口 / 数据流 / 架构。
 - 插件已上架 Chrome 应用商店并公开发布（item `cdfjfkdjjhdaccbldipkjhpibnfbiamg`）：README 中英文顶部新增 Chrome Web Store 版本徽章，安装章节改为「商店一键安装为推荐方式 + Releases / 开发者模式作为 Firefox / 手动备选」；落地页 hero / 安装 / 结尾的下载 CTA 改指向商店「添加到 Chrome / Add to Chrome」，Releases 降级为「Firefox / 手动下载」次按钮，中英 i18n 同步。最新插件版本（`0.3.66`）已提交商店审核以从已上架的 `0.3.65` 更新。
+- 新增开机自启动 SPEC 与原子化实现计划，锁定跨平台自启动 manager、Ollama preflight、API/CLI/插件设置开关、配置 provenance 与验收矩阵；同步刷新 discovery / recommendation / soul 三张 HTML 架构图，补充真实生产路径、候选池/推荐池数据流和用户画像链路说明。
 
 ## extension v0.3.66: 推荐「聊一聊」输入框失焦自动收起（三端）（2026-06-03）
 
