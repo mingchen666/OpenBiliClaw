@@ -59,9 +59,7 @@ def build_pyinstaller_install_command(
 ) -> list[str]:
     """Return the best install command for PyInstaller in the current environment."""
     resolved_pip_available = (
-        pip_available
-        if pip_available is not None
-        else importlib.util.find_spec("pip") is not None
+        pip_available if pip_available is not None else importlib.util.find_spec("pip") is not None
     )
     if resolved_pip_available:
         return [sys.executable, "-m", "pip", "install", "pyinstaller"]
@@ -192,7 +190,107 @@ def apply_macos_bundle_fixes(dist_dir: Path) -> None:
         print(f"[build] Added .app compatibility symlink: {alias_name} -> {name}")
 
 
-def build(*, archive_version: str | None = None) -> None:
+def make_macos_dmg(*, app_bundle: Path, output_dir: Path, version: str) -> Path:
+    """Build a drag-to-Applications ``.dmg`` from the ``.app`` bundle (macOS only).
+
+    Uses ``ditto`` (bundle-faithful copy that preserves the in-bundle symlinks)
+    into a staging dir with an ``/Applications`` shortcut, then ``hdiutil`` to a
+    compressed UDZO image — the conventional macOS drag-install experience.
+    """
+    import tempfile
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    dmg_name = make_archive_name(version, "macos").removesuffix(".zip") + ".dmg"
+    dmg_path = output_dir / dmg_name
+    if dmg_path.exists():
+        dmg_path.unlink()
+
+    stage = Path(tempfile.mkdtemp(prefix="obc-dmg-"))
+    try:
+        subprocess.check_call(["ditto", str(app_bundle), str(stage / app_bundle.name)])
+        (stage / "Applications").symlink_to("/Applications")
+        subprocess.check_call(
+            [
+                "hdiutil",
+                "create",
+                "-volname",
+                "OpenBiliClaw",
+                "-srcfolder",
+                str(stage),
+                "-ov",
+                "-format",
+                "UDZO",
+                str(dmg_path),
+            ],
+            stdout=subprocess.DEVNULL,
+        )
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    return dmg_path
+
+
+def find_ollama_binary(explicit: str | None = None) -> Path | None:
+    """Locate an ollama executable to bundle (explicit > env > PATH)."""
+    candidates = [
+        explicit,
+        os.environ.get("OPENBILICLAW_OLLAMA_BIN"),
+        shutil.which("ollama"),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate).resolve()
+        if path.is_file():
+            return path
+    return None
+
+
+def bundle_ollama_binary(
+    dist_dir: Path,
+    ollama_bin: Path,
+    platform_name: str | None = None,
+) -> list[Path]:
+    """Copy the ollama executable into the packaged outputs.
+
+    Ships a self-contained local-embedding runtime so the app does not depend on
+    a user-installed ollama (the fragile brew/winget step). Placed where
+    ``entry.py`` resolves ``bundled_resources``: next to the exe for the onedir
+    layout, and ``Contents/Resources`` for the macOS ``.app`` bundle.
+    """
+    resolved = platform_name or platform.system()
+    exe_name = "ollama.exe" if resolved == "Windows" else "ollama"
+    targets: list[Path] = []
+
+    onedir = dist_dir / "OpenBiliClaw"
+    if onedir.is_dir():
+        targets.append(onedir / exe_name)
+    if resolved == "Darwin":
+        app_resources = dist_dir / "OpenBiliClaw.app" / "Contents" / "Resources"
+        if app_resources.is_dir():
+            targets.append(app_resources / exe_name)
+
+    # Windows ollama is not a single self-contained binary like macOS — it ships
+    # ``ollama.exe`` plus a sibling ``lib/`` of inference runners. Carry that dir
+    # along (CPU runner is enough for bge-m3 embedding) so the bundled exe works.
+    sibling_lib = ollama_bin.parent / "lib"
+    written: list[Path] = []
+    for dest in targets:
+        shutil.copyfile(ollama_bin, dest)
+        os.chmod(dest, 0o755)
+        written.append(dest)
+        if sibling_lib.is_dir():
+            dest_lib = dest.parent / "lib"
+            if not dest_lib.exists():
+                shutil.copytree(sibling_lib, dest_lib)
+    return written
+
+
+def build(
+    *,
+    archive_version: str | None = None,
+    bundle_ollama: bool = True,
+    ollama_bin: str | None = None,
+) -> None:
     """Run PyInstaller."""
     ensure_pyinstaller()
     bundle_version = make_bundle_version(archive_version or read_project_version())
@@ -201,8 +299,10 @@ def build(*, archive_version: str | None = None) -> None:
         "-m",
         "PyInstaller",
         str(SPEC_FILE),
-        "--distpath", str(DIST_DIR),
-        "--workpath", str(PROJECT_ROOT / "build"),
+        "--distpath",
+        str(DIST_DIR),
+        "--workpath",
+        str(PROJECT_ROOT / "build"),
         "--noconfirm",
     ]
     print(f"[build] Running: {' '.join(cmd)}")
@@ -220,6 +320,24 @@ def build(*, archive_version: str | None = None) -> None:
         example = PROJECT_ROOT / "config.example.toml"
         if example.exists():
             shutil.copyfile(example, output / "config.example.toml")
+
+        # Bundle the local-embedding runtime (ollama) so the app ships a
+        # working bge-m3 path without a separate brew/winget install. Must
+        # happen before archive creation so the binary lands in the zip.
+        if bundle_ollama:
+            resolved_ollama = find_ollama_binary(ollama_bin)
+            if resolved_ollama is not None:
+                written = bundle_ollama_binary(DIST_DIR, resolved_ollama)
+                size_mb = resolved_ollama.stat().st_size // (1024 * 1024)
+                print(
+                    f"[build] Bundled ollama ({resolved_ollama}, ~{size_mb}MB) "
+                    f"into {len(written)} target(s)"
+                )
+            else:
+                print(
+                    "[build] WARNING: no ollama binary found (set OPENBILICLAW_OLLAMA_BIN "
+                    "or --ollama-bin); packaged app will fall back to a user-installed ollama"
+                )
 
         print()
         print("=" * 60)
@@ -248,6 +366,15 @@ def build(*, archive_version: str | None = None) -> None:
             )
             print()
             print(f"  Release archive: {archive_path}")
+            if platform.system() == "Darwin":
+                app_bundle = DIST_DIR / "OpenBiliClaw.app"
+                if app_bundle.exists() and shutil.which("hdiutil"):
+                    dmg_path = make_macos_dmg(
+                        app_bundle=app_bundle,
+                        output_dir=RELEASE_DIR,
+                        version=archive_version,
+                    )
+                    print(f"  Release installer: {dmg_path}")
         print("=" * 60)
     else:
         print("[build] WARNING: Expected output directory not found!")
@@ -261,11 +388,24 @@ def main() -> None:
         "--archive-version",
         help="Also create a release zip using the given version tag, e.g. v0.1.1",
     )
+    parser.add_argument(
+        "--no-bundle-ollama",
+        action="store_true",
+        help="Do not bundle the ollama binary (smaller build; needs user-installed ollama)",
+    )
+    parser.add_argument(
+        "--ollama-bin",
+        help="Path to the ollama executable to bundle (default: $OPENBILICLAW_OLLAMA_BIN or PATH)",
+    )
     args = parser.parse_args()
 
     if args.clean:
         clean()
-    build(archive_version=args.archive_version)
+    build(
+        archive_version=args.archive_version,
+        bundle_ollama=not args.no_bundle_ollama,
+        ollama_bin=args.ollama_bin,
+    )
 
 
 if __name__ == "__main__":

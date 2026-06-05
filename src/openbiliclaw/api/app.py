@@ -6132,4 +6132,12 @@ def create_app(
         def _root_redirect() -> RedirectResponse:
             return RedirectResponse(url="/web", status_code=302)
 
+    # ── First-run Setup Wizard ──────────────────────────────────
+    # Self-contained onboarding page opened on first launch by the packaged
+    # app (packaging/entry.py). Guides provider/key + B站 + done, then sends
+    # the user to /web. Kept isolated from the main desktop SPA on purpose.
+    _setup_dir = _Path(__file__).resolve().parent.parent / "web" / "setup"
+    if _setup_dir.is_dir():
+        app.mount("/setup", _StaticFiles(directory=_setup_dir, html=True), name="setup-wizard")
+
     return app

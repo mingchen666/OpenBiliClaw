@@ -57,6 +57,11 @@ eval = [
 browser = [
     "playwright>=1.40",
 ]
+packaging = [
+    # Desktop installer builds (packaging/build.py). Bundles the backend into a
+    # macOS .app/.dmg or Windows onedir for the Inno Setup installer.
+    "pyinstaller>=6.11",
+]
 
 [project.scripts]
 openbiliclaw = "openbiliclaw.cli:app"
