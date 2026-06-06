@@ -4743,7 +4743,7 @@ function renderRecommendationState(stateShape) {
   if (stateShape.kind === "uninitialized") {
     showRecommendationEmptyState(
       "还没完成初始化",
-      "点下面的按钮就能在这里一步步完成初始化（也可以用命令行 openbiliclaw init）。",
+      "按下面的清单准备好，再点「开始初始化」，就能在这里一步步建好画像和首轮内容池。",
     );
     setHint("先完成初始化，把画像和候选池攒起来。");
     void refreshInitPanel();
@@ -5043,7 +5043,7 @@ async function handleManualRefresh() {
   try {
     const result = await reshuffleRecommendations();
     if (!Array.isArray(result.items)) {
-      setHint("先执行 openbiliclaw init，再回来刷新。", "error");
+      setHint("还没初始化好。去「推荐」页点「开始初始化」，完成后再刷新。", "error");
       return;
     }
     resetRecommendationAutoLoadIntent();

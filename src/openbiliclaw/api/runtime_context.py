@@ -667,6 +667,13 @@ class RuntimeContext:
         self.runtime_controller = new_runtime_controller
         self.account_sync_service = new_account_sync
         self.auto_update_service = new_auto_update
+        # Drop the cached init prerequisite probes (chat/bilibili) — config or
+        # cookie just changed, so the next /api/init pre-flight must re-probe
+        # against the new provider/cookie instead of a stale TTL value (gui-init
+        # review). The InitCoordinator is intentionally NOT reset: it holds the
+        # current run handle and reads ctx components lazily, so it survives a
+        # rebuild (rebuild also excludes the guided_init task from cancellation).
+        self._init_prereqs = None
 
         logger.info(
             "Hot-reload complete — rebuilt %d swappable components",

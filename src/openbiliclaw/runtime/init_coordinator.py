@@ -137,6 +137,16 @@ class InitCoordinator:
                     if s["n"] == stage:
                         s["status"] = stage_status
                         s["reason"] = stage_reason
+            # On a terminal failure/cancel, downgrade any still-"running" or
+            # "pending" stage so status consumers (and the extension checklist,
+            # which keys off stage status) don't show a non-terminal timeline
+            # for a finished run (gui-init review).
+            if status in ("failed", "cancelled"):
+                for s in stages:
+                    if s["status"] in ("running", "pending"):
+                        s["status"] = status
+                        if s.get("reason") is None:
+                            s["reason"] = error_reason
             self._seq += 1
             fields: dict[str, Any] = {
                 "sequence": self._seq,

@@ -4291,9 +4291,9 @@ async def run_guided_init(
         if coordinator is not None and run_id is not None:
             await coordinator.stage_started(run_id, n)
 
-    async def _stage_done(n: int) -> None:
+    async def _stage_done(n: int, *, status: str = "ok", reason: str | None = None) -> None:
         if coordinator is not None and run_id is not None:
-            await coordinator.stage_done(run_id, n)
+            await coordinator.stage_done(run_id, n, status=status, reason=reason)
 
     def _register_task(task_id: str | None) -> None:
         if coordinator is not None and run_id is not None and task_id:
@@ -4304,7 +4304,9 @@ async def run_guided_init(
     # below (~10–30s). XHS is HTTP-only on B站's side so there's no
     # browser-tab focus conflict; Douyin/YouTube are enqueued LATER,
     # serialised, to avoid two active-tab focus grabs racing.
-    xhs_task_id = _enqueue_xhs_bootstrap_task() if include_xhs else None
+    # Enqueue does a sync DB write + a localhost dispatcher kick (urllib); run
+    # it off-loop so the API event loop isn't blocked for the kick timeout.
+    xhs_task_id = (await asyncio.to_thread(_enqueue_xhs_bootstrap_task)) if include_xhs else None
     _register_task(xhs_task_id)
     if xhs_task_id:
         console.print("  [dim]已请求扩展拉小红书收藏 / 点赞（后台并行,不阻塞 B 站拉取）。[/dim]")
@@ -4352,7 +4354,7 @@ async def run_guided_init(
 
     # Now (XHS done) enqueue Douyin. Serialised so the two browser-
     # focus-grabbing dispatchers don't race for the same active tab.
-    dy_task_id = _enqueue_dy_bootstrap_task() if include_dy else None
+    dy_task_id = (await asyncio.to_thread(_enqueue_dy_bootstrap_task)) if include_dy else None
     _register_task(dy_task_id)
     if dy_task_id:
         console.print(
@@ -4386,7 +4388,7 @@ async def run_guided_init(
     # YouTube is enqueued AFTER Douyin completes — same serialisation
     # rationale as XHS→Douyin: each dispatcher opens a foreground tab and
     # grabs focus; running two at once causes tab-focus races.
-    yt_task_id = _enqueue_yt_bootstrap_task() if include_yt else None
+    yt_task_id = (await asyncio.to_thread(_enqueue_yt_bootstrap_task)) if include_yt else None
     _register_task(yt_task_id)
     if yt_task_id:
         console.print(
@@ -4458,14 +4460,20 @@ async def run_guided_init(
     events.extend(xhs_events)
     events.extend(dy_events)
     events.extend(yt_events)
-    _maybe_update_init_source_shares(
-        {
-            "bilibili": bilibili_event_count,
-            "xiaohongshu": len(xhs_events),
-            "douyin": len(dy_events),
-            "youtube": len(yt_events),
-        }
-    )
+    # Source-share tuning does an unlocked load_config/save_config. That's
+    # fine for the CLI (single-process, no live runtime), but on the API path
+    # it would mutate config.toml outside _CONFIG_SAVE_LOCK / rebuild_from_config
+    # and race a live backend — so only the CLI (coordinator is None) does it
+    # (gui-init review §5e). The API keeps default shares for the first run.
+    if coordinator is None:
+        _maybe_update_init_source_shares(
+            {
+                "bilibili": bilibili_event_count,
+                "xiaohongshu": len(xhs_events),
+                "douyin": len(dy_events),
+                "youtube": len(yt_events),
+            }
+        )
     for event in events_to_persist:
         await memory.propagate_event(event)
     await _stage_done(1)
@@ -4538,6 +4546,14 @@ async def run_guided_init(
     )
     try:
         profile_data = await profile_task
+    except asyncio.CancelledError:
+        # The run is being cancelled — tear down the parallel discover task so
+        # its run_init_backfill releases _refresh_lock, then propagate so the
+        # coordinator records `cancelled` (never `completed`).
+        discover_task.cancel()
+        with suppress(BaseException):
+            await discover_task
+        raise
     except Exception as exc:
         # Profile is load-bearing — cancel discover and surface a hard
         # failure (the CLI exits; the API marks the run failed).
@@ -4553,12 +4569,20 @@ async def run_guided_init(
     try:
         discovered_count = await discover_task
         discover_exc: BaseException | None = None
-    except BaseException as exc:
+    except asyncio.CancelledError:
+        # Cancellation must propagate so the wrapper persists `cancelled`,
+        # not swallow it into a best-effort partial success.
+        raise
+    except Exception as exc:
         # Discover is best-effort — a partial pool still lets the user
         # start; record the failure for a "partial complete" summary.
         discovered_count = 0
         discover_exc = exc
-    await _stage_done(4)
+    await _stage_done(
+        4,
+        status="warning" if discover_exc is not None else "ok",
+        reason="discovery_partial" if discover_exc is not None else None,
+    )
 
     return InitResult(
         history=history,

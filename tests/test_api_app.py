@@ -6819,21 +6819,49 @@ class TestGuidedInitEndpoints:
         # never the 409 init_running short-circuit).
         assert not (resp.status_code == 409 and resp.json().get("error") == "init_running")
 
-    def test_cookie_is_noop_during_init(self, tmp_path: Path) -> None:
+    def test_recommendation_click_gated_during_init(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        app, _ = self._make_app(tmp_path)
+        with TestClient(app) as client:
+            app.state.runtime_context.init_coordinator.try_start("active")
+            resp = client.post("/api/recommendation-click", json={})
+        # recommendation-click propagates events to the profile → gated.
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "init_running"
+
+    def test_cookie_same_value_is_noop_during_init(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        from openbiliclaw.bilibili.auth import AuthManager
+        from openbiliclaw.config import load_config
+
+        app, _ = self._make_app(tmp_path)
+        # Make the submitted cookie match the effective stored cookie so the
+        # init-active branch treats it as a silent no-op (not a rebuild).
+        AuthManager(data_dir=load_config().data_path).set_cookie("SESSDATA=same")
+        with TestClient(app) as client:
+            app.state.runtime_context.init_coordinator.try_start("active")
+            resp = client.post(
+                "/api/bilibili/cookie", json={"cookie": "SESSDATA=same", "source": "test"}
+            )
+        # Same effective cookie during init → 200 no-op, no rebuild, no error.
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+    def test_cookie_changed_during_init_is_rejected(self, tmp_path: Path) -> None:
         from fastapi.testclient import TestClient
 
         app, _ = self._make_app(tmp_path)
         with TestClient(app) as client:
             app.state.runtime_context.init_coordinator.try_start("active")
             resp = client.post(
-                "/api/bilibili/cookie", json={"cookie": "SESSDATA=x", "source": "test"}
+                "/api/bilibili/cookie", json={"cookie": "SESSDATA=different", "source": "test"}
             )
-        # Cookie sync is a silent no-op during init (not 409): the extension
-        # auto-syncs and must not error or trigger a mid-init rebuild.
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["ok"] is True
-        assert "初始化" in body["message"]
+        # A genuinely different cookie during init is rejected (not silently
+        # dropped, not a mid-init rebuild) so the user knows it didn't apply.
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "init_running"
 
     def test_task_result_not_gated_during_init(self, tmp_path: Path) -> None:
         from fastapi.testclient import TestClient

@@ -855,15 +855,31 @@ def create_app(
             return await call_next(request)
         return JSONResponse(status_code=503, content=_degraded_body())
 
+    def _init_active_now() -> bool:
+        """Defensive ``init_active`` check usable from any handler/middleware.
+
+        Returns False (never raises) when the coordinator/DB is a test stub or
+        unavailable, so gating logic degrades to "not active" instead of 500.
+        """
+        coord = getattr(ctx, "init_coordinator", None)
+        if coord is None:
+            return False
+        try:
+            return bool(coord.init_active())
+        except Exception:
+            return False
+
     # Writers that mutate the soul profile or trigger a runtime rebuild — these
     # must not run concurrently with guided init (gui-init D1). EXCLUDED on
     # purpose: /api/bilibili/cookie (handled in-handler as a no-op so the
     # extension's auto-sync doesn't error), and /api/sources/*/task-result
-    # (init's own bootstrap collectors depend on those landing).
+    # (init's own bootstrap collectors need those to land — those handlers skip
+    # their live profile/pool writes during init instead, see D1).
     _init_gated_write_paths = frozenset(
         {
             "/api/events",
             "/api/feedback",
+            "/api/recommendation-click",
             "/api/profile/edit",
             "/api/config",
             "/api/recommendations/refresh",
@@ -881,17 +897,11 @@ def create_app(
             gated = path in _init_gated_write_paths or (
                 method == "PUT" and path.startswith("/api/sources/")
             )
-            if gated:
-                coord = getattr(ctx, "init_coordinator", None)
-                try:
-                    active = coord is not None and coord.init_active()
-                except Exception:
-                    active = False
-                if active:
-                    return JSONResponse(
-                        {"error": "init_running", "detail": "初始化进行中，请稍后再试"},
-                        status_code=409,
-                    )
+            if gated and _init_active_now():
+                return JSONResponse(
+                    {"error": "init_running", "detail": "初始化进行中，请稍后再试"},
+                    status_code=409,
+                )
         return await call_next(request)
 
     # Register AFTER the degraded guard so the auth gate is the outermost http
@@ -1274,6 +1284,12 @@ def create_app(
             reason, detail = "bilibili_not_logged_in", "还没检测到 B站 登录"
         elif not chat:
             reason, detail = "llm_not_ready", "AI 服务还没配好或当前不可用"
+        elif run.get("status") in ("failed", "cancelled"):
+            # Prereqs are fine and nothing is running, but the last run ended
+            # badly — surface why so the UI can show it (can_start stays true so
+            # the user can retry) (gui-init review).
+            reason = run.get("reason") or str(run.get("status"))
+            detail = "上次初始化未完成，可重试"
         else:
             reason, detail = "none", ""
 
@@ -1473,7 +1489,9 @@ def create_app(
         )
 
     @app.post("/api/bilibili/cookie", response_model=BilibiliCookieResponse)
-    async def sync_bilibili_cookie(payload: BilibiliCookieIn) -> BilibiliCookieResponse:
+    async def sync_bilibili_cookie(
+        payload: BilibiliCookieIn,
+    ) -> BilibiliCookieResponse | JSONResponse:
         """Receive a Bilibili cookie from the browser extension and persist
         it server-side so the backend can call B 站 API as the user.
 
@@ -1514,21 +1532,31 @@ def create_app(
 
         # gui-init D1.2: while guided init runs, the extension keeps auto-syncing
         # the cookie. Don't validate (~30s round-trip) or rebuild the runtime
-        # (which would swap the BilibiliAPIClient mid-init) — init already
-        # holds a validated cookie. Silent no-op so the extension neither errors
-        # nor disturbs the in-flight run; a changed cookie applies post-init.
-        _init_coord = getattr(ctx, "init_coordinator", None)
-        _init_busy = False
-        if _init_coord is not None:
+        # (which would swap the BilibiliAPIClient mid-init). Same effective
+        # cookie → silent 200 no-op so the extension's auto-sync doesn't error;
+        # a genuinely different cookie → 409 so the user learns the switch
+        # didn't take (it applies after init), rather than being dropped.
+        if _init_active_now():
+            effective_cookie = ""
             try:
-                _init_busy = _init_coord.init_active()
+                _cfg, _ = load_config_with_diagnostics()
+                effective_cookie = (_cfg.bilibili.cookie or "").strip()
+                if not effective_cookie:
+                    effective_cookie = AuthManager(data_dir=_cfg.data_path).load_cookie().strip()
             except Exception:
-                _init_busy = False
-        if _init_busy:
-            return BilibiliCookieResponse(
-                ok=True,
-                authenticated=True,
-                message="初始化进行中，Cookie 已收到，将在初始化完成后生效。",
+                effective_cookie = ""
+            if cookie_value == effective_cookie and effective_cookie:
+                return BilibiliCookieResponse(
+                    ok=True,
+                    authenticated=True,
+                    message="Cookie 未变，初始化进行中无需重新同步。",
+                )
+            return JSONResponse(
+                {
+                    "error": "init_running",
+                    "detail": "初始化进行中，暂不能切换 Cookie，请稍后再试。",
+                },
+                status_code=409,
             )
 
         config, diagnostics = load_config_with_diagnostics()
@@ -5050,11 +5078,17 @@ def create_app(
             if valid_urls:
                 ctx.database.save_xhs_observed_urls(valid_urls, "task")
                 _backfill_xhs_tokens(ctx.database, valid_urls)
-            if added_notes:
+            # gui-init D1: while a guided init is active, the result is still
+            # persisted above (merge_result) so init's own bootstrap collector
+            # can read it — but skip the live candidate-cache / drain / profile
+            # propagation so a stale or init-owned task-result can't mutate the
+            # pool or soul profile mid-run. Stage 4 / post-init flow owns those.
+            _init_busy = _init_active_now()
+            if added_notes and not _init_busy:
                 enqueued = _cache_xhs_notes(ctx.database, added_notes, "task", self_info_now)
                 if enqueued:
                     asyncio.create_task(_drain_discovery_candidates_once())
-            if task_type == "bootstrap_profile" and added_notes:
+            if task_type == "bootstrap_profile" and added_notes and not _init_busy:
                 fresh_notes, note_keys_by_index = _filter_new_source_bootstrap_items(
                     "xhs",
                     added_notes,
@@ -5215,7 +5249,9 @@ def create_app(
                 debug=debug,
                 complete=is_final,
             )
-            if task_type == "bootstrap_profile" and added_videos:
+            # gui-init D1: persist the result (above) for init's own collector,
+            # but skip live profile propagation while a guided init is active.
+            if task_type == "bootstrap_profile" and added_videos and not _init_active_now():
                 fresh_videos, video_keys_by_index = _filter_new_source_bootstrap_items(
                     "dy",
                     added_videos,
@@ -5346,7 +5382,9 @@ def create_app(
                 debug=debug,
                 complete=is_final,
             )
-            if task_type == "bootstrap_profile" and added_items:
+            # gui-init D1: persist the result (above) for init's own collector,
+            # but skip live profile propagation while a guided init is active.
+            if task_type == "bootstrap_profile" and added_items and not _init_active_now():
                 fresh_items, item_keys_by_index = _filter_new_source_bootstrap_items(
                     "yt",
                     added_items,
@@ -6198,6 +6236,15 @@ def create_app(
             )
 
         async with _CONFIG_SAVE_LOCK:
+            # gui-init D1 / spec §5b: re-check inside the lock. The middleware
+            # gated this path on init_active before the handler ran, but a run
+            # could have been reserved in between; saving + rebuilding config
+            # mid-init would swap components the run is using.
+            if _init_active_now():
+                return JSONResponse(
+                    {"error": "init_running", "detail": "初始化进行中，请稍后再保存配置"},
+                    status_code=409,
+                )
             config_path = _default_config_path()
             try:
                 backup_path = _snapshot_config_file(config_path)

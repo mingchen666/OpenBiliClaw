@@ -118,7 +118,7 @@ export function initProgressView(status) {
   const stages = stageList(status);
   const doneCount = stages.filter((s) => s.status === "ok").length;
   const running = Boolean(status && status.running);
-  const failedStage = stages.find((s) => s.status === "failed");
+  const failedStage = stages.find((s) => s.status === "failed" || s.status === "cancelled");
   const current = (status && status.current_stage) || 0;
   const currentStage = stages.find((s) => s.n === current);
   const stageLabel = currentStage
