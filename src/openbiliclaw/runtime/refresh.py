@@ -178,6 +178,7 @@ class SupportsDiscoveryEngine(Protocol):
         *,
         strategy_limits: dict[str, int] | None = None,
         pool_snapshot: Any | None = None,
+        fully_parallel: bool = False,
     ) -> list[Any]: ...
 
 
@@ -199,6 +200,13 @@ class SupportsRecommendationEngine(Protocol):
     async def prewarm_supergroup_embeddings(self) -> int: ...
 
     async def prewarm_pool_mmr_embeddings(self, *, limit: int = 200) -> int: ...
+
+
+# Staged strategy plan for guided-init pool backfill (gui-init spec §5d).
+# Mirrors cli._INIT_DISCOVERY_PLAN; B2 consolidates the CLI to reuse this.
+_INIT_DISCOVERY_PLAN: list[list[str]] = [
+    ["search", "trending", "related_chain", "explore"],
+]
 
 
 @dataclass
@@ -456,6 +464,38 @@ class ContinuousRefreshController:
                 plan=plan,
                 reason="triggered",
             )
+
+    async def run_init_backfill(
+        self,
+        profile: Any,
+        target_pool_count: int,
+        *,
+        fully_parallel: bool = True,
+    ) -> int:
+        """Backfill the initial discovery pool for guided init.
+
+        Holds ``_refresh_lock`` so it serializes with continuous refresh and
+        never races it on ``content_cache`` (gui-init spec §5d). Mirrors the
+        CLI's staged ``_INIT_DISCOVERY_PLAN`` backfill, but against this
+        controller's live ``discovery_engine``/``database``. Cooperative
+        cancel: ``async with`` releases the lock on ``CancelledError``.
+        Returns the total number of items discovered.
+        """
+        discovered_count = 0
+        async with self._refresh_lock:
+            for strategies in _INIT_DISCOVERY_PLAN:
+                current = self.database.count_pool_candidates()
+                if current >= target_pool_count:
+                    break
+                request_limit = max(20, target_pool_count - current)
+                discovered = await self.discovery_engine.discover(
+                    profile,
+                    strategies=strategies,
+                    limit=request_limit,
+                    fully_parallel=fully_parallel,
+                )
+                discovered_count += len(discovered)
+        return discovered_count
 
     async def force_refresh(self) -> dict[str, object]:
         """Run a full refresh immediately, bypassing runtime thresholds.
