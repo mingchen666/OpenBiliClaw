@@ -6907,6 +6907,32 @@ class TestGuidedInitEndpoints:
             resp = client.post("/api/sources/xhs/kick", json={})
         assert not (resp.status_code == 409 and resp.json().get("error") == "init_running")
 
+    def test_source_recipe_crud_not_bypassing_gate_via_kick_id(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        # The bootstrap allowlist is exact-segment: a recipe whose id happens to
+        # be "kick"/"task-result" (PUT /api/sources/kick) must NOT slip past the
+        # init gate — only /api/sources/<source>/kick (4 segments) is allowed.
+        app, _ = self._make_app(tmp_path)
+        with TestClient(app) as client:
+            app.state.runtime_context.init_coordinator.try_start("active")
+            resp = client.put("/api/sources/kick", json={})
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "init_running"
+
+    def test_init_status_can_start_false_when_already_initialized(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        # E1 must mirror E2's already-initialized guard so they don't disagree.
+        prereqs = _FakeInitPrereqs(bili="ok", chat=True)
+        app, _ = self._make_app(tmp_path, profile_ready=True, prereqs=prereqs)
+        with TestClient(app) as client:
+            resp = client.get("/api/init-status")
+        body = resp.json()
+        assert body["initialized"] is True
+        assert body["can_start"] is False
+        assert body["reason"] == "already_initialized"
+
     def test_task_result_not_gated_during_init(self, tmp_path: Path) -> None:
         from fastapi.testclient import TestClient
 

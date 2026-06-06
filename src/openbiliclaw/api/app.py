@@ -908,8 +908,16 @@ def create_app(
     def _init_write_allowed(path: str) -> bool:
         if path in _init_write_allowlist or path.startswith("/api/auth"):
             return True
-        return path.startswith("/api/sources/") and (
-            path.endswith("/kick") or path.endswith("/task-result")
+        # Exact-segment match for the bootstrap protocol: only
+        # /api/sources/<source>/{kick,task-result} (3 segments after /api).
+        # A bare endswith() would let recipe CRUD like PUT/DELETE
+        # /api/sources/kick (recipe_id="kick") slip past the gate.
+        segments = path.strip("/").split("/")
+        return (
+            len(segments) == 4
+            and segments[0] == "api"
+            and segments[1] == "sources"
+            and segments[3] in ("kick", "task-result")
         )
 
     @app.middleware("http")
@@ -1293,12 +1301,17 @@ def create_app(
         supported = not is_running_in_container()
         running = bool(run["running"])
         hard_ok = (bili == "ok") and chat
-        can_start = trusted and supported and hard_ok and not running
+        # Mirror POST /api/init's guards: an already-initialized profile blocks
+        # a (non-force) start, so can_start must reflect that too — otherwise E1
+        # and E2 disagree and a client could offer "start" that E2 rejects.
+        can_start = trusted and supported and hard_ok and not running and not initialized
 
         if not supported:
             reason, detail = "unsupported_runtime", "Docker 运行时不支持图形化初始化"
         elif running:
             reason, detail = "already_running", "初始化进行中"
+        elif initialized:
+            reason, detail = "already_initialized", "已经初始化过了；如需重建请用 force"
         elif bili != "ok":
             reason, detail = "bilibili_not_logged_in", "还没检测到 B站 登录"
         elif not chat:

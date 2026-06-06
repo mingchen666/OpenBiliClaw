@@ -2132,7 +2132,7 @@ def _yt_bootstrap_dedupe_hours() -> float:
         return _DEFAULT_YT_BOOTSTRAP_DEDUPE_HOURS
 
 
-def _enqueue_xhs_bootstrap_task(*, force: bool = False) -> str | None:
+def _enqueue_xhs_bootstrap_task(*, force: bool = False, kick: bool = True) -> str | None:
     """Fire-and-forget enqueue of the bootstrap_profile task.
 
     Returns the task_id if enqueue succeeded, ``None`` otherwise (DB
@@ -2202,7 +2202,11 @@ def _enqueue_xhs_bootstrap_task(*, force: bool = False) -> str | None:
     # WebSocket instead of waiting up to 60s for the next chrome.alarms
     # tick. The kick is best-effort — if the daemon's API isn't running
     # the existing alarm-based poll still picks up the task on next fire.
-    _kick_task_dispatcher("xhs")
+    # ``kick=False`` lets the guided-init pipeline register task ownership
+    # with the coordinator *before* waking the extension (avoids a
+    # register-after-kick race where an owned result is treated as foreign).
+    if kick:
+        _kick_task_dispatcher("xhs")
     return task_id
 
 
@@ -2331,7 +2335,7 @@ def _import_xhs_bootstrap_events() -> tuple[list[dict[str, Any]], dict[str, int]
     return events, counts
 
 
-def _enqueue_dy_bootstrap_task() -> str | None:
+def _enqueue_dy_bootstrap_task(*, kick: bool = True) -> str | None:
     """Fire-and-forget enqueue of the Douyin bootstrap_profile task.
 
     Mirror of ``_enqueue_xhs_bootstrap_task`` for the Douyin pipeline.
@@ -2400,7 +2404,8 @@ def _enqueue_dy_bootstrap_task() -> str | None:
     if not task_id:
         console.print("  [yellow]抖音初始化信号未导入: 今日任务预算已用完。[/yellow]")
         return None
-    _kick_task_dispatcher("dy")
+    if kick:
+        _kick_task_dispatcher("dy")
     return task_id
 
 
@@ -2497,7 +2502,7 @@ def _collect_dy_bootstrap_events(
     return events, scope_counts, status_label
 
 
-def _enqueue_yt_bootstrap_task() -> str | None:
+def _enqueue_yt_bootstrap_task(*, kick: bool = True) -> str | None:
     """Enqueue a YouTube bootstrap_profile task for the browser extension.
 
     Defaults: ``max_scroll_rounds=10`` and ``max_items_per_scope=300``.
@@ -2559,7 +2564,8 @@ def _enqueue_yt_bootstrap_task() -> str | None:
     if not task_id:
         console.print("  [yellow]YouTube 初始化信号未导入: 今日任务预算已用完。[/yellow]")
         return None
-    _kick_task_dispatcher("yt")
+    if kick:
+        _kick_task_dispatcher("yt")
     return task_id
 
 
@@ -4299,15 +4305,34 @@ async def run_guided_init(
         if coordinator is not None and run_id is not None and task_id:
             coordinator.register_enqueued_task(run_id, task_id)
 
+    async def _enqueue_register_kick(
+        enqueue_fn: Callable[..., str | None], source: str
+    ) -> str | None:
+        """Enqueue a bootstrap task off-loop, then wake the extension.
+
+        On the API path (coordinator set) the dispatcher kick is deferred until
+        AFTER the task id is registered as init-owned, so a fast extension can't
+        post the result before ownership is recorded (which would make the
+        task-result handler treat init's own data as foreign and skip memory
+        propagation). The CLI path keeps the helper's built-in kick and has no
+        ownership to register.
+        """
+        if coordinator is not None:
+            task_id = await asyncio.to_thread(lambda: enqueue_fn(kick=False))
+            _register_task(task_id)
+            if task_id:
+                await asyncio.to_thread(_kick_task_dispatcher, source)
+            return task_id
+        return await asyncio.to_thread(enqueue_fn)
+
     # Enqueue the XHS bootstrap task FIRST so the browser extension can
     # run it in parallel with the slow B站 history/favs/follows fetches
     # below (~10–30s). XHS is HTTP-only on B站's side so there's no
     # browser-tab focus conflict; Douyin/YouTube are enqueued LATER,
     # serialised, to avoid two active-tab focus grabs racing.
-    # Enqueue does a sync DB write + a localhost dispatcher kick (urllib); run
-    # it off-loop so the API event loop isn't blocked for the kick timeout.
-    xhs_task_id = (await asyncio.to_thread(_enqueue_xhs_bootstrap_task)) if include_xhs else None
-    _register_task(xhs_task_id)
+    xhs_task_id = (
+        (await _enqueue_register_kick(_enqueue_xhs_bootstrap_task, "xhs")) if include_xhs else None
+    )
     if xhs_task_id:
         console.print("  [dim]已请求扩展拉小红书收藏 / 点赞（后台并行,不阻塞 B 站拉取）。[/dim]")
 
@@ -4354,8 +4379,9 @@ async def run_guided_init(
 
     # Now (XHS done) enqueue Douyin. Serialised so the two browser-
     # focus-grabbing dispatchers don't race for the same active tab.
-    dy_task_id = (await asyncio.to_thread(_enqueue_dy_bootstrap_task)) if include_dy else None
-    _register_task(dy_task_id)
+    dy_task_id = (
+        (await _enqueue_register_kick(_enqueue_dy_bootstrap_task, "dy")) if include_dy else None
+    )
     if dy_task_id:
         console.print(
             "  [dim]已请求扩展拉抖音发布 / 收藏 / 点赞 / 关注"
@@ -4388,8 +4414,9 @@ async def run_guided_init(
     # YouTube is enqueued AFTER Douyin completes — same serialisation
     # rationale as XHS→Douyin: each dispatcher opens a foreground tab and
     # grabs focus; running two at once causes tab-focus races.
-    yt_task_id = (await asyncio.to_thread(_enqueue_yt_bootstrap_task)) if include_yt else None
-    _register_task(yt_task_id)
+    yt_task_id = (
+        (await _enqueue_register_kick(_enqueue_yt_bootstrap_task, "yt")) if include_yt else None
+    )
     if yt_task_id:
         console.print(
             "  [dim]已请求扩展拉 YouTube 观看历史 / 订阅 / 点赞"
