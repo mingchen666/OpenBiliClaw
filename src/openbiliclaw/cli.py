@@ -4460,6 +4460,16 @@ async def run_guided_init(
     events.extend(xhs_events)
     events.extend(dy_events)
     events.extend(yt_events)
+    # On the API path the task-result handlers skip live propagate_event while
+    # init is active (gui-init D1), so the shared pipeline must persist the
+    # collected cross-platform events into memory itself — otherwise GUI init
+    # would analyze them but never store them as event memory. The CLI path
+    # leaves source-event persistence to the running server's task-result
+    # handler (coordinator is None there), so it must NOT double-propagate.
+    if coordinator is not None:
+        events_to_persist.extend(xhs_events)
+        events_to_persist.extend(dy_events)
+        events_to_persist.extend(yt_events)
     # Source-share tuning does an unlocked load_config/save_config. That's
     # fine for the CLI (single-process, no live runtime), but on the API path
     # it would mutate config.toml outside _CONFIG_SAVE_LOCK / rebuild_from_config
@@ -4544,45 +4554,45 @@ async def run_guided_init(
             label_suffix=" — 用 P2 草稿画像并发预热",
         )
     )
+    profile_data: Any = None
+    discovered_count = 0
+    discover_exc: BaseException | None = None
     try:
-        profile_data = await profile_task
-    except asyncio.CancelledError:
-        # The run is being cancelled — tear down the parallel discover task so
-        # its run_init_backfill releases _refresh_lock, then propagate so the
-        # coordinator records `cancelled` (never `completed`).
-        discover_task.cancel()
-        with suppress(BaseException):
-            await discover_task
-        raise
-    except Exception as exc:
-        # Profile is load-bearing — cancel discover and surface a hard
-        # failure (the CLI exits; the API marks the run failed).
-        discover_task.cancel()
-        with suppress(BaseException):
-            await discover_task
-        raise GuidedInitError(
-            "profile_failed",
-            "画像生成阶段出错。可稍后手动重试 `openbiliclaw init`。",
-        ) from exc
-    await _stage_done(3)
+        # Profile is load-bearing. CancelledError is deliberately NOT caught —
+        # it propagates (and the finally tears down the sibling) so the wrapper
+        # records `cancelled`, never `completed`.
+        try:
+            profile_data = await profile_task
+        except Exception as exc:
+            raise GuidedInitError(
+                "profile_failed",
+                "画像生成阶段出错。可稍后手动重试 `openbiliclaw init`。",
+            ) from exc
+        await _stage_done(3)
 
-    try:
-        discovered_count = await discover_task
-        discover_exc: BaseException | None = None
-    except asyncio.CancelledError:
-        # Cancellation must propagate so the wrapper persists `cancelled`,
-        # not swallow it into a best-effort partial success.
-        raise
-    except Exception as exc:
-        # Discover is best-effort — a partial pool still lets the user
-        # start; record the failure for a "partial complete" summary.
-        discovered_count = 0
-        discover_exc = exc
-    await _stage_done(
-        4,
-        status="warning" if discover_exc is not None else "ok",
-        reason="discovery_partial" if discover_exc is not None else None,
-    )
+        # Discover is best-effort: a normal failure leaves a partial pool the
+        # user can still start with. Cancellation propagates (not caught).
+        try:
+            discovered_count = await discover_task
+        except Exception as exc:
+            discovered_count = 0
+            discover_exc = exc
+        await _stage_done(
+            4,
+            status="warning" if discover_exc is not None else "ok",
+            reason="discovery_partial" if discover_exc is not None else None,
+        )
+    finally:
+        # Guarantee neither parallel task outlives this scope on ANY exit path —
+        # including a CancelledError raised at an await *between* the stages
+        # (e.g. _stage_done(3)'s event publish). An orphaned run_init_backfill
+        # would otherwise keep holding _refresh_lock. Cancel then drain both.
+        for _parallel_task in (profile_task, discover_task):
+            if not _parallel_task.done():
+                _parallel_task.cancel()
+        for _parallel_task in (profile_task, discover_task):
+            with suppress(BaseException):
+                await _parallel_task
 
     return InitResult(
         history=history,

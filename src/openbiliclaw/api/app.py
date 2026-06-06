@@ -884,7 +884,10 @@ def create_app(
             "/api/config",
             "/api/recommendations/refresh",
             "/api/interest-probes/trigger",
+            "/api/interest-probes/respond",
             "/api/avoidance-probes/trigger",
+            "/api/avoidance-probes/respond",
+            "/api/delight/respond",
             "/api/sources",
         }
     )
@@ -5073,17 +5076,19 @@ def create_app(
             if self_info_from_request:
                 _persist_xhs_self_info(self_info_from_request)
             self_info_now = self_info_from_request or _load_xhs_self_info()
-            # Store discovered URLs + metadata
-            valid_urls = [u for u in urls if isinstance(u, str) and u.startswith(xhs_url_prefix)]
-            if valid_urls:
-                ctx.database.save_xhs_observed_urls(valid_urls, "task")
-                _backfill_xhs_tokens(ctx.database, valid_urls)
             # gui-init D1: while a guided init is active, the result is still
             # persisted above (merge_result) so init's own bootstrap collector
-            # can read it — but skip the live candidate-cache / drain / profile
-            # propagation so a stale or init-owned task-result can't mutate the
-            # pool or soul profile mid-run. Stage 4 / post-init flow owns those.
+            # can read it — but skip every live pool / candidate / profile write
+            # so a stale or init-owned task-result can't mutate state mid-run.
+            # Stage 4 / post-init flow owns those. Computed BEFORE the URL/token
+            # backfill because _backfill_xhs_tokens writes content_cache +
+            # discovery_candidates.
             _init_busy = _init_active_now()
+            # Store discovered URLs + metadata
+            valid_urls = [u for u in urls if isinstance(u, str) and u.startswith(xhs_url_prefix)]
+            if valid_urls and not _init_busy:
+                ctx.database.save_xhs_observed_urls(valid_urls, "task")
+                _backfill_xhs_tokens(ctx.database, valid_urls)
             if added_notes and not _init_busy:
                 enqueued = _cache_xhs_notes(ctx.database, added_notes, "task", self_info_now)
                 if enqueued:
