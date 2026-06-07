@@ -967,16 +967,15 @@ export function getPopupState({ online, items = [], error = null, runtimeStatus 
     const refreshMessage =
       runtime.manual_refresh_message || "正在根据你最近的新行为补货，再刷一会儿就会更新。";
 
-    // An actively-running refresh shows progress, even pre-init.
-    if (runtime.manual_refresh_state === "running") {
-      return { kind: "refreshing", message: refreshMessage, items: [] };
-    }
-
-    // Genuinely uninitialized (no profile, empty pool/recommendations) → the
-    // guided-init CTA, EVEN with pending pre-init behavior signals. Those
-    // signals are just queued events; the pool can't fill until init builds a
-    // profile, so treating pending_signal_events as "补货" would mask the
-    // uninitialized state forever and hide the init entry (gui-init review).
+    // Genuinely uninitialized (no profile, empty pool/recommendations) ALWAYS
+    // shows the guided-init entry, regardless of any refresh state. A refresh
+    // can't produce anything without a profile (refresh_if_needed returns
+    // not_initialized), so manual_refresh_state="running" / pending behavior
+    // signals must NOT mask the uninitialized state — that would hide the only
+    // in-UI way to start init and leave the popup stuck on "补货" forever
+    // (gui-init: live Windows testing). The init panel itself shows the CTA vs.
+    // live progress based on /api/init-status, so an in-flight run still renders
+    // correctly under this kind.
     if (!runtime.initialized && !hasPostInitRuntimeSignals) {
       return {
         kind: "uninitialized",
@@ -985,8 +984,8 @@ export function getPopupState({ online, items = [], error = null, runtimeStatus 
       };
     }
 
-    // Post-init: pending behavior signals mean a replenish is queued.
-    if (runtime.pending_signal_events > 0) {
+    // Initialized: an active refresh or queued behavior signals → replenishing.
+    if (runtime.manual_refresh_state === "running" || runtime.pending_signal_events > 0) {
       return { kind: "refreshing", message: refreshMessage, items: [] };
     }
 
