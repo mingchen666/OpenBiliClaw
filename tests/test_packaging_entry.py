@@ -289,6 +289,43 @@ def test_redirect_output_to_logfile_noop_when_not_frozen(tmp_path: Path) -> None
     assert not (tmp_path / "logs" / "desktop.log").exists()
 
 
+def test_redirect_output_writes_utf8_bom_on_fresh_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A fresh desktop.log gets a UTF-8 BOM so Windows zh-CN viewers detect the
+    # encoding instead of guessing GBK and rendering Chinese as mojibake.
+    monkeypatch.setattr(entry.sys, "frozen", True, raising=False)
+    real_out, real_err = entry.sys.stdout, entry.sys.stderr
+    try:
+        log_path = entry._redirect_output_to_logfile(tmp_path)
+        stream = entry.sys.stdout  # the redirect installed this as stdout
+    finally:
+        entry.sys.stdout, entry.sys.stderr = real_out, real_err
+    assert log_path is not None
+    stream.close()
+    assert log_path.read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_redirect_output_no_extra_bom_when_appending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Re-opening an existing (non-empty) log must NOT inject a BOM mid-file.
+    monkeypatch.setattr(entry.sys, "frozen", True, raising=False)
+    log = tmp_path / "logs" / "desktop.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("existing line\n", encoding="utf-8")
+    real_out, real_err = entry.sys.stdout, entry.sys.stderr
+    try:
+        entry._redirect_output_to_logfile(tmp_path)
+        stream = entry.sys.stdout
+    finally:
+        entry.sys.stdout, entry.sys.stderr = real_out, real_err
+    stream.close()
+    data = log.read_bytes()
+    assert not data.startswith(b"\xef\xbb\xbf")
+    assert b"existing line" in data
+
+
 # --------------------------------------------------------------------------- #
 # Single-instance lock (one running instance per data dir)
 # --------------------------------------------------------------------------- #

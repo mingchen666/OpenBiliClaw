@@ -353,9 +353,17 @@ def _redirect_output_to_logfile(project_root: Path) -> Path | None:
         log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "desktop.log"
     try:
+        # Windows log viewers (Notepad, many tail tools) on a zh-CN locale guess
+        # GBK for a BOM-less UTF-8 file → Chinese turns to mojibake. Detect a
+        # fresh/empty file so we can prepend a UTF-8 BOM below, making the
+        # encoding unambiguous; appends afterwards add no extra BOM.
+        fresh = not log_path.exists() or log_path.stat().st_size == 0
         # Long-lived on purpose: this stream IS stdout/stderr for the whole
         # process, so it must stay open (no context manager).
         stream = open(log_path, "a", buffering=1, encoding="utf-8", errors="replace")  # noqa: SIM115
+        if fresh:
+            stream.write("\ufeff")  # BOM → UTF-8 bytes EF BB BF
+            stream.flush()
     except OSError:
         return None
     sys.stdout = stream
@@ -480,7 +488,23 @@ def _run_server_in_tray(server: Any, host: str, port: int, project_root: Path) -
     web_url = f"http://{browser_host}:{port}/web/"
     log_path = project_root / "logs" / "desktop.log"
 
-    server_thread = threading.Thread(target=server.run, name="obc-uvicorn", daemon=True)
+    def _serve() -> None:
+        # A daemon thread dying silently leaves the tray up with a dead backend
+        # ("后端已退出" and no clue) — the __main__ crash handler only sees the
+        # main thread. Persist the traceback so the failure is diagnosable.
+        try:
+            server.run()
+        except Exception:
+            import traceback
+
+            with suppress(Exception):
+                (project_root / "logs" / "crash.log").write_text(
+                    traceback.format_exc(), encoding="utf-8"
+                )
+            print("[OpenBiliClaw] 后端服务线程异常退出,详见 logs/crash.log")
+            traceback.print_exc()
+
+    server_thread = threading.Thread(target=_serve, name="obc-uvicorn", daemon=True)
     server_thread.start()
 
     def _open_web(icon: Any, item: Any) -> None:
@@ -506,6 +530,12 @@ def _run_server_in_tray(server: Any, host: str, port: int, project_root: Path) -
         icon.run()  # blocks on the main thread until _quit calls icon.stop()
     finally:
         server.should_exit = True
+        # Stop the ollama daemon we started so it (and its model runner) don't
+        # linger as orphans after quit; a user-managed ollama is left untouched.
+        with suppress(Exception):
+            from openbiliclaw.runtime.ollama_supervisor import stop_managed_ollama
+
+            stop_managed_ollama()
         with suppress(Exception):
             server_thread.join(timeout=5)
 
@@ -541,6 +571,17 @@ def main() -> None:
     if seeded and has_bundled_ollama:
         _enable_ollama_embedding_default(project_root / "config.toml")
         _default_ollama_to_embedding_only(project_root / "config.toml")
+
+    # The packaged app bypasses `openbiliclaw start`, so set up the same
+    # structured, rotated, UTF-8 `openbiliclaw.log` the CLI gets — otherwise the
+    # only record is raw stdout in desktop.log, which is harder to triage and can
+    # mojibake. Best-effort: the stdout→desktop.log redirect remains the fallback.
+    # sweep_unmanaged=False so it won't truncate the live desktop.log mid-run.
+    with suppress(Exception):
+        from openbiliclaw.config import load_config
+        from openbiliclaw.logging_setup import configure_logging
+
+        configure_logging(load_config(), sweep_unmanaged=False)
 
     host = os.environ.get("OPENBILICLAW_HOST", "127.0.0.1")
     port = int(os.environ.get("OPENBILICLAW_PORT", "8420"))
