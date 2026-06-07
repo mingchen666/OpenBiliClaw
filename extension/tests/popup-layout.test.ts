@@ -54,20 +54,22 @@ test("popup header stays a single row with inline icons at narrow side-panel wid
   assert.match(narrowHeaderQuery, /\.hero-actions button\s*\{[\s\S]*?width:\s*28px;/);
 });
 
-test("popup keeps a persistent GitHub-branded Star button in the header", () => {
+test("popup keeps a compact GitHub Star icon button below the action icons", () => {
   const popupHtml = readFileSync(resolve("popup", "popup.html"), "utf8");
   const popupJs = readFileSync(resolve("popup", "popup.js"), "utf8");
-  const heroMarkup = popupHtml.match(/<header class="hero">[\s\S]*?<\/header>/)?.[0] ?? "";
+  const heroSub = popupHtml.match(/<div class="hero-sub">[\s\S]*?<\/div>/)?.[0] ?? "";
   const heroActions = popupHtml.match(/<div class="hero-actions">[\s\S]*?<\/div>/)?.[0] ?? "";
   const btnBlock = popupHtml.match(/\.github-star-btn\s*\{[\s\S]*?\}/)?.[0] ?? "";
 
-  // An always-on Star button lives in the header — on its own row, carrying
-  // GitHub branding (the Octocat mark) + a clear label, not a dismissible banner.
-  assert.match(heroMarkup, /id="starButton"/);
-  assert.match(heroMarkup, /class="github-star-mark"/); // Octocat SVG
-  assert.match(heroMarkup, /Star on GitHub/);
-  assert.match(btnBlock, /background:/);
-  // It's NOT crammed into the action-icon strip (that was too long with 5 icons).
+  // A compact, always-on Star button sits on the row below the action icons
+  // (in .hero-sub, right-aligned next to the hero copy): GitHub Octocat mark for
+  // branding + a small gold ★ badge, icon-only (no text label → kept small).
+  assert.match(heroSub, /id="starButton"/);
+  assert.match(heroSub, /class="github-star-mark"/); // Octocat SVG
+  assert.match(heroSub, /class="github-star-badge"/); // gold ★
+  assert.doesNotMatch(popupHtml, /Star on GitHub/); // label removed (icon-only)
+  assert.match(btnBlock, /width:\s*32px;/);
+  // It's NOT in the action-icon strip, and the old banner is gone.
   assert.doesNotMatch(heroActions, /id="starButton"/);
   assert.doesNotMatch(popupHtml, /id="starCta"/);
   // It opens the repo on click.
