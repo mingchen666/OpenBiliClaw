@@ -32,10 +32,6 @@ A local-first AI discovery agent that learns your taste across Bilibili, Xiaohon
   <sub><a href="https://github.com/whiteguo233/OpenBiliClaw">Star the project if you like the direction</a>.</sub>
 </p>
 
-### Privacy at a glance
-
-Default data flow: browser extension → your configured local OpenBiliClaw backend → SQLite on your machine. The extension does not send data to servers operated by OpenBiliClaw developers. If you configure a cloud LLM or embedding provider, the relevant content is sent to that provider according to your configuration. See the [Privacy Policy](docs/privacy.md).
-
 <p align="center">
   <img src="docs/images/hero-demo.gif" width="820" alt="OpenBiliClaw local-first cross-platform AI discovery agent demo: platform signals, local backend, taste profile, reasoned cards, and feedback loop" />
 </p>
@@ -639,6 +635,10 @@ Contributions welcome! See the [Contributing Guide](docs/contributing.md) to get
 ## ⭐ Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=whiteguo233/OpenBiliClaw&type=Date)](https://www.star-history.com/#whiteguo233/OpenBiliClaw&Date)
+
+## Privacy at a glance
+
+Default data flow: browser extension → your configured local OpenBiliClaw backend → SQLite on your machine. The extension does not send data to servers operated by OpenBiliClaw developers. If you configure a cloud LLM or embedding provider, the relevant content is sent to that provider according to your configuration. See the [Privacy Policy](docs/privacy.md).
 
 ## 📄 License
 
