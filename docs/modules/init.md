@@ -51,12 +51,16 @@
 
 ## init 期间写者门控
 
-防止并发写污染在跑的 init（`init_active()` 为真时）：
+防止并发写污染在跑的 init（`init_active()` 为真时）。设计原则是 **deny-by-default**：不是枚举"要拦的写端"（总会漏），而是默认拦截一切变更、只放行 init 必需的少数路径。
 
-- **后台循环**：`background_llm_work_allowed()` 返回 False，一处暂停所有 daemon 后台 LLM 循环（account_sync / 连续 refresh / soul pipeline tick）。init 自身不受影响——它直调 `soul_engine` / `run_init_backfill`，二者都不查该 gate。
-- **HTTP 写端**：`_init_active_write_guard` 中间件对 `/api/events`、`/api/feedback`、`/api/profile/edit`、`PUT /api/config`、`/api/recommendations/refresh`、兴趣 / 避雷探针触发、source 配方 CRUD 返回 `409 init_running`。
-- **例外**：`/api/bilibili/cookie` 在 init 期间静默 no-op（不 validate、不 rebuild，避免热重载换掉正在用的客户端）；`/api/sources/*/task-result` **放行**（init 自己的 bootstrap 采集器要读它）。
+- **HTTP 写端（deny-by-default）**：`_init_active_write_guard` 中间件对所有 `POST/PUT/PATCH/DELETE` 返回 `409 init_running`,**除非**命中放行清单：`/api/init`、`/api/init/cancel`、`/api/bilibili/cookie`、`/api/auth/*`、以及精确 5 段匹配的 `/api/sources/<source>/{kick,task-result}`（bootstrap 协议)。
+- **副作用 GET**：写者门控只拦变更方法,所以两个会写状态的"读"另行处理:`GET /api/recommendations` 的空历史 bootstrap `serve()`(写推荐行 / 标记 shown)在 init 期跳过;`GET /api/sources/*/next-task` 在 init 期只派发 init-owned 任务(`next_pending(only_ids=…)`),避免陈旧任务饿死本轮采集器。
+- **后台循环**：`background_llm_work_allowed()`(account_sync / startup one-shot)+ `ContinuousRefreshController._llm_work_allowed()`(连续 refresh / soul pipeline / producer,经注入的 `init_active_check`)在 init 期一律返回 False。init 自身不受影响——它直调 `soul_engine` / `run_init_backfill`,二者都不查该 gate。
+- **cookie 例外**：`/api/bilibili/cookie` 在 init 期间:同值 200 no-op、异值 409(均不 validate / 不 rebuild,避免换掉正在用的客户端)。
+- **task-result 例外**：`/api/sources/*/task-result` 放行,但 handler 在 init 期**跳过所有发现池写**;仅对 **init-owned**(`is_owned_bootstrap_task`)结果走 propagate(经既有 bootstrap-key 去重),并跳过增量画像管线(`_ingest_profile_update_events`)——新画像由 stage 2/3 从采集事件统一构建。
 - **热重载豁免**：`rebuild_from_config` 的 `cancel_all(exclude={"guided_init"})` 让 init 任务不被配置热重载取消。
+
+> 该门控经 9 轮 Codex 对抗验收收敛(2 high + 多 medium 修复),最终 PASS。唯一已知遗留是 bootstrap-key 去重的非原子窗口(load→propagate→mark),为 **gui-init 之前就存在**的共享 task-result 行为、低概率、轻影响,列为独立硬化 follow-up。
 
 ## 插件 UI（extension）
 
