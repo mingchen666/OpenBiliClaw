@@ -223,99 +223,32 @@
       max-width: 300px;
     }
 
-    /* GitHub Star CTA — a prominent but dismissible nudge under the hero. */
-    .star-cta {
-      display: flex;
-      align-items: stretch;
-      gap: 6px;
-      padding: 2px;
-      border-radius: 16px;
-      background: linear-gradient(135deg, rgba(255, 214, 102, 0.22), rgba(251, 114, 153, 0.16));
-      border: 1px solid rgba(255, 197, 66, 0.45);
-    }
-
-    .star-cta[hidden] {
-      display: none;
-    }
-
-    .star-cta-main {
-      flex: 1 1 auto;
-      min-width: 0;
+    /* Persistent header button nudging a GitHub Star — same shape as the other
+       header actions, but gold-tinted so it stands out as a gentle, always-on
+       ask without needing a banner. */
+    .star-button {
+      width: 32px;
+      height: 32px;
+      border-radius: 10px;
+      background: rgba(255, 248, 230, 0.9);
+      border: 1px solid rgba(247, 181, 0, 0.42);
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 9px 12px;
-      border: 0;
-      background: transparent;
-      border-radius: 14px;
-      cursor: pointer;
-      text-align: left;
-      transition: background 0.15s;
-    }
-
-    .star-cta-main:hover {
-      background: rgba(255, 255, 255, 0.4);
-    }
-
-    .star-cta-star {
+      justify-content: center;
       flex-shrink: 0;
-      font-size: 20px;
-      line-height: 1;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.15s;
+    }
+
+    .star-button:hover {
+      background: rgba(255, 240, 198, 1);
+      transform: translateY(-1px);
+    }
+
+    .star-button svg {
+      width: 17px;
+      height: 17px;
       color: #f7b500;
-      text-shadow: 0 1px 2px rgba(247, 181, 0, 0.35);
-    }
-
-    .star-cta-copy {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      min-width: 0;
-    }
-
-    .star-cta-title {
-      font-size: 12.5px;
-      font-weight: 800;
-      color: var(--text-primary);
-      line-height: 1.3;
-    }
-
-    .star-cta-sub {
-      font-size: 11px;
-      line-height: 1.45;
-      color: var(--text-secondary);
-    }
-
-    .star-cta-go {
-      flex-shrink: 0;
-      align-self: center;
-      font-size: 11px;
-      font-weight: 800;
-      color: var(--brand-strong);
-      white-space: nowrap;
-    }
-
-    .star-cta-dismiss {
-      flex-shrink: 0;
-      width: 24px;
-      border: 0;
-      background: transparent;
-      color: var(--text-secondary);
-      font-size: 18px;
-      line-height: 1;
-      cursor: pointer;
-      border-radius: 10px;
-      transition: background 0.15s, color 0.15s;
-    }
-
-    .star-cta-dismiss:hover {
-      background: rgba(255, 255, 255, 0.5);
-      color: var(--text-primary);
-    }
-
-    @media (max-width: 460px) {
-      .star-cta-go {
-        display: none;
-      }
     }
 
     .status-badge {
@@ -1544,16 +1477,28 @@
          right-floating second row (the old `grid-template-columns: 1fr` stack). */
       .hero-top {
         align-items: center;
-        gap: 10px;
+        gap: 8px;
       }
 
       .brand {
-        gap: 10px;
+        gap: 8px;
       }
 
       .brand-copy {
         flex: 1 1 auto;
         min-width: 0;
+      }
+
+      /* "OpenBiliClaw" is one word (can't wrap), and 5 action icons leave the
+         brand column tight at the low end. Size the title fluidly so the full
+         word always fits beside the icons — 16px at ~400px+, easing down toward
+         the 360px floor — with ellipsis as a last-resort safety below that. */
+      .hero h1 {
+        font-size: clamp(13px, 3.8vw, 16px);
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .eyebrow {
@@ -1570,15 +1515,16 @@
       }
 
       .hero-actions {
-        gap: 5px;
+        gap: 4px;
       }
 
-      .mobile-button,
-      .messages-button,
-      .webui-button,
-      .settings-gear {
-        width: 30px;
-        height: 30px;
+      /* Compact the 5 action icons so brand + icons fit one row. Uses
+         `.hero-actions button` (specificity 0,1,1) so it beats the base
+         `.webui-button { width: 32px }` rule that appears LATER in source —
+         a plain class list would lose that source-order tiebreak. */
+      .hero-actions button {
+        width: 28px;
+        height: 28px;
       }
     }
 
@@ -4300,6 +4246,9 @@
           </div>
         </div>
         <div class="hero-actions">
+          <button id="starButton" class="star-button" type="button" title="给项目点个 GitHub Star ⭐" aria-label="在 GitHub 给项目点 Star">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5l2.9 5.88 6.49.94-4.7 4.58 1.11 6.46L12 17.77l-5.8 3.05 1.1-6.46-4.69-4.58 6.49-.94L12 2.5z"/></svg>
+          </button>
           <button id="openWebButton" class="webui-button" type="button" title="在浏览器中打开 Web 版" aria-label="在浏览器中打开 Web 版">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
           </button>
@@ -4317,18 +4266,6 @@
       </div>
       <p class="hero-copy">首页先放一边，这里是你最近更可能点开的。</p>
     </header>
-
-    <div id="starCta" class="star-cta" hidden>
-      <button id="starCtaMain" class="star-cta-main" type="button">
-        <span class="star-cta-star" aria-hidden="true">★</span>
-        <span class="star-cta-copy">
-          <span class="star-cta-title">喜欢就给个 GitHub Star ⭐</span>
-          <span class="star-cta-sub">开源项目靠 Star 长大，一颗星就是对持续更新最大的支持</span>
-        </span>
-        <span class="star-cta-go">去点 Star →</span>
-      </button>
-      <button id="starCtaDismiss" class="star-cta-dismiss" type="button" title="不再显示" aria-label="不再显示">×</button>
-    </div>
 
     <div class="tabs-shell">
       <div class="tab-bar" role="tablist" aria-label="Popup views">

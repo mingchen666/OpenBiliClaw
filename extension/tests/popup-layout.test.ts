@@ -34,8 +34,7 @@ test("popup header exposes a local mobile web QR entry", () => {
 test("popup header stays a single row with inline icons at narrow side-panel widths", () => {
   const popupHtml = readFileSync(resolve("popup", "popup.html"), "utf8");
   // The header's narrow-width rules live in the @media(max-width:460px) block
-  // that opens with a comment (a separate 460px block hides the star CTA's
-  // call-to-action label). Anchor on `{` + comment to grab only this one.
+  // that opens with a comment. Anchor on `{` + comment to grab only this one.
   const narrowHeaderQuery =
     popupHtml.match(/@media \(max-width: 460px\) \{\s*\/\*[\s\S]*?\n {4}\}/)?.[0] ?? "";
 
@@ -48,24 +47,27 @@ test("popup header stays a single row with inline icons at narrow side-panel wid
   // The status badge wraps just under the title only when space is tight.
   assert.match(narrowHeaderQuery, /\.brand-title-row\s*\{/);
   assert.match(narrowHeaderQuery, /flex-wrap:\s*wrap;/);
-  // Compact (30px) action buttons keep the icons inline on the right.
-  assert.match(narrowHeaderQuery, /width:\s*30px;/);
+  // The one-word title sizes fluidly so it never spills into the 5 icons.
+  assert.match(narrowHeaderQuery, /font-size:\s*clamp\(/);
+  // Compact icons via `.hero-actions button` — higher specificity than the base
+  // `.webui-button { width: 32px }` that comes later in source.
+  assert.match(narrowHeaderQuery, /\.hero-actions button\s*\{[\s\S]*?width:\s*28px;/);
 });
 
-test("popup surfaces a dismissible GitHub Star call-to-action", () => {
+test("popup keeps a persistent GitHub Star button in the header", () => {
   const popupHtml = readFileSync(resolve("popup", "popup.html"), "utf8");
   const popupJs = readFileSync(resolve("popup", "popup.js"), "utf8");
-  const ctaMarkup = popupHtml.match(/<div id="starCta"[\s\S]*?<\/div>\s*<div class="tabs-shell">/)?.[0] ?? "";
+  const heroMarkup = popupHtml.match(/<header class="hero">[\s\S]*?<\/header>/)?.[0] ?? "";
+  const starButtonBlock = popupHtml.match(/\.star-button\s*\{[\s\S]*?\}/)?.[0] ?? "";
 
-  // A prominent, dismissible Star nudge sits between the hero and the tabs.
-  assert.match(ctaMarkup, /id="starCta"/);
-  assert.match(ctaMarkup, /id="starCtaMain"/);
-  assert.match(ctaMarkup, /id="starCtaDismiss"/);
-  assert.match(ctaMarkup, /GitHub Star/);
-  // It opens the repo and remembers a dismissal so it doesn't nag.
-  assert.match(popupJs, /STAR_CTA_URL\s*=\s*"https:\/\/github\.com\/whiteguo233\/OpenBiliClaw"/);
-  assert.match(popupJs, /localStorage\.setItem\(STAR_CTA_DISMISS_KEY/);
-  assert.match(popupJs, /bindStarCta\(\);/);
+  // An always-on Star button lives in the header action row (no dismissible banner).
+  assert.match(heroMarkup, /id="starButton"/);
+  assert.match(heroMarkup, /class="hero-actions"[\s\S]*id="starButton"/);
+  assert.match(starButtonBlock, /background:/); // gold-tinted so it stands out
+  assert.doesNotMatch(popupHtml, /id="starCta"/);
+  // It opens the repo on click.
+  assert.match(popupJs, /STAR_REPO_URL\s*=\s*"https:\/\/github\.com\/whiteguo233\/OpenBiliClaw"/);
+  assert.match(popupJs, /bindStarButton\(\);/);
 });
 
 test("recommendation header uses a compact top row with status chips", () => {
