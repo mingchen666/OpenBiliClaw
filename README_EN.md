@@ -33,7 +33,7 @@ A local-first AI discovery agent that learns your taste across Bilibili, Xiaohon
 </p>
 
 <p align="center">
-  <img src="docs/images/hero-demo.gif" width="820" alt="OpenBiliClaw local-first cross-platform AI discovery agent demo: platform signals, local backend, taste profile, reasoned cards, and feedback loop" />
+  <img src="docs/images/hero-demo-en.gif" width="820" alt="OpenBiliClaw local-first cross-platform AI discovery agent demo: platform signals, local backend, taste profile, reasoned cards, and feedback loop" />
 </p>
 
 ## Quick Start

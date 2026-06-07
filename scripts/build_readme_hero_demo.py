@@ -6,13 +6,16 @@ Usage:
   python3 scripts/build_readme_hero_demo.py
 
 The script intentionally uses only screenshots already committed under
-docs/images/. It produces docs/images/hero-demo.png and, unless disabled,
-docs/images/hero-demo.gif for the README first screen.
+docs/images/. It produces docs/images/hero-demo.png plus localized
+docs/images/hero-demo-zh.gif and docs/images/hero-demo-en.gif for the
+README first screen. docs/images/hero-demo.gif is kept as an English
+compatibility alias.
 """
 
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 from textwrap import wrap
 
@@ -30,6 +33,8 @@ ROOT = Path(__file__).resolve().parents[1]
 IMAGE_DIR = ROOT / "docs" / "images"
 OUTPUT_PNG = IMAGE_DIR / "hero-demo.png"
 OUTPUT_GIF = IMAGE_DIR / "hero-demo.gif"
+OUTPUT_GIF_ZH = IMAGE_DIR / "hero-demo-zh.gif"
+OUTPUT_GIF_EN = IMAGE_DIR / "hero-demo-en.gif"
 
 CANVAS = (1280, 720)
 PANEL_W = 286
@@ -53,6 +58,8 @@ def font(size: int, bold: bool = False) -> ImageFont.ImageFont:
     """Return a readable font across macOS, Linux, and minimal CI images."""
     macos = "/System/Library/Fonts/Supplemental"
     candidates = [
+        "/System/Library/Fonts/STHeiti Medium.ttc" if bold else "/System/Library/Fonts/STHeiti Light.ttc",
+        f"{macos}/Songti.ttc",
         f"{macos}/Arial Bold.ttf" if bold else f"{macos}/Arial.ttf",
         "/Library/Fonts/Arial Bold.ttf" if bold else "/Library/Fonts/Arial.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -255,53 +262,11 @@ def draw_slide_header(
     draw_wrapped(draw, subtitle, (174, 94), 58, font(22), MUTED, line_gap=7)
 
 
-def build_gif_slide(index: int) -> Image.Image:
+def build_gif_slide(index: int, lang: str) -> Image.Image:
     base = Image.new("RGB", CANVAS, BG)
     draw = ImageDraw.Draw(base)
 
-    slides = [
-        {
-            "step": "1",
-            "title": "Signals stay local",
-            "subtitle": "Your browser extension connects Bilibili, Xiaohongshu, Douyin, YouTube, and the open web to your own backend.",
-            "accent": BLUE,
-            "screenshot": IMAGE_DIR / "desktop-home.png",
-            "screen_size": (548, 330),
-            "chips": [("Bilibili", BLUE), ("Xiaohongshu", RED), ("Douyin", INK), ("YouTube", RED), ("Web", PURPLE)],
-            "callouts": [("Extension", BLUE), ("Local backend", GREEN), ("SQLite", ORANGE)],
-        },
-        {
-            "step": "2",
-            "title": "A private taste profile",
-            "subtitle": "OpenBiliClaw turns usage, feedback, and dialogue into interests, cognitive style, MBTI signals, and deeper needs.",
-            "accent": PURPLE,
-            "screenshot": IMAGE_DIR / "desktop-profile.png",
-            "screen_size": (590, 350),
-            "chips": [("Interests", PURPLE), ("MBTI", BLUE), ("Needs", ORANGE), ("Style", GREEN)],
-            "callouts": [("No platform account", INK), ("Local SQLite", ORANGE)],
-        },
-        {
-            "step": "3",
-            "title": "Recommendations with reasons",
-            "subtitle": "Cards explain why each item fits you, so recommendations feel like a thoughtful friend instead of a black-box feed.",
-            "accent": ORANGE,
-            "screenshot": IMAGE_DIR / "desktop-cards.png",
-            "screen_size": (590, 350),
-            "chips": [("Why this fits", ORANGE), ("Mixed sources", BLUE), ("Surprise", PURPLE)],
-            "callouts": [("Reasoned card", ORANGE), ("Open the source", BLUE)],
-        },
-        {
-            "step": "4",
-            "title": "Feedback trains the next batch",
-            "subtitle": "Like, not interested, save, and chat feedback immediately shape what OpenBiliClaw explores next.",
-            "accent": GREEN,
-            "screenshot": IMAGE_DIR / "mobile-recommend.png",
-            "screen_size": (270, 430),
-            "chips": [("Like", GREEN), ("Not interested", RED), ("Chat", PURPLE), ("Save", ORANGE)],
-            "callouts": [("Feedback loop", GREEN), ("Better next batch", PURPLE)],
-        },
-    ]
-    data = slides[index]
+    data = localized_slides(lang)[index]
     draw_slide_header(draw, data["step"], data["title"], data["subtitle"], data["accent"])
 
     left_x = 62
@@ -318,29 +283,7 @@ def build_gif_slide(index: int) -> Image.Image:
             draw_arrow(draw, (x + 12, flow_y + 16), (x + 74, flow_y + 16), "#94a3b8")
             x += 88
 
-    bullets = [
-        "Cross-source signals become your own memory.",
-        "Your profile and recommendation pool stay under your control.",
-        "Every feedback action changes the next discovery cycle.",
-    ]
-    if index == 1:
-        bullets = [
-            "Profile evolves from actual behavior, not manual tags.",
-            "LLM and embedding providers follow your configuration.",
-            "The SQLite database remains on your machine by default.",
-        ]
-    elif index == 2:
-        bullets = [
-            "Each card carries a plain-language reason.",
-            "The pool mixes platforms and topics instead of narrowing down.",
-            "You can open, save, dismiss, or discuss a recommendation.",
-        ]
-    elif index == 3:
-        bullets = [
-            "Positive feedback reinforces a direction.",
-            "Negative feedback clears what you do not want.",
-            "Chat feedback teaches nuanced taste over time.",
-        ]
+    bullets = data["bullets"]
     bullet_y = 378
     for bullet in bullets:
         draw.ellipse((78, bullet_y + 7, 88, bullet_y + 17), fill=data["accent"])
@@ -360,8 +303,144 @@ def build_gif_slide(index: int) -> Image.Image:
     )
     base.paste(thumb, (screen_x, screen_y))
 
-    draw.text((68, 660), "OpenBiliClaw: local-first, cross-platform, self-improving discovery", font=FONT_SMALL, fill=MUTED)
+    draw.text((68, 660), data["footer"], font=FONT_SMALL, fill=MUTED)
     return base
+
+
+def localized_slides(lang: str) -> list[dict[str, object]]:
+    if lang == "zh":
+        return [
+            {
+                "step": "1",
+                "title": "跨平台信号留在本地",
+                "subtitle": "浏览器插件把 B 站、小红书、抖音、YouTube 和 Web 的兴趣信号连接到你自己的后端。",
+                "accent": BLUE,
+                "screenshot": IMAGE_DIR / "desktop-home.png",
+                "screen_size": (548, 330),
+                "chips": [("B 站", BLUE), ("小红书", RED), ("抖音", INK), ("YouTube", RED), ("Web", PURPLE)],
+                "callouts": [("浏览器插件", BLUE), ("本地后端", GREEN), ("SQLite", ORANGE)],
+                "bullets": [
+                    "跨平台信号沉淀成你自己的记忆。",
+                    "画像和推荐池默认由你本机控制。",
+                    "每一次反馈都会影响下一轮发现。",
+                ],
+                "footer": "OpenBiliClaw：本地优先 · 跨平台 · 自进化内容发现",
+            },
+            {
+                "step": "2",
+                "title": "生成私有兴趣画像",
+                "subtitle": "OpenBiliClaw 从使用、反馈和对话里理解兴趣、认知风格、MBTI 信号和深层需求。",
+                "accent": PURPLE,
+                "screenshot": IMAGE_DIR / "desktop-profile.png",
+                "screen_size": (590, 350),
+                "chips": [("兴趣", PURPLE), ("MBTI", BLUE), ("需求", ORANGE), ("风格", GREEN)],
+                "callouts": [("不需要平台账号", INK), ("本机 SQLite", ORANGE)],
+                "bullets": [
+                    "画像来自真实行为，不是手填标签。",
+                    "LLM 和 embedding 服务按你的配置调用。",
+                    "SQLite 数据库默认留在你的机器上。",
+                ],
+                "footer": "OpenBiliClaw：本地优先 · 跨平台 · 自进化内容发现",
+            },
+            {
+                "step": "3",
+                "title": "推荐卡片解释原因",
+                "subtitle": "每张卡片都会说明为什么适合你，让推荐更像懂你的朋友，而不是黑盒信息流。",
+                "accent": ORANGE,
+                "screenshot": IMAGE_DIR / "desktop-cards.png",
+                "screen_size": (590, 350),
+                "chips": [("为什么推荐", ORANGE), ("混合来源", BLUE), ("惊喜", PURPLE)],
+                "callouts": [("推荐理由", ORANGE), ("打开原站", BLUE)],
+                "bullets": [
+                    "每张卡片都有自然语言推荐理由。",
+                    "推荐池混合平台和主题，不越刷越窄。",
+                    "你可以打开、收藏、跳过或继续聊。",
+                ],
+                "footer": "OpenBiliClaw：本地优先 · 跨平台 · 自进化内容发现",
+            },
+            {
+                "step": "4",
+                "title": "反馈调教下一批内容",
+                "subtitle": "喜欢、不感兴趣、收藏和聊天反馈会立刻影响 OpenBiliClaw 下一轮探索方向。",
+                "accent": GREEN,
+                "screenshot": IMAGE_DIR / "mobile-recommend.png",
+                "screen_size": (270, 430),
+                "chips": [("喜欢", GREEN), ("不感兴趣", RED), ("聊天", PURPLE), ("收藏", ORANGE)],
+                "callouts": [("反馈闭环", GREEN), ("下一批更准", PURPLE)],
+                "bullets": [
+                    "正反馈会强化这个方向。",
+                    "负反馈会清掉你不想看的内容。",
+                    "聊天反馈能教会更细腻的口味。",
+                ],
+                "footer": "OpenBiliClaw：本地优先 · 跨平台 · 自进化内容发现",
+            },
+        ]
+    return [
+        {
+            "step": "1",
+            "title": "Signals stay local",
+            "subtitle": "Your browser extension connects Bilibili, Xiaohongshu, Douyin, YouTube, and the open web to your own backend.",
+            "accent": BLUE,
+            "screenshot": IMAGE_DIR / "desktop-home.png",
+            "screen_size": (548, 330),
+            "chips": [("Bilibili", BLUE), ("Xiaohongshu", RED), ("Douyin", INK), ("YouTube", RED), ("Web", PURPLE)],
+            "callouts": [("Extension", BLUE), ("Local backend", GREEN), ("SQLite", ORANGE)],
+            "bullets": [
+                "Cross-source signals become your own memory.",
+                "Your profile and recommendation pool stay under your control.",
+                "Every feedback action changes the next discovery cycle.",
+            ],
+            "footer": "OpenBiliClaw: local-first, cross-platform, self-improving discovery",
+        },
+        {
+            "step": "2",
+            "title": "A private taste profile",
+            "subtitle": "OpenBiliClaw turns usage, feedback, and dialogue into interests, cognitive style, MBTI signals, and deeper needs.",
+            "accent": PURPLE,
+            "screenshot": IMAGE_DIR / "desktop-profile.png",
+            "screen_size": (590, 350),
+            "chips": [("Interests", PURPLE), ("MBTI", BLUE), ("Needs", ORANGE), ("Style", GREEN)],
+            "callouts": [("No platform account", INK), ("Local SQLite", ORANGE)],
+            "bullets": [
+                "Profile evolves from actual behavior, not manual tags.",
+                "LLM and embedding providers follow your configuration.",
+                "The SQLite database remains on your machine by default.",
+            ],
+            "footer": "OpenBiliClaw: local-first, cross-platform, self-improving discovery",
+        },
+        {
+            "step": "3",
+            "title": "Recommendations with reasons",
+            "subtitle": "Cards explain why each item fits you, so recommendations feel like a thoughtful friend instead of a black-box feed.",
+            "accent": ORANGE,
+            "screenshot": IMAGE_DIR / "desktop-cards.png",
+            "screen_size": (590, 350),
+            "chips": [("Why this fits", ORANGE), ("Mixed sources", BLUE), ("Surprise", PURPLE)],
+            "callouts": [("Reasoned card", ORANGE), ("Open the source", BLUE)],
+            "bullets": [
+                "Each card carries a plain-language reason.",
+                "The pool mixes platforms and topics instead of narrowing down.",
+                "You can open, save, dismiss, or discuss a recommendation.",
+            ],
+            "footer": "OpenBiliClaw: local-first, cross-platform, self-improving discovery",
+        },
+        {
+            "step": "4",
+            "title": "Feedback trains the next batch",
+            "subtitle": "Like, not interested, save, and chat feedback immediately shape what OpenBiliClaw explores next.",
+            "accent": GREEN,
+            "screenshot": IMAGE_DIR / "mobile-recommend.png",
+            "screen_size": (270, 430),
+            "chips": [("Like", GREEN), ("Not interested", RED), ("Chat", PURPLE), ("Save", ORANGE)],
+            "callouts": [("Feedback loop", GREEN), ("Better next batch", PURPLE)],
+            "bullets": [
+                "Positive feedback reinforces a direction.",
+                "Negative feedback clears what you do not want.",
+                "Chat feedback teaches nuanced taste over time.",
+            ],
+            "footer": "OpenBiliClaw: local-first, cross-platform, self-improving discovery",
+        },
+    ]
 
 
 def save_gif(frames: list[Image.Image], output: Path) -> None:
@@ -378,7 +457,11 @@ def save_gif(frames: list[Image.Image], output: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build README hero demo assets.")
-    parser.add_argument("--png-only", action="store_true", help="Only write docs/images/hero-demo.png.")
+    parser.add_argument(
+        "--png-only",
+        action="store_true",
+        help="Only write docs/images/hero-demo.png; skip localized GIFs.",
+    )
     args = parser.parse_args()
 
     IMAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -386,11 +469,16 @@ def main() -> None:
     static.save(OUTPUT_PNG, optimize=True)
 
     if not args.png_only:
-        frames = [build_gif_slide(i) for i in range(4)]
-        save_gif(frames, OUTPUT_GIF)
+        zh_frames = [build_gif_slide(i, "zh") for i in range(4)]
+        en_frames = [build_gif_slide(i, "en") for i in range(4)]
+        save_gif(zh_frames, OUTPUT_GIF_ZH)
+        save_gif(en_frames, OUTPUT_GIF_EN)
+        shutil.copyfile(OUTPUT_GIF_EN, OUTPUT_GIF)
 
     print(f"Wrote {OUTPUT_PNG.relative_to(ROOT)}")
     if not args.png_only:
+        print(f"Wrote {OUTPUT_GIF_ZH.relative_to(ROOT)}")
+        print(f"Wrote {OUTPUT_GIF_EN.relative_to(ROOT)}")
         print(f"Wrote {OUTPUT_GIF.relative_to(ROOT)}")
 
 
