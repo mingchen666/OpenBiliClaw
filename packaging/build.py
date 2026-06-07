@@ -198,6 +198,7 @@ def make_macos_dmg(*, app_bundle: Path, output_dir: Path, version: str) -> Path:
     compressed UDZO image — the conventional macOS drag-install experience.
     """
     import tempfile
+    import time
 
     output_dir.mkdir(parents=True, exist_ok=True)
     dmg_name = make_archive_name(version, "macos").removesuffix(".zip") + ".dmg"
@@ -209,21 +210,36 @@ def make_macos_dmg(*, app_bundle: Path, output_dir: Path, version: str) -> Path:
     try:
         subprocess.check_call(["ditto", str(app_bundle), str(stage / app_bundle.name)])
         (stage / "Applications").symlink_to("/Applications")
-        subprocess.check_call(
-            [
-                "hdiutil",
-                "create",
-                "-volname",
-                "OpenBiliClaw",
-                "-srcfolder",
-                str(stage),
-                "-ov",
-                "-format",
-                "UDZO",
-                str(dmg_path),
-            ],
-            stdout=subprocess.DEVNULL,
-        )
+        hdiutil_cmd = [
+            "hdiutil",
+            "create",
+            "-volname",
+            "OpenBiliClaw",
+            "-srcfolder",
+            str(stage),
+            "-ov",
+            "-format",
+            "UDZO",
+            str(dmg_path),
+        ]
+        # hdiutil is flaky on CI runners — it intermittently fails with "Resource
+        # busy" / diskimages-helper races (seen on the GitHub macOS runners).
+        # Retry a few times, capturing stderr so a real (non-transient) failure
+        # surfaces its message instead of a bare exit code.
+        last_err = ""
+        for attempt in range(1, 4):
+            result = subprocess.run(
+                hdiutil_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+            )
+            if result.returncode == 0:
+                last_err = ""
+                break
+            last_err = (result.stderr or "").strip()
+            print(f"[build] hdiutil create failed (attempt {attempt}/3, rc={result.returncode}): {last_err}")
+            dmg_path.unlink(missing_ok=True)
+            time.sleep(3 * attempt)
+        if last_err:
+            raise subprocess.CalledProcessError(1, hdiutil_cmd, stderr=last_err)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
     return dmg_path
