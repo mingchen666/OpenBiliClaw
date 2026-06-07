@@ -223,32 +223,46 @@
       max-width: 300px;
     }
 
-    /* Persistent header button nudging a GitHub Star — same shape as the other
-       header actions, but gold-tinted so it stands out as a gentle, always-on
-       ask without needing a banner. */
-    .star-button {
-      width: 32px;
-      height: 32px;
-      border-radius: 10px;
-      background: rgba(255, 248, 230, 0.9);
-      border: 1px solid rgba(247, 181, 0, 0.42);
-      display: flex;
+    /* Persistent "Star on GitHub" button on its own row under the hero copy —
+       the familiar GitHub-button look (Octocat mark + label) plus a gold star,
+       so it reads instantly as "star the repo". Own row → never crowds the
+       header icons. */
+    .github-star-btn {
+      align-self: flex-start;
+      margin-top: 12px;
+      display: inline-flex;
       align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
+      gap: 7px;
+      padding: 7px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(208, 215, 222, 0.95);
+      background: linear-gradient(180deg, #ffffff, #f1f4f7);
+      color: #24292f;
+      font-size: 12.5px;
+      font-weight: 700;
+      line-height: 1;
       cursor: pointer;
-      transition: background 0.15s, transform 0.15s;
+      box-shadow: 0 1px 2px rgba(27, 31, 36, 0.06);
+      transition: background 0.15s, border-color 0.15s, transform 0.15s;
     }
 
-    .star-button:hover {
-      background: rgba(255, 240, 198, 1);
+    .github-star-btn:hover {
+      background: linear-gradient(180deg, #ffffff, #e8edf1);
+      border-color: rgba(247, 181, 0, 0.65);
       transform: translateY(-1px);
     }
 
-    .star-button svg {
-      width: 17px;
-      height: 17px;
+    .github-star-mark {
+      width: 16px;
+      height: 16px;
+      color: #24292f;
+      flex-shrink: 0;
+    }
+
+    .github-star-icon {
       color: #f7b500;
+      font-size: 14px;
+      line-height: 1;
     }
 
     .status-badge {
@@ -1489,12 +1503,10 @@
         min-width: 0;
       }
 
-      /* "OpenBiliClaw" is one word (can't wrap), and 5 action icons leave the
-         brand column tight at the low end. Size the title fluidly so the full
-         word always fits beside the icons — 16px at ~400px+, easing down toward
-         the 360px floor — with ellipsis as a last-resort safety below that. */
+      /* "OpenBiliClaw" is one word (can't wrap); keep it readable at 16px and
+         clip with an ellipsis only if a sub-360px drag makes it truly not fit. */
       .hero h1 {
-        font-size: clamp(13px, 3.8vw, 16px);
+        font-size: 16px;
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -4246,9 +4258,6 @@
           </div>
         </div>
         <div class="hero-actions">
-          <button id="starButton" class="star-button" type="button" title="给项目点个 GitHub Star ⭐" aria-label="在 GitHub 给项目点 Star">
-            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5l2.9 5.88 6.49.94-4.7 4.58 1.11 6.46L12 17.77l-5.8 3.05 1.1-6.46-4.69-4.58 6.49-.94L12 2.5z"/></svg>
-          </button>
           <button id="openWebButton" class="webui-button" type="button" title="在浏览器中打开 Web 版" aria-label="在浏览器中打开 Web 版">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
           </button>
@@ -4265,6 +4274,11 @@
         </div>
       </div>
       <p class="hero-copy">首页先放一边，这里是你最近更可能点开的。</p>
+      <button id="starButton" class="github-star-btn" type="button" title="在 GitHub 给 OpenBiliClaw 点个 Star" aria-label="在 GitHub 给项目点 Star">
+        <svg class="github-star-mark" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.02-1.49-2.22.48-2.69-1.07-2.69-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.81.06 1.23.83 1.23.83.72 1.23 1.89.88 2.35.67.07-.52.28-.88.51-1.08-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="github-star-label">Star on GitHub</span>
+        <span class="github-star-icon" aria-hidden="true">★</span>
+      </button>
     </header>
 
     <div class="tabs-shell">

@@ -47,23 +47,28 @@ test("popup header stays a single row with inline icons at narrow side-panel wid
   // The status badge wraps just under the title only when space is tight.
   assert.match(narrowHeaderQuery, /\.brand-title-row\s*\{/);
   assert.match(narrowHeaderQuery, /flex-wrap:\s*wrap;/);
-  // The one-word title sizes fluidly so it never spills into the 5 icons.
-  assert.match(narrowHeaderQuery, /font-size:\s*clamp\(/);
+  // The one-word title clips with an ellipsis (not overlap) if a drag gets tight.
+  assert.match(narrowHeaderQuery, /\.hero h1\s*\{[\s\S]*?text-overflow:\s*ellipsis;/);
   // Compact icons via `.hero-actions button` — higher specificity than the base
   // `.webui-button { width: 32px }` that comes later in source.
   assert.match(narrowHeaderQuery, /\.hero-actions button\s*\{[\s\S]*?width:\s*28px;/);
 });
 
-test("popup keeps a persistent GitHub Star button in the header", () => {
+test("popup keeps a persistent GitHub-branded Star button in the header", () => {
   const popupHtml = readFileSync(resolve("popup", "popup.html"), "utf8");
   const popupJs = readFileSync(resolve("popup", "popup.js"), "utf8");
   const heroMarkup = popupHtml.match(/<header class="hero">[\s\S]*?<\/header>/)?.[0] ?? "";
-  const starButtonBlock = popupHtml.match(/\.star-button\s*\{[\s\S]*?\}/)?.[0] ?? "";
+  const heroActions = popupHtml.match(/<div class="hero-actions">[\s\S]*?<\/div>/)?.[0] ?? "";
+  const btnBlock = popupHtml.match(/\.github-star-btn\s*\{[\s\S]*?\}/)?.[0] ?? "";
 
-  // An always-on Star button lives in the header action row (no dismissible banner).
+  // An always-on Star button lives in the header — on its own row, carrying
+  // GitHub branding (the Octocat mark) + a clear label, not a dismissible banner.
   assert.match(heroMarkup, /id="starButton"/);
-  assert.match(heroMarkup, /class="hero-actions"[\s\S]*id="starButton"/);
-  assert.match(starButtonBlock, /background:/); // gold-tinted so it stands out
+  assert.match(heroMarkup, /class="github-star-mark"/); // Octocat SVG
+  assert.match(heroMarkup, /Star on GitHub/);
+  assert.match(btnBlock, /background:/);
+  // It's NOT crammed into the action-icon strip (that was too long with 5 icons).
+  assert.doesNotMatch(heroActions, /id="starButton"/);
   assert.doesNotMatch(popupHtml, /id="starCta"/);
   // It opens the repo on click.
   assert.match(popupJs, /STAR_REPO_URL\s*=\s*"https:\/\/github\.com\/whiteguo233\/OpenBiliClaw"/);
