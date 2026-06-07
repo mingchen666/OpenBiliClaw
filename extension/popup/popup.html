@@ -2791,8 +2791,14 @@
       font-weight: 400;
     }
 
+    .init-actions {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+
     .init-start-btn {
-      width: 100%;
+      flex: 1 1 auto;
       padding: 10px 14px;
       border: none;
       border-radius: 12px;
@@ -2804,6 +2810,24 @@
     }
 
     .init-start-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .init-recheck-btn {
+      flex: 0 0 auto;
+      padding: 10px 12px;
+      border: 1px solid rgba(90, 169, 255, 0.5);
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      background: rgba(255, 255, 255, 0.6);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .init-recheck-btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
     }
@@ -4226,7 +4250,17 @@
               </div>
               <p id="initProgressLabel" class="init-progress-label"></p>
             </div>
-            <button id="initStartBtn" type="button" class="init-start-btn">开始初始化</button>
+            <div class="init-actions">
+              <button id="initStartBtn" type="button" class="init-start-btn">开始初始化</button>
+              <button
+                id="initRecheckBtn"
+                type="button"
+                class="init-recheck-btn"
+                title="重新检查前置条件（配好后端 / 登录后点这里）"
+              >
+                ↻ 重新检查
+              </button>
+            </div>
             <p id="initStartReason" class="init-start-reason" hidden></p>
           </div>
         </div>

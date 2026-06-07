@@ -172,6 +172,7 @@ const elements = {
   initProgressBar: document.getElementById("initProgressBar"),
   initProgressLabel: document.getElementById("initProgressLabel"),
   initStartBtn: document.getElementById("initStartBtn"),
+  initRecheckBtn: document.getElementById("initRecheckBtn"),
   initStartReason: document.getElementById("initStartReason"),
   list: document.getElementById("recommendationList"),
   refreshRecommendationsButton: document.getElementById("refreshRecommendationsButton"),
@@ -791,9 +792,33 @@ function renderInitPanel(status) {
       });
     }
   }
+  // Re-check is available whenever a check isn't in flight — but while a run is
+  // actually in progress there's nothing to re-check, so keep it disabled then.
+  setInitRecheckBusy(Boolean(status && status.running));
   if (elements.initStartReason instanceof HTMLElement) {
     elements.initStartReason.textContent = btnState.reason;
     elements.initStartReason.hidden = !btnState.reason;
+  }
+}
+
+// Bind the "重新检查" button once: it re-runs the prereq check on demand so the
+// user can confirm readiness right after configuring the LLM / logging in,
+// instead of waiting for the cache TTL or the 3s poll.
+function bindInitRecheckOnce() {
+  const btn = elements.initRecheckBtn;
+  if (btn instanceof HTMLButtonElement && !btn.dataset.bound) {
+    btn.dataset.bound = "1";
+    btn.addEventListener("click", () => {
+      void refreshInitPanel();
+    });
+  }
+}
+
+function setInitRecheckBusy(busy) {
+  bindInitRecheckOnce();
+  if (elements.initRecheckBtn instanceof HTMLButtonElement) {
+    elements.initRecheckBtn.disabled = busy;
+    elements.initRecheckBtn.textContent = busy ? "检查中…" : "↻ 重新检查";
   }
 }
 
@@ -820,6 +845,7 @@ function renderInitPanelChecking() {
     elements.initStartBtn.textContent = "检查中…";
     elements.initStartBtn.disabled = true;
   }
+  setInitRecheckBusy(true);
   if (elements.initStartReason instanceof HTMLElement) {
     elements.initStartReason.hidden = true;
   }
@@ -832,12 +858,14 @@ function renderInitPanelCheckFailed() {
   elements.initChecklist.replaceChildren();
   const li = document.createElement("li");
   li.className = "init-checking";
-  li.textContent = "前置检查没拉到（后端可能在忙或重启中），稍后自动重试…";
+  li.textContent = "前置检查没拉到（后端可能在忙或重启中），稍后自动重试，或点「重新检查」。";
   elements.initChecklist.append(li);
   if (elements.initStartBtn instanceof HTMLButtonElement) {
     elements.initStartBtn.textContent = "检查中…";
     elements.initStartBtn.disabled = true;
   }
+  // Re-enable manual re-check so the user isn't stuck waiting for the auto-retry.
+  setInitRecheckBusy(false);
 }
 
 async function refreshInitPanel() {
