@@ -57,6 +57,9 @@ from openbiliclaw.api.models import (
     FeedbackIn,
     FeedbackResponse,
     HealthResponse,
+    InitPrerequisitesOut,
+    InitStageOut,
+    InitStatusOut,
     LLMConfigOut,
     LLMProviderConfigOut,
     LoggingConfigOut,
@@ -132,7 +135,13 @@ _fire_and_forget_tasks: set[asyncio.Task[None]] = set()
 # would flash on every popup-open-after-idle. A genuinely-missing model 404s
 # *fast*, so it still resolves to not-ready well within the cap.
 _EMBEDDING_READY_TTL_SECONDS = 30.0
-_EMBEDDING_PROBE_TIMEOUT_SECONDS = 6.0
+# Strict readiness (gui-init): a failure/timeout caches briefly so a service
+# that finished a cold model load greens within seconds; the probe timeout is
+# generous enough for a cold Ollama load but still fails (does not optimistically
+# pass) if the embedding service never answers.
+_EMBEDDING_FAIL_TTL_SECONDS = 8.0
+_EMBEDDING_PROBE_TIMEOUT_SECONDS = 15.0
+_AUTO_REPLENISH_DEBOUNCE_SECONDS = 30.0
 
 SOURCE_LABELS = {
     "feedback": "推荐反馈",
@@ -331,6 +340,21 @@ def _count_events_by_source_platform(database: Any) -> dict[str, int]:
         source_key = _normalize_source_platform(source)
         counter[source_key] = counter.get(source_key, 0) + 1
     return {source: counter.get(source, 0) for source in _SOURCE_SHARE_ORDER}
+
+
+def _select_init_platforms(enabled: set[str], selected: set[str] | None) -> set[str]:
+    """Effective optional platform sources for a guided-init run.
+
+    ``enabled`` is the config-enabled set; ``selected`` is the extension's
+    per-run checkbox choice (``None`` when no selection was sent — CLI / legacy
+    clients — meaning "use everything enabled"). A selection can only NARROW the
+    set: you can't init a source that isn't configured, so the result is the
+    intersection. Bilibili is the always-on base (pulled via the client, not an
+    ``include_*`` flag), so it doesn't need to appear here.
+    """
+    if selected is None:
+        return set(enabled)
+    return set(enabled) & selected
 
 
 def _normalize_source_platform(source: object) -> str:
@@ -649,6 +673,7 @@ def create_app(
     app.state.degraded = bool(getattr(ctx, "degraded", False))
     app.state.degraded_reason = str(getattr(ctx, "degraded_reason", ""))
     app.state.degraded_issues = list(getattr(ctx, "degraded_issues", []))
+    last_auto_replenish_at: float | None = None
 
     # ── Password gate (LAN/remote auth) ─────────────────────────────
     app.state.auth_gate = AuthGate(_auth_cfg, getattr(ctx, "database", None))
@@ -843,6 +868,7 @@ def create_app(
             or path == "/api/runtime-status"
             or path == "/api/autostart-status"
             or path == "/api/autostart/apply"
+            or path in ("/api/init-status", "/api/init", "/api/init/cancel")
             or (path == "/api/config" and method in {"GET", "PUT"})
             or path.startswith("/api/auth")
             or path.startswith("/m")
@@ -850,6 +876,97 @@ def create_app(
         if allowed:
             return await call_next(request)
         return JSONResponse(status_code=503, content=_degraded_body())
+
+    def _init_active_now() -> bool:
+        """Defensive ``init_active`` check usable from any handler/middleware.
+
+        Returns False (never raises) when the coordinator/DB is a test stub or
+        unavailable, so gating logic degrades to "not active" instead of 500.
+        """
+        coord = getattr(ctx, "init_coordinator", None)
+        if coord is None:
+            return False
+        try:
+            return bool(coord.init_active())
+        except Exception:
+            return False
+
+    def _init_owns_task(task_id: str) -> bool:
+        """Whether ``task_id`` is a bootstrap task enqueued by the active init
+        run (so its task-result is init's own data, not a stale/steady-state
+        completion). Defensive — never raises."""
+        coord = getattr(ctx, "init_coordinator", None)
+        if coord is None or not task_id:
+            return False
+        try:
+            return bool(coord.is_owned_bootstrap_task(str(task_id)))
+        except Exception:
+            return False
+
+    def _init_owned_ids_filter() -> set[str] | None:
+        """``next-task`` filter: during an active init, restrict the dispatcher
+        to init-owned bootstrap task ids (so a stale pending task can't be
+        claimed and starve the run's collectors); None = no restriction."""
+        if not _init_active_now():
+            return None
+        coord = getattr(ctx, "init_coordinator", None)
+        if coord is None:
+            return None
+        try:
+            return set(coord.owned_task_ids())
+        except Exception:
+            return None
+
+    # gui-init D1 — DENY-BY-DEFAULT writer gating. While a guided init is active,
+    # every mutating request (POST/PUT/PATCH/DELETE) is rejected with 409 unless
+    # it is on the small allowlist of init-essential writers below. An allowlist
+    # of *blocked* paths is fragile (every new soul/pool writer must remember to
+    # opt in); denying by default means no writer can silently race init.
+    #
+    # Allowed during init:
+    #  - /api/init, /api/init/cancel        — init control itself
+    #  - /api/bilibili/cookie               — handler no-ops during init
+    #  - /api/auth/*                        — auth-gate management (login/admin)
+    #  - /api/sources/*/kick                — init's own dispatcher kick
+    #  - /api/sources/*/task-result         — init bootstrap results (the handler
+    #                                         self-guards: skips pool writes and
+    #                                         only propagates init-owned results)
+    # (GET reads — /api/sources/*/next-task, /api/init-status, … — are never
+    #  gated since only mutating methods are checked.)
+    _init_write_allowlist = frozenset(
+        {
+            "/api/init",
+            "/api/init/cancel",
+            "/api/bilibili/cookie",
+        }
+    )
+
+    def _init_write_allowed(path: str) -> bool:
+        if path in _init_write_allowlist or path.startswith("/api/auth"):
+            return True
+        # Exact-segment match for the bootstrap protocol: only
+        # /api/sources/<source>/{kick,task-result}. Split WITHOUT stripping so a
+        # trailing slash ("/api/sources/xhs/kick/") yields 6 parts and is NOT
+        # allowed, and recipe CRUD like /api/sources/kick (recipe_id="kick")
+        # yields 4 parts and is NOT allowed.
+        segments = path.split("/")  # "/api/sources/xhs/kick" → ['', api, sources, xhs, kick]
+        return (
+            len(segments) == 5
+            and segments[1] == "api"
+            and segments[2] == "sources"
+            and segments[4] in ("kick", "task-result")
+        )
+
+    @app.middleware("http")
+    async def _init_active_write_guard(request: Request, call_next: Any) -> Any:
+        if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+            path = request.url.path
+            if not _init_write_allowed(path) and _init_active_now():
+                return JSONResponse(
+                    {"error": "init_running", "detail": "初始化进行中，请稍后再试"},
+                    status_code=409,
+                )
+        return await call_next(request)
 
     # Register AFTER the degraded guard so the auth gate is the outermost http
     # middleware (runs first): unauthenticated requests are rejected before any
@@ -1144,29 +1261,33 @@ def create_app(
             # Legacy service without a live probe — "built" is the best signal.
             return True
 
-        if time.monotonic() - _embedding_ready_checked_at < _EMBEDDING_READY_TTL_SECONDS:
+        _embedding_ttl = (
+            _EMBEDDING_READY_TTL_SECONDS if _embedding_ready_value else _EMBEDDING_FAIL_TTL_SECONDS
+        )
+        if time.monotonic() - _embedding_ready_checked_at < _embedding_ttl:
             return _embedding_ready_value
 
         async with _embedding_ready_lock:
             # Another request may have refreshed the cache while we waited.
-            if time.monotonic() - _embedding_ready_checked_at < _EMBEDDING_READY_TTL_SECONDS:
+            _embedding_ttl = (
+                _EMBEDDING_READY_TTL_SECONDS
+                if _embedding_ready_value
+                else _EMBEDDING_FAIL_TTL_SECONDS
+            )
+            if time.monotonic() - _embedding_ready_checked_at < _embedding_ttl:
                 return _embedding_ready_value
             try:
                 ready = bool(
                     await asyncio.wait_for(probe(), timeout=_EMBEDDING_PROBE_TIMEOUT_SECONDS)
                 )
             except TimeoutError:
-                # Probe exceeded the cap — almost always Ollama cold-loading the
-                # model, not a real failure (a missing model 404s fast and lands
-                # in the `except Exception` branch below as a hard `False`).
-                # Report optimistically ready and cache it like any result, so
-                # concurrent / repeat polls during the multi-second load share
-                # one answer instead of each re-probing and stacking 6s waits.
-                # (A brief stale-OK is far better than flashing the banner.)
-                logger.debug(
-                    "Embedding readiness probe timed out (model loading?); optimistic ready"
-                )
-                ready = True
+                # Strict (gui-init): a prereq is "ok" only on a confirmed real
+                # embedding round-trip. A timeout (even a cold model load) within
+                # the generous window means we could NOT confirm it works → report
+                # not-ready, and the short fail-TTL re-probes soon so it greens
+                # quickly once the load finishes.
+                logger.debug("Embedding readiness probe timed out; reporting not ready")
+                ready = False
             except Exception:
                 logger.debug("Embedding readiness probe errored", exc_info=True)
                 ready = False
@@ -1200,39 +1321,278 @@ def create_app(
             embedding_ready=embedding_ready,
         )
 
+    @app.get("/api/init-status", response_model=InitStatusOut)
+    async def init_status(request: Request) -> InitStatusOut:
+        """Authoritative guided-init status + pre-init checklist (gui-init §3).
+
+        Remote-readable (mirrors autostart-status): a non-local caller still
+        sees the state but ``can_manage`` is False. Degraded-mode readable.
+        """
+        from openbiliclaw.docker_runtime import is_running_in_container
+
+        coord = ctx.init_coordinator
+        prereqs = ctx.init_prereqs
+        run = coord.get_status()
+        # Probe the three services concurrently — each is a real (now strict)
+        # request with a generous cold-load timeout, so running them sequentially
+        # could stack to ~40s. gather() bounds the wait to the slowest single
+        # probe (TTL-cached, so steady-state polls are instant).
+        bili, chat, embedding = await asyncio.gather(
+            prereqs.bilibili_check(),
+            prereqs.chat_ready(),
+            _health_embedding_ready(),
+        )
+        platforms = prereqs.enabled_platforms()
+        initialized = bool(_health_profile_ready())
+        trusted = _get_auth_gate().is_trusted_local(request)
+        supported = not is_running_in_container()
+        running = bool(run["running"])
+        hard_ok = (bili == "ok") and chat
+        # Mirror POST /api/init's guards: an already-initialized profile blocks
+        # a (non-force) start, so can_start must reflect that too — otherwise E1
+        # and E2 disagree and a client could offer "start" that E2 rejects.
+        can_start = trusted and supported and hard_ok and not running and not initialized
+
+        if not supported:
+            reason, detail = "unsupported_runtime", "Docker 运行时不支持图形化初始化"
+        elif running:
+            reason, detail = "already_running", "初始化进行中"
+        elif initialized:
+            reason, detail = "already_initialized", "已经初始化过了；如需重建请用 force"
+        elif bili != "ok":
+            reason, detail = "bilibili_not_logged_in", "还没检测到 B站 登录"
+        elif not chat:
+            reason, detail = "llm_not_ready", "AI 服务还没配好或当前不可用"
+        elif run.get("status") in ("failed", "cancelled"):
+            # Prereqs are fine and nothing is running, but the last run ended
+            # badly — surface why so the UI can show it (can_start stays true so
+            # the user can retry) (gui-init review).
+            reason = run.get("reason") or str(run.get("status"))
+            detail = "上次初始化未完成，可重试"
+        else:
+            reason, detail = "none", ""
+
+        return InitStatusOut(
+            initialized=initialized,
+            running=running,
+            run_id=run["run_id"],
+            sequence=run["sequence"],
+            current_stage=run["current_stage"],
+            total_stages=run["total_stages"],
+            stages=[InitStageOut(**s) for s in run["stages"]],
+            partial_success=bool(run["partial_success"]),
+            can_start=can_start,
+            can_manage=trusted,
+            prerequisites=InitPrerequisitesOut(
+                bilibili_logged_in=(bili == "ok"),
+                bilibili_check=bili,
+                llm_ready=chat,
+                embedding_ready=embedding,
+                enabled_platforms=platforms,
+            ),
+            reason=reason,
+            detail=detail,
+        )
+
+    def _init_runtime_supported() -> tuple[bool, str]:
+        """Cheap guard: GUI init needs a writable host runtime (gui-init §5b,
+        review R2 A-7). Docker uses the headless auto-init path instead."""
+        from openbiliclaw.docker_runtime import is_running_in_container
+
+        if is_running_in_container():
+            return False, "Docker 运行时不支持图形化初始化"
+        cfg = ctx.config
+        if cfg is not None:
+            try:
+                if not os.access(str(cfg.data_path), os.W_OK):
+                    return False, "数据目录不可写"
+            except Exception:
+                pass
+        return True, ""
+
+    async def _run_guided_init_wrapper(
+        run_id: str, selected_sources: set[str] | None = None
+    ) -> None:
+        """Sole status/event writer for an API-launched guided init (gui-init
+        §5f). Drives the shared ``run_guided_init`` through the coordinator and
+        persists the terminal state here — completed / failed / cancelled —
+        never via a side path. Imported lazily to avoid an import cycle with
+        the CLI module that owns the shared pipeline.
+
+        ``selected_sources`` is the extension's per-run platform choice; it can
+        only narrow the config-enabled set (see :func:`_select_init_platforms`).
+        ``None`` keeps the legacy behaviour of using everything enabled.
+        """
+        from openbiliclaw.cli import (
+            _INIT_BILIBILI_FAVORITE_LIMIT,
+            _INIT_BILIBILI_FOLLOW_LIMIT,
+            _INIT_POOL_TARGET_COUNT,
+            GuidedInitError,
+            run_guided_init,
+        )
+
+        coord = ctx.init_coordinator
+
+        async def _api_discover_backfill(
+            profile: Any, *, target_pool_count: int, label_suffix: str = ""
+        ) -> int:
+            # API path backfills through the live controller so it holds the
+            # refresh lock (B1); ``label_suffix`` is CLI-only console flavour.
+            return int(
+                await ctx.runtime_controller.run_init_backfill(
+                    profile, target_pool_count, fully_parallel=True
+                )
+            )
+
+        try:
+            await coord.mark_running(run_id)
+            enabled = set(ctx.init_prereqs.enabled_platforms())
+            effective = _select_init_platforms(enabled, selected_sources)
+            result = await run_guided_init(
+                client=ctx.bilibili_client,
+                memory=ctx.memory_manager,
+                soul_engine=ctx.soul_engine,
+                favorite_limit=_INIT_BILIBILI_FAVORITE_LIMIT,
+                follow_limit=_INIT_BILIBILI_FOLLOW_LIMIT,
+                include_xhs="xiaohongshu" in effective,
+                include_dy="douyin" in effective,
+                include_yt="youtube" in effective,
+                target_pool_count=_INIT_POOL_TARGET_COUNT,
+                discover_backfill=_api_discover_backfill,
+                coordinator=coord,
+                run_id=run_id,
+            )
+            await coord.complete(run_id, partial_success=result.discovery_error)
+        except asyncio.CancelledError:
+            # Cancel was requested via /api/init/cancel — shield the terminal
+            # write so the cancelled status still lands before we propagate.
+            with suppress(Exception):
+                await asyncio.shield(coord.cancel(run_id))
+            raise
+        except GuidedInitError as exc:
+            logger.warning("guided init %s failed: %s", run_id, exc.reason)
+            with suppress(Exception):
+                await coord.fail(run_id, exc.reason)
+        except Exception:
+            logger.exception("guided init %s crashed", run_id)
+            with suppress(Exception):
+                await coord.fail(run_id, "internal_error")
+
+    @app.post("/api/init")
+    async def start_guided_init(request: Request) -> JSONResponse:
+        """Launch guided init in the background (local-only; gui-init §2/§5b).
+
+        Cheap rejections run BEFORE reserving the run so a rejected request
+        never leaves a stuck ``starting`` row (review R2 A-2). The single-flight
+        guard is the DB reservation inside ``try_start``.
+        """
+        if not _get_auth_gate().is_trusted_local(request):
+            return JSONResponse({"error": "local_only"}, status_code=403)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        force = bool(body.get("force", False)) if isinstance(body, dict) else False
+        # Optional per-run platform selection from the extension checkboxes. A
+        # list (even empty) is an explicit choice; absent → None = use all
+        # enabled (CLI / legacy clients). Narrowed against config-enabled later.
+        raw_sources = body.get("sources") if isinstance(body, dict) else None
+        selected_sources = {str(s) for s in raw_sources} if isinstance(raw_sources, list) else None
+
+        coord = ctx.init_coordinator
+
+        supported, detail = _init_runtime_supported()
+        if not supported:
+            return JSONResponse({"error": "unsupported_runtime", "detail": detail}, status_code=409)
+        if not force and _health_profile_ready() is True:
+            return JSONResponse(
+                {"error": "already_initialized", "detail": "已初始化；重建请传 force"},
+                status_code=409,
+            )
+
+        run_id = uuid.uuid4().hex
+        if not coord.try_start(run_id):
+            return JSONResponse({"error": "already_running"}, status_code=409)
+
+        # Critical-section revalidation: prereqs may have lapsed between the
+        # status poll and now. On a miss, roll the reservation back to idle so
+        # no stuck row remains (review R2 A-2).
+        bili = await ctx.init_prereqs.bilibili_check()
+        if bili != "ok":
+            coord.reset_to_idle(run_id, reason="bilibili_not_logged_in")
+            return JSONResponse({"error": "bilibili_not_logged_in"}, status_code=409)
+        chat = await ctx.init_prereqs.chat_ready()
+        if not chat:
+            coord.reset_to_idle(run_id, reason="llm_not_ready")
+            return JSONResponse({"error": "llm_not_ready"}, status_code=409)
+
+        registry = getattr(ctx, "task_registry", None)
+        if registry is not None:
+            task = registry.track("guided_init", _run_guided_init_wrapper(run_id, selected_sources))
+        else:
+            task = asyncio.create_task(_run_guided_init_wrapper(run_id, selected_sources))
+        coord.attach_task(run_id, task)
+        return JSONResponse({"run_id": run_id, **coord.get_status()}, status_code=202)
+
+    @app.post("/api/init/cancel")
+    async def cancel_guided_init(request: Request) -> JSONResponse:
+        """Cooperatively cancel the in-flight guided init (local-only)."""
+        if not _get_auth_gate().is_trusted_local(request):
+            return JSONResponse({"error": "local_only"}, status_code=403)
+        coord = ctx.init_coordinator
+        run = ctx.database.get_latest_init_run() if ctx.database is not None else None
+        if run is None or not coord.init_active():
+            return JSONResponse({"error": "not_running"}, status_code=409)
+        cancelled = await coord.cancel_current_run(run["run_id"])
+        if not cancelled:
+            return JSONResponse({"error": "not_running"}, status_code=409)
+        return JSONResponse({"cancelling": True, "run_id": run["run_id"]}, status_code=202)
+
     @app.get("/api/image-proxy", response_model=None)
     async def image_proxy(
         url: str = Query(..., description="URL-encoded image URL to proxy"),
     ) -> Response | FileResponse:
         """Proxy whitelisted remote cover images through the local backend.
 
-        Fetch + whitelist / redirect / size validation live in
-        ``openbiliclaw.runtime.image_cache.fetch_cover_bytes`` (shared with the
-        discovery-time prefetch sweep). Successfully fetched images are cached to
-        ``data/image-cache/``; when the upstream fails (e.g. an expired XHS CDN
-        token) the cached copy is served instead.
+        Cache-first: a cached copy IS the image for that URL (the URL identifies
+        it), so serve it immediately instead of paying a ~2s upstream round-trip
+        on every load. The old code re-fetched on the success path and only read
+        the cache when the upstream failed, so covers stayed slow even when
+        cached. On a miss, fetch via ``image_cache.fetch_cover_bytes`` (whitelist
+        / redirect / size validation), cache it, and serve. ``X-Image-Cache``
+        reports hit/miss; slow misses are logged for diagnosis.
         """
+        if cached := _image_cache_response(url):
+            return cached
+
+        started = time.monotonic()
         try:
             data, content_type = await fetch_cover_bytes(url)
         except CoverFetchError as exc:
             # Validation failures (400/403/413) surface as-is; upstream / network
-            # failures (>=500) fall back to a cached copy when one exists.
+            # failures (>=500) fall back to a cached copy when one appeared.
             if exc.status_code >= 500 and (cached := _image_cache_response(url)):
                 return cached
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
         save_image_bytes(url, data, content_type)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if elapsed_ms > 800:
+            logger.debug("image-proxy MISS %dms %s", elapsed_ms, url[:100])
         return Response(
             content=data,
             media_type=content_type,
             headers={
                 "Cache-Control": "public, max-age=86400",
                 "X-Content-Type-Options": "nosniff",
+                "X-Image-Cache": "miss",
             },
         )
 
     @app.post("/api/bilibili/cookie", response_model=BilibiliCookieResponse)
-    async def sync_bilibili_cookie(payload: BilibiliCookieIn) -> BilibiliCookieResponse:
+    async def sync_bilibili_cookie(
+        payload: BilibiliCookieIn,
+    ) -> BilibiliCookieResponse | JSONResponse:
         """Receive a Bilibili cookie from the browser extension and persist
         it server-side so the backend can call B 站 API as the user.
 
@@ -1269,6 +1629,35 @@ def create_app(
                 authenticated=False,
                 message="cookie payload is empty",
                 error_code="empty_cookie",
+            )
+
+        # gui-init D1.2: while guided init runs, the extension keeps auto-syncing
+        # the cookie. Don't validate (~30s round-trip) or rebuild the runtime
+        # (which would swap the BilibiliAPIClient mid-init). Same effective
+        # cookie → silent 200 no-op so the extension's auto-sync doesn't error;
+        # a genuinely different cookie → 409 so the user learns the switch
+        # didn't take (it applies after init), rather than being dropped.
+        if _init_active_now():
+            effective_cookie = ""
+            try:
+                _cfg, _ = load_config_with_diagnostics()
+                effective_cookie = (_cfg.bilibili.cookie or "").strip()
+                if not effective_cookie:
+                    effective_cookie = AuthManager(data_dir=_cfg.data_path).load_cookie().strip()
+            except Exception:
+                effective_cookie = ""
+            if cookie_value == effective_cookie and effective_cookie:
+                return BilibiliCookieResponse(
+                    ok=True,
+                    authenticated=True,
+                    message="Cookie 未变，初始化进行中无需重新同步。",
+                )
+            return JSONResponse(
+                {
+                    "error": "init_running",
+                    "detail": "初始化进行中，暂不能切换 Cookie，请稍后再试。",
+                },
+                status_code=409,
             )
 
         config, diagnostics = load_config_with_diagnostics()
@@ -1631,6 +2020,16 @@ def create_app(
                 )
         except Exception:
             logger.debug("Image cache cleanup failed", exc_info=True)
+
+        # Guided-init crash recovery: fail any run left starting/running by a
+        # prior crash so /api/init-status never reports a stuck running=true.
+        # Must run even in degraded mode (before the early return below).
+        try:
+            reconciled = ctx.init_coordinator.reconcile_on_boot()
+            if reconciled:
+                logger.info("Reconciled %d stale guided-init run(s) on boot", reconciled)
+        except Exception:
+            logger.debug("Guided-init boot reconciliation failed", exc_info=True)
 
         if bool(getattr(ctx, "degraded", False)):
             return
@@ -2088,7 +2487,17 @@ def create_app(
         # silent: any error returns the original empty list, leaving
         # the popup's "正在补货" state intact and giving the regular
         # refresh tick another chance.
-        if not rows and ctx.recommendation_engine is not None and ctx.soul_engine is not None:
+        # gui-init D1: this empty-history bootstrap calls serve(), which WRITES
+        # (recommendation rows + pool "shown" markers). It's a side-effecting
+        # GET, so the deny-by-default middleware (POST/PUT/PATCH/DELETE) doesn't
+        # cover it — skip it during an active init so a read can't serve from /
+        # mark a half-built pool. The post-init refresh tick serves normally.
+        if (
+            not rows
+            and not _init_active_now()
+            and ctx.recommendation_engine is not None
+            and ctx.soul_engine is not None
+        ):
             with suppress(Exception):
                 pool_count_fn = getattr(ctx.database, "count_pool_candidates", None)
                 pool_count = int(pool_count_fn()) if callable(pool_count_fn) else 0
@@ -2309,21 +2718,65 @@ def create_app(
         except Exception:
             logger.exception("Background discovery candidate drain failed")
 
-    async def _trigger_replenishment_if_needed() -> None:
+    def _pool_available_count() -> int | None:
+        """Return the best available servable-pool count for hot-path guards."""
+        get_runtime_status = getattr(ctx.runtime_controller, "get_runtime_status", None)
+        if callable(get_runtime_status):
+            with suppress(Exception):
+                status = get_runtime_status()
+                if isinstance(status, dict) and "pool_available_count" in status:
+                    return max(0, int(status.get("pool_available_count") or 0))
+
+        readiness = getattr(ctx.database, "count_pool_readiness", None)
+        if callable(readiness):
+            with suppress(Exception):
+                counts = readiness()
+                if isinstance(counts, dict) and "available" in counts:
+                    return max(0, int(counts.get("available") or 0))
+
+        count_pool = getattr(ctx.database, "count_pool_candidates", None)
+        if callable(count_pool):
+            with suppress(Exception):
+                return max(0, int(count_pool()))
+        return None
+
+    async def _trigger_replenishment_if_needed(*, force: bool = False) -> None:
         """Fire a background Discovery refresh when the pool runs low."""
-        curator = getattr(ctx.recommendation_engine, "_curator", None)
-        if curator is None or not hasattr(curator, "needs_replenishment"):
-            return
-        if not curator.needs_replenishment():
-            return
         trigger = getattr(ctx.runtime_controller, "trigger_manual_refresh", None)
-        if callable(trigger):
+        if not callable(trigger):
+            return
+        if not force:
+            curator = getattr(ctx.recommendation_engine, "_curator", None)
+            if curator is None or not hasattr(curator, "needs_replenishment"):
+                return
+            if not curator.needs_replenishment():
+                return
+
+        nonlocal last_auto_replenish_at
+        now = time.monotonic()
+        if (
+            last_auto_replenish_at is not None
+            and now - last_auto_replenish_at < _AUTO_REPLENISH_DEBOUNCE_SECONDS
+        ):
+            logger.debug(
+                "Auto replenishment skipped by debounce (elapsed=%.1fs)",
+                now - last_auto_replenish_at,
+            )
+            return
+
+        last_auto_replenish_at = now
+        try:
             logger.info("Pool low — triggering automatic replenishment")
-            asyncio.create_task(trigger())
+            await trigger()
+        except Exception:
+            logger.exception("Automatic replenishment trigger failed")
 
     @app.post("/api/recommendations/reshuffle", response_model=RecommendationReshuffleResponse)
     async def reshuffle_recommendations() -> RecommendationReshuffleResponse:
         if ctx.recommendation_engine is None or ctx.soul_engine is None:
+            return RecommendationReshuffleResponse(items=[])
+        if _pool_available_count() == 0:
+            await _trigger_replenishment_if_needed(force=True)
             return RecommendationReshuffleResponse(items=[])
         try:
             profile = await ctx.soul_engine.get_profile()
@@ -2338,6 +2791,9 @@ def create_app(
         payload: RecommendationAppendIn,
     ) -> RecommendationReshuffleResponse:
         if ctx.recommendation_engine is None or ctx.soul_engine is None:
+            return RecommendationReshuffleResponse(items=[])
+        if _pool_available_count() == 0:
+            await _trigger_replenishment_if_needed(force=True)
             return RecommendationReshuffleResponse(items=[])
         try:
             profile = await ctx.soul_engine.get_profile()
@@ -4716,7 +5172,7 @@ def create_app(
         # check on every poll. Use a body-less Response instead.
         if _xhs_task_queue is None:
             return Response(status_code=204)
-        task = _xhs_task_queue.next_pending()
+        task = _xhs_task_queue.next_pending(only_ids=_init_owned_ids_filter())
         if task is None:
             return Response(status_code=204)
 
@@ -4775,16 +5231,27 @@ def create_app(
             if self_info_from_request:
                 _persist_xhs_self_info(self_info_from_request)
             self_info_now = self_info_from_request or _load_xhs_self_info()
+            # gui-init D1: the result is always persisted above (merge_result)
+            # so init's own collector can read it. During an active init:
+            #  - skip ALL live discovery-pool writes (stage 4 owns the pool);
+            #  - skip profile propagation for tasks NOT owned by this run (stale
+            #    / steady-state completions), but DO propagate init-OWNED
+            #    bootstrap results through the normal deduped path so the source
+            #    signals land in memory exactly once (handles force re-init).
+            # Computed BEFORE the URL/token backfill (_backfill_xhs_tokens writes
+            # content_cache + discovery_candidates).
+            _init_busy = _init_active_now()
+            _skip_profile = _init_busy and not _init_owns_task(task_id)
             # Store discovered URLs + metadata
             valid_urls = [u for u in urls if isinstance(u, str) and u.startswith(xhs_url_prefix)]
-            if valid_urls:
+            if valid_urls and not _init_busy:
                 ctx.database.save_xhs_observed_urls(valid_urls, "task")
                 _backfill_xhs_tokens(ctx.database, valid_urls)
-            if added_notes:
+            if added_notes and not _init_busy:
                 enqueued = _cache_xhs_notes(ctx.database, added_notes, "task", self_info_now)
                 if enqueued:
                     asyncio.create_task(_drain_discovery_candidates_once())
-            if task_type == "bootstrap_profile" and added_notes:
+            if task_type == "bootstrap_profile" and added_notes and not _skip_profile:
                 fresh_notes, note_keys_by_index = _filter_new_source_bootstrap_items(
                     "xhs",
                     added_notes,
@@ -4808,7 +5275,14 @@ def create_app(
                         if key:
                             propagated_keys.append(key)
                         propagated += 1
-                await _ingest_profile_update_events(profile_events)
+                # During init, skip the incremental profile-update pipeline even
+                # for owned results — run_guided_init's explicit analyze/build
+                # owns the profile this run, and a force re-init has an existing
+                # profile that _ingest would otherwise mutate concurrently
+                # (gui-init review). Memory propagation above still records the
+                # signals; the pipeline resumes for steady-state after init.
+                if not _init_busy:
+                    await _ingest_profile_update_events(profile_events)
                 _mark_source_bootstrap_keys("xhs", propagated_keys)
                 if skipped_self > 0:
                     logger.info(
@@ -4883,7 +5357,7 @@ def create_app(
 
         if _dy_task_queue is None:
             return Response(status_code=204)
-        task = _dy_task_queue.next_pending()
+        task = _dy_task_queue.next_pending(only_ids=_init_owned_ids_filter())
         if task is None:
             return Response(status_code=204)
 
@@ -4945,7 +5419,12 @@ def create_app(
                 debug=debug,
                 complete=is_final,
             )
-            if task_type == "bootstrap_profile" and added_videos:
+            # gui-init D1: persist the result (above) for init's own collector;
+            # during init skip profile propagation for non-owned results, but
+            # propagate init-OWNED bootstrap results through the deduped path.
+            _init_busy = _init_active_now()
+            _skip_profile = _init_busy and not _init_owns_task(task_id)
+            if task_type == "bootstrap_profile" and added_videos and not _skip_profile:
                 fresh_videos, video_keys_by_index = _filter_new_source_bootstrap_items(
                     "dy",
                     added_videos,
@@ -4960,7 +5439,9 @@ def create_app(
                         key = video_keys_by_index.get(index, "")
                         if key:
                             propagated_keys.append(key)
-                await _ingest_profile_update_events(profile_events)
+                # Skip the incremental pipeline during init (see xhs handler).
+                if not _init_busy:
+                    await _ingest_profile_update_events(profile_events)
                 _mark_source_bootstrap_keys("dy", propagated_keys)
         else:
             _dy_task_queue.fail(task_id, error=payload.get("error", ""), debug=debug)
@@ -5030,7 +5511,7 @@ def create_app(
 
         if _yt_task_queue is None:
             return Response(status_code=204)
-        task = _yt_task_queue.next_pending()
+        task = _yt_task_queue.next_pending(only_ids=_init_owned_ids_filter())
         if task is None:
             return Response(status_code=204)
 
@@ -5076,7 +5557,12 @@ def create_app(
                 debug=debug,
                 complete=is_final,
             )
-            if task_type == "bootstrap_profile" and added_items:
+            # gui-init D1: persist the result (above) for init's own collector;
+            # during init skip profile propagation for non-owned results, but
+            # propagate init-OWNED bootstrap results through the deduped path.
+            _init_busy = _init_active_now()
+            _skip_profile = _init_busy and not _init_owns_task(task_id)
+            if task_type == "bootstrap_profile" and added_items and not _skip_profile:
                 fresh_items, item_keys_by_index = _filter_new_source_bootstrap_items(
                     "yt",
                     added_items,
@@ -5091,7 +5577,9 @@ def create_app(
                         key = item_keys_by_index.get(index, "")
                         if key:
                             propagated_keys.append(key)
-                await _ingest_profile_update_events(profile_events)
+                # Skip the incremental pipeline during init (see xhs handler).
+                if not _init_busy:
+                    await _ingest_profile_update_events(profile_events)
                 _mark_source_bootstrap_keys("yt", propagated_keys)
         else:
             _yt_task_queue.fail(task_id, error=payload.get("error", ""), debug=debug)
@@ -5928,6 +6416,15 @@ def create_app(
             )
 
         async with _CONFIG_SAVE_LOCK:
+            # gui-init D1 / spec §5b: re-check inside the lock. The middleware
+            # gated this path on init_active before the handler ran, but a run
+            # could have been reserved in between; saving + rebuilding config
+            # mid-init would swap components the run is using.
+            if _init_active_now():
+                return JSONResponse(
+                    {"error": "init_running", "detail": "初始化进行中，请稍后再保存配置"},
+                    status_code=409,
+                )
             config_path = _default_config_path()
             try:
                 backup_path = _snapshot_config_file(config_path)
@@ -6131,5 +6628,13 @@ def create_app(
         @app.get("/", include_in_schema=False)
         def _root_redirect() -> RedirectResponse:
             return RedirectResponse(url="/web", status_code=302)
+
+    # ── First-run Setup Wizard ──────────────────────────────────
+    # Self-contained onboarding page opened on first launch by the packaged
+    # app (packaging/entry.py). Guides provider/key + B站 + done, then sends
+    # the user to /web. Kept isolated from the main desktop SPA on purpose.
+    _setup_dir = _Path(__file__).resolve().parent.parent / "web" / "setup"
+    if _setup_dir.is_dir():
+        app.mount("/setup", _StaticFiles(directory=_setup_dir, html=True), name="setup-wizard")
 
     return app

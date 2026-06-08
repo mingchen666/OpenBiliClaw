@@ -27,6 +27,8 @@ from openbiliclaw.soul.speculator import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from openbiliclaw.runtime.task_registry import BackgroundTaskRegistry
 
 logger = logging.getLogger(__name__)
@@ -178,6 +180,7 @@ class SupportsDiscoveryEngine(Protocol):
         *,
         strategy_limits: dict[str, int] | None = None,
         pool_snapshot: Any | None = None,
+        fully_parallel: bool = False,
     ) -> list[Any]: ...
 
 
@@ -201,6 +204,13 @@ class SupportsRecommendationEngine(Protocol):
     async def prewarm_pool_mmr_embeddings(self, *, limit: int = 200) -> int: ...
 
 
+# Staged strategy plan for guided-init pool backfill (gui-init spec §5d).
+# Mirrors cli._INIT_DISCOVERY_PLAN; B2 consolidates the CLI to reuse this.
+_INIT_DISCOVERY_PLAN: list[list[str]] = [
+    ["search", "trending", "related_chain", "explore"],
+]
+
+
 @dataclass
 class ContinuousRefreshController:
     """Keep discovery cache and recommendations fresh during API runtime."""
@@ -217,6 +227,11 @@ class ContinuousRefreshController:
     youtube_producer: Any | None = None
     scheduler_config: Any = field(default_factory=SchedulerConfig)
     presence: PresenceTracker = field(default_factory=PresenceTracker)
+    # gui-init D1: optional init-aware gate. When it returns True (a guided init
+    # is active) ALL background loops pause so they don't race init's explicit
+    # analyze/build. ``run_init_backfill`` bypasses this (it never calls
+    # ``_llm_work_allowed``), so init's own discovery is not self-blocked.
+    init_active_check: Callable[[], bool] | None = None
     signal_event_threshold: int = 6
     event_refresh_minutes: int = 0
     trending_refresh_hours: int = 3
@@ -314,6 +329,15 @@ class ContinuousRefreshController:
 
     def _llm_work_allowed(self) -> bool:
         """Return whether daemon-owned background LLM / embedding work can run."""
+        # Pause every background loop while a guided init is active (gui-init
+        # D1) — the continuous refresh / soul-pipeline / producer ticks all gate
+        # on this, so init's explicit analyze/build/backfill runs uncontended.
+        if self.init_active_check is not None:
+            try:
+                if self.init_active_check():
+                    return False
+            except Exception:
+                pass
         allowed = background_llm_work_allowed(self.scheduler_config, self.presence)
         if allowed != self._last_llm_gate_allowed:
             logger.info(
@@ -456,6 +480,38 @@ class ContinuousRefreshController:
                 plan=plan,
                 reason="triggered",
             )
+
+    async def run_init_backfill(
+        self,
+        profile: Any,
+        target_pool_count: int,
+        *,
+        fully_parallel: bool = True,
+    ) -> int:
+        """Backfill the initial discovery pool for guided init.
+
+        Holds ``_refresh_lock`` so it serializes with continuous refresh and
+        never races it on ``content_cache`` (gui-init spec §5d). Mirrors the
+        CLI's staged ``_INIT_DISCOVERY_PLAN`` backfill, but against this
+        controller's live ``discovery_engine``/``database``. Cooperative
+        cancel: ``async with`` releases the lock on ``CancelledError``.
+        Returns the total number of items discovered.
+        """
+        discovered_count = 0
+        async with self._refresh_lock:
+            for strategies in _INIT_DISCOVERY_PLAN:
+                current = self.database.count_pool_candidates()
+                if current >= target_pool_count:
+                    break
+                request_limit = max(20, target_pool_count - current)
+                discovered = await self.discovery_engine.discover(
+                    profile,
+                    strategies=strategies,
+                    limit=request_limit,
+                    fully_parallel=fully_parallel,
+                )
+                discovered_count += len(discovered)
+        return discovered_count
 
     async def force_refresh(self) -> dict[str, object]:
         """Run a full refresh immediately, bypassing runtime thresholds.

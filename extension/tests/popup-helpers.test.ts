@@ -392,7 +392,7 @@ test("getPopupState does not show init prompt while refresh or pool signals are 
       online: true,
       items: [],
       runtimeStatus: {
-        initialized: false,
+        initialized: true,
         manual_refresh_state: "running",
         manual_refresh_message: "正在初始化后的首轮补货。",
       },
@@ -420,6 +420,46 @@ test("getPopupState does not show init prompt while refresh or pool signals are 
       message: "这会儿还没新东西，先运行 init、discover 或 recommend",
       items: [],
     },
+  );
+});
+
+test("getPopupState shows the init CTA when uninitialized despite pending pre-init signals", () => {
+  // Regression (gui-init): a fresh backend that is collecting behavior signals
+  // but has no profile/pool yet must surface the guided-init CTA, not mask it as
+  // "补货". pending_signal_events alone must NOT win over the uninitialized check.
+  assert.deepEqual(
+    getPopupState({
+      online: true,
+      items: [],
+      runtimeStatus: {
+        initialized: false,
+        pending_signal_events: 657,
+        manual_refresh_state: "idle",
+        pool_available_count: 0,
+        recommendation_count: 0,
+      },
+    }),
+    {
+      kind: "uninitialized",
+      message: "还没完成初始化，先运行 openbiliclaw init",
+      items: [],
+    },
+  );
+
+  // Even a "running" refresh must not mask the uninitialized state — a refresh
+  // does nothing without a profile, and this was the live-test stuck-on-补货 bug.
+  assert.equal(
+    getPopupState({
+      online: true,
+      items: [],
+      runtimeStatus: {
+        initialized: false,
+        manual_refresh_state: "running",
+        pool_available_count: 0,
+        recommendation_count: 0,
+      },
+    }).kind,
+    "uninitialized",
   );
 });
 

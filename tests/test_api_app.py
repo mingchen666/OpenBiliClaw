@@ -827,7 +827,7 @@ class TestBackendAPI:
 
         assert service.calls == 1
 
-    def test_health_endpoint_optimistic_when_probe_times_out(
+    def test_health_endpoint_strict_when_probe_times_out(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import asyncio
@@ -836,15 +836,16 @@ class TestBackendAPI:
 
         import openbiliclaw.api.app as appmod
 
-        # A slow probe (Ollama cold-loading bge-m3) must NOT flip the banner on:
-        # a timeout means "loading", reported as optimistically ready, not the
-        # hard `False` reserved for a fast explicit failure (missing model 404).
+        # gui-init: readiness is now STRICT — a probe that doesn't answer within
+        # the (generous, cold-load-tolerant) window can't be confirmed working,
+        # so it reports not-ready instead of optimistically green. The short
+        # fail-TTL re-probes soon so it greens once the load actually finishes.
         monkeypatch.setattr(appmod, "_EMBEDDING_PROBE_TIMEOUT_SECONDS", 0.05)
 
         class _SlowProbeService:
             async def probe(self) -> bool:
                 await asyncio.sleep(0.5)  # exceeds the cap → times out
-                return False  # would say not-ready, but never resolves in time
+                return True
 
         class EmbeddingSoulEngine:
             def __init__(self) -> None:
@@ -858,7 +859,7 @@ class TestBackendAPI:
         response = client.get("/api/health")
 
         assert response.status_code == 200
-        assert response.json()["embedding_ready"] is True
+        assert response.json()["embedding_ready"] is False
 
     def test_detect_lan_ip_prefers_rfc1918_interface_over_benchmark_tun(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1495,7 +1496,7 @@ class TestBackendAPI:
             "last_account_sync_at": "2026-03-14T18:00:00+00:00",
             "last_account_sync_error": "",
             "auto_update_enabled": False,
-            "current_version": "0.3.101",
+            "current_version": "0.3.102",
             "latest_remote_version": "",
             "last_update_check_at": "",
             "last_update_error": "",
@@ -2130,6 +2131,80 @@ class TestBackendAPI:
                 }
             ]
         }
+
+    def test_empty_pool_append_and_reshuffle_skip_recommendation_path_and_debounce_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        import openbiliclaw.api.app as app_module
+
+        monkeypatch.setattr(app_module.time, "monotonic", lambda: 1000.0)
+
+        class FakeDatabase:
+            def count_pool_candidates(self) -> int:
+                return 0
+
+        class FakeSoulEngine:
+            def __init__(self) -> None:
+                self.profile_calls = 0
+
+            async def get_profile(self) -> dict[str, object]:
+                self.profile_calls += 1
+                raise AssertionError("empty pool should not load the profile")
+
+        class FakeRecommendationEngine:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def reshuffle_recommendations(
+                self, *, profile: object, limit: int = 10
+            ) -> list[object]:
+                self.calls += 1
+                raise AssertionError("empty pool should not call reshuffle")
+
+            async def append_recommendations(
+                self, *, profile: object, excluded_bvids: list[str], limit: int = 10
+            ) -> list[object]:
+                self.calls += 1
+                raise AssertionError("empty pool should not call append")
+
+        class FakeRuntimeController:
+            def __init__(self) -> None:
+                self.trigger_calls = 0
+
+            def get_runtime_status(self) -> dict[str, object]:
+                return {"pool_available_count": 0}
+
+            async def trigger_manual_refresh(self) -> dict[str, object]:
+                self.trigger_calls += 1
+                return {"accepted": True, "state": "running", "reason": "started"}
+
+        soul = FakeSoulEngine()
+        rec = FakeRecommendationEngine()
+        runtime = FakeRuntimeController()
+        app = create_app(
+            memory_manager=object(),
+            database=FakeDatabase(),
+            soul_engine=soul,
+            recommendation_engine=rec,
+            runtime_controller=runtime,
+        )
+        client = TestClient(app)
+
+        reshuffle = client.post("/api/recommendations/reshuffle")
+        append = client.post(
+            "/api/recommendations/append",
+            json={"excluded_bvids": ["BV1OLD"]},
+        )
+
+        assert reshuffle.status_code == 200
+        assert reshuffle.json() == {"items": []}
+        assert append.status_code == 200
+        assert append.json() == {"items": []}
+        assert soul.profile_calls == 0
+        assert rec.calls == 0
+        assert runtime.trigger_calls == 1
 
     def test_pending_notification_endpoint_returns_single_candidate(self) -> None:
         from fastapi.testclient import TestClient
@@ -6670,3 +6745,429 @@ def test_cap_keeping_user_added_keeps_manual_entries_past_limit() -> None:
     out = _cap_keeping_user_added(doms, ["mine"], 8, key=lambda d: d.domain)
     assert any(d.domain == "mine" for d in out)
     assert len(out) == 9  # 8 head + 1 user-added
+
+
+class _FakeInitPrereqs:
+    """Controllable stand-in for InitPrereqs (E2 endpoint tests)."""
+
+    def __init__(self, *, bili: str = "ok", chat: bool = True, platforms=None) -> None:
+        self._bili = bili
+        self._chat = chat
+        self._platforms = list(platforms or [])
+
+    async def bilibili_check(self) -> str:
+        return self._bili
+
+    async def chat_ready(self) -> bool:
+        return self._chat
+
+    def enabled_platforms(self) -> list[str]:
+        return list(self._platforms)
+
+
+def test_select_init_platforms_none_selection_uses_all_enabled() -> None:
+    from openbiliclaw.api.app import _select_init_platforms
+
+    enabled = {"bilibili", "xiaohongshu", "douyin"}
+    # None = no selection sent (CLI / legacy) → use everything enabled.
+    assert _select_init_platforms(enabled, None) == enabled
+
+
+def test_select_init_platforms_narrows_to_intersection() -> None:
+    from openbiliclaw.api.app import _select_init_platforms
+
+    enabled = {"bilibili", "xiaohongshu", "douyin", "youtube"}
+    assert _select_init_platforms(enabled, {"bilibili", "xiaohongshu"}) == {
+        "bilibili",
+        "xiaohongshu",
+    }
+
+
+def test_select_init_platforms_drops_unconfigured_selection() -> None:
+    from openbiliclaw.api.app import _select_init_platforms
+
+    # A selected source that isn't enabled in config can't be init'd → dropped.
+    assert _select_init_platforms({"bilibili", "xiaohongshu"}, {"bilibili", "douyin"}) == {
+        "bilibili"
+    }
+
+
+def test_select_init_platforms_empty_selection_yields_empty() -> None:
+    from openbiliclaw.api.app import _select_init_platforms
+
+    # Explicit empty selection narrows to nothing optional (bilibili is the base,
+    # pulled separately, so an empty effective set is fine).
+    assert _select_init_platforms({"bilibili", "xiaohongshu"}, set()) == set()
+
+
+class TestGuidedInitEndpoints:
+    """E2: POST /api/init + POST /api/init/cancel (local-only, gui-init §2/§5b)."""
+
+    def _make_app(self, tmp_path, *, profile_ready=False, prereqs=None):
+        from openbiliclaw.storage.database import Database
+
+        db = Database(tmp_path / "e2.db")
+        db.initialize()
+        soul = SimpleNamespace(is_profile_ready=lambda: profile_ready)
+        app = create_app(memory_manager=object(), database=db, soul_engine=soul)
+        app.state.auth_gate.is_trusted_local = lambda request: True
+        if prereqs is not None:
+            app.state.runtime_context._init_prereqs = prereqs
+        return app, db
+
+    def test_init_rejects_non_local(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        app, _ = self._make_app(tmp_path)
+        app.state.auth_gate.is_trusted_local = lambda request: False
+        with TestClient(app) as client:
+            resp = client.post("/api/init", json={})
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "local_only"
+
+    def test_init_rejects_docker_runtime(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setattr(
+            "openbiliclaw.docker_runtime.is_running_in_container", lambda *a, **k: True
+        )
+        app, db = self._make_app(tmp_path)
+        with TestClient(app) as client:
+            resp = client.post("/api/init", json={})
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "unsupported_runtime"
+        # Rejected before reserving — no run row created at all.
+        assert db.get_latest_init_run() is None
+
+    def test_init_rejects_already_initialized_without_force(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        app, db = self._make_app(tmp_path, profile_ready=True)
+        with TestClient(app) as client:
+            resp = client.post("/api/init", json={})
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "already_initialized"
+        assert db.get_latest_init_run() is None
+
+    def test_init_already_running_returns_409(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        app, _ = self._make_app(tmp_path)
+        with TestClient(app) as client:
+            # Seed AFTER startup reconcile (which would otherwise fail a stale
+            # "starting" row) so the run is genuinely active at POST time.
+            app.state.runtime_context.init_coordinator.try_start("existing")
+            resp = client.post("/api/init", json={})
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "already_running"
+
+    def test_init_missing_bilibili_resets_to_idle(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        prereqs = _FakeInitPrereqs(bili="failed", chat=True)
+        app, db = self._make_app(tmp_path, prereqs=prereqs)
+        with TestClient(app) as client:
+            resp = client.post("/api/init", json={})
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "bilibili_not_logged_in"
+        # Critical: the reserved run was rolled back, never left "starting".
+        run = db.get_latest_init_run()
+        assert run["status"] == "idle"
+        assert run["error_reason"] == "bilibili_not_logged_in"
+        assert app.state.runtime_context.init_coordinator.init_active() is False
+
+    def test_init_missing_llm_resets_to_idle(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        prereqs = _FakeInitPrereqs(bili="ok", chat=False)
+        app, db = self._make_app(tmp_path, prereqs=prereqs)
+        with TestClient(app) as client:
+            resp = client.post("/api/init", json={})
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "llm_not_ready"
+        assert db.get_latest_init_run()["status"] == "idle"
+        assert app.state.runtime_context.init_coordinator.init_active() is False
+
+    def _capture_run_guided_init(self, monkeypatch):
+        """Replace the shared pipeline with an async capture of its kwargs.
+
+        The wrapper imports ``run_guided_init`` lazily from ``openbiliclaw.cli``,
+        so patching it there intercepts the API path without running real work.
+        """
+        captured: dict[str, object] = {}
+
+        async def _fake(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(discovery_error=False)
+
+        monkeypatch.setattr("openbiliclaw.cli.run_guided_init", _fake)
+        return captured
+
+    def _drive_until(self, client, captured, key="include_xhs"):
+        # Pump the portal loop so the background wrapper task reaches the
+        # (mocked) run_guided_init call, then return its captured kwargs.
+        import time
+
+        for _ in range(100):
+            if key in captured:
+                break
+            client.get("/api/init-status")
+            time.sleep(0.02)
+        return captured
+
+    def test_init_honors_source_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        captured = self._capture_run_guided_init(monkeypatch)
+        prereqs = _FakeInitPrereqs(
+            bili="ok", chat=True, platforms=["bilibili", "xiaohongshu", "douyin", "youtube"]
+        )
+        app, _ = self._make_app(tmp_path, prereqs=prereqs)
+        with TestClient(app) as client:
+            resp = client.post("/api/init", json={"sources": ["bilibili", "xiaohongshu"]})
+            assert resp.status_code == 202
+            self._drive_until(client, captured)
+        # Only the selected optional source is included, even though all 4 are
+        # enabled in config.
+        assert captured["include_xhs"] is True
+        assert captured["include_dy"] is False
+        assert captured["include_yt"] is False
+
+    def test_init_without_sources_uses_all_enabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        captured = self._capture_run_guided_init(monkeypatch)
+        prereqs = _FakeInitPrereqs(
+            bili="ok", chat=True, platforms=["bilibili", "xiaohongshu", "douyin"]
+        )
+        app, _ = self._make_app(tmp_path, prereqs=prereqs)
+        with TestClient(app) as client:
+            # No "sources" key → legacy behaviour: everything enabled.
+            resp = client.post("/api/init", json={})
+            assert resp.status_code == 202
+            self._drive_until(client, captured)
+        assert captured["include_xhs"] is True
+        assert captured["include_dy"] is True
+        assert captured["include_yt"] is False  # youtube not enabled in config
+
+    def test_init_drops_selected_source_not_enabled_in_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        captured = self._capture_run_guided_init(monkeypatch)
+        # douyin is selected but NOT enabled in config → backend intersects it
+        # away (the extension separately warns the user; the API stays robust).
+        prereqs = _FakeInitPrereqs(bili="ok", chat=True, platforms=["bilibili", "xiaohongshu"])
+        app, _ = self._make_app(tmp_path, prereqs=prereqs)
+        with TestClient(app) as client:
+            resp = client.post("/api/init", json={"sources": ["bilibili", "douyin"]})
+            assert resp.status_code == 202
+            self._drive_until(client, captured)
+        assert captured["include_dy"] is False
+        assert captured["include_xhs"] is False
+
+    def test_cancel_without_active_run_returns_409(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        app, _ = self._make_app(tmp_path)
+        with TestClient(app) as client:
+            resp = client.post("/api/init/cancel", json={})
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "not_running"
+
+    def test_cancel_rejects_non_local(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        app, _ = self._make_app(tmp_path)
+        app.state.auth_gate.is_trusted_local = lambda request: False
+        with TestClient(app) as client:
+            resp = client.post("/api/init/cancel", json={})
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "local_only"
+
+    def test_write_endpoint_gated_during_init(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        app, _ = self._make_app(tmp_path)
+        with TestClient(app) as client:
+            app.state.runtime_context.init_coordinator.try_start("active")
+            resp = client.post("/api/events", json={})
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "init_running"
+
+    def test_write_endpoint_allowed_when_idle(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        app, _ = self._make_app(tmp_path)
+        with TestClient(app) as client:
+            resp = client.post("/api/events", json={})
+        # No active init → the init gate must NOT fire (a bad payload is 422,
+        # never the 409 init_running short-circuit).
+        assert not (resp.status_code == 409 and resp.json().get("error") == "init_running")
+
+    def test_recommendation_click_gated_during_init(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        app, _ = self._make_app(tmp_path)
+        with TestClient(app) as client:
+            app.state.runtime_context.init_coordinator.try_start("active")
+            resp = client.post("/api/recommendation-click", json={})
+        # recommendation-click propagates events to the profile → gated.
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "init_running"
+
+    def test_soul_and_pool_writers_gated_during_init(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        # Chat (dialogue learning), probe responses, and init-completed all
+        # mutate soul/pool state and must be blocked while a run is active.
+        gated_paths = [
+            "/api/chat",
+            "/api/chat/turns",
+            "/api/delight/respond",
+            "/api/interest-probes/respond",
+            "/api/avoidance-probes/respond",
+            "/api/init-completed",
+        ]
+        app, _ = self._make_app(tmp_path)
+        with TestClient(app) as client:
+            app.state.runtime_context.init_coordinator.try_start("active")
+            for path in gated_paths:
+                resp = client.post(path, json={})
+                assert resp.status_code == 409, f"{path} not gated ({resp.status_code})"
+                assert resp.json().get("error") == "init_running", path
+
+    def test_cookie_same_value_is_noop_during_init(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        from openbiliclaw.bilibili.auth import AuthManager
+        from openbiliclaw.config import load_config
+
+        app, _ = self._make_app(tmp_path)
+        # Make the submitted cookie match the effective stored cookie so the
+        # init-active branch treats it as a silent no-op (not a rebuild).
+        AuthManager(data_dir=load_config().data_path).set_cookie("SESSDATA=same")
+        with TestClient(app) as client:
+            app.state.runtime_context.init_coordinator.try_start("active")
+            resp = client.post(
+                "/api/bilibili/cookie", json={"cookie": "SESSDATA=same", "source": "test"}
+            )
+        # Same effective cookie during init → 200 no-op, no rebuild, no error.
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+    def test_cookie_changed_during_init_is_rejected(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        app, _ = self._make_app(tmp_path)
+        with TestClient(app) as client:
+            app.state.runtime_context.init_coordinator.try_start("active")
+            resp = client.post(
+                "/api/bilibili/cookie", json={"cookie": "SESSDATA=different", "source": "test"}
+            )
+        # A genuinely different cookie during init is rejected (not silently
+        # dropped, not a mid-init rebuild) so the user knows it didn't apply.
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "init_running"
+
+    def test_deny_by_default_gates_arbitrary_writer_during_init(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        # Deny-by-default: a mutating endpoint that isn't on the init allowlist
+        # is 409'd during init even though it's not individually enumerated.
+        app, _ = self._make_app(tmp_path)
+        with TestClient(app) as client:
+            app.state.runtime_context.init_coordinator.try_start("active")
+            resp = client.post("/api/watch-later", json={"bvid": "BV1xx"})
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "init_running"
+
+    def test_dispatcher_kick_allowed_during_init(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        # Init's own enqueue kicks /api/sources/<src>/kick — it must pass the
+        # gate (the bootstrap protocol), so it's never the init 409.
+        app, _ = self._make_app(tmp_path)
+        with TestClient(app) as client:
+            app.state.runtime_context.init_coordinator.try_start("active")
+            resp = client.post("/api/sources/xhs/kick", json={})
+        assert not (resp.status_code == 409 and resp.json().get("error") == "init_running")
+
+    def test_source_recipe_crud_not_bypassing_gate_via_kick_id(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        # The bootstrap allowlist is exact-segment: a recipe whose id happens to
+        # be "kick"/"task-result" (PUT /api/sources/kick) must NOT slip past the
+        # init gate — only /api/sources/<source>/kick (4 segments) is allowed.
+        app, _ = self._make_app(tmp_path)
+        with TestClient(app) as client:
+            app.state.runtime_context.init_coordinator.try_start("active")
+            resp = client.put("/api/sources/kick", json={})
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "init_running"
+
+    def test_init_status_can_start_false_when_already_initialized(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        # E1 must mirror E2's already-initialized guard so they don't disagree.
+        prereqs = _FakeInitPrereqs(bili="ok", chat=True)
+        app, _ = self._make_app(tmp_path, profile_ready=True, prereqs=prereqs)
+        with TestClient(app) as client:
+            resp = client.get("/api/init-status")
+        body = resp.json()
+        assert body["initialized"] is True
+        assert body["can_start"] is False
+        assert body["reason"] == "already_initialized"
+
+    def test_task_result_not_gated_during_init(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        app, _ = self._make_app(tmp_path)
+        with TestClient(app) as client:
+            app.state.runtime_context.init_coordinator.try_start("active")
+            resp = client.post("/api/sources/xhs/task-result", json={})
+        # Init's own bootstrap collectors depend on task-results landing —
+        # the writer gate must let them through (never 409 init_running).
+        assert not (resp.status_code == 409 and resp.json().get("error") == "init_running")
+
+    def test_recommendations_get_skips_serve_bootstrap_during_init(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        from openbiliclaw.storage.database import Database
+
+        served: list[int] = []
+
+        class _FakeRec:
+            async def serve(self, profile: object, limit: int = 10) -> list[object]:
+                served.append(limit)
+                return []
+
+        class _FakeSoul:
+            def is_profile_ready(self) -> bool:
+                return True
+
+            async def get_profile(self) -> object:
+                return object()
+
+        db = Database(tmp_path / "rec.db")
+        db.initialize()
+        # Pretend the pool has scored candidates so the empty-history bootstrap
+        # would normally call serve() (a side-effecting write).
+        db.count_pool_candidates = lambda **_kw: 5  # type: ignore[method-assign]
+        app = create_app(memory_manager=object(), database=db, soul_engine=_FakeSoul())
+        app.state.auth_gate.is_trusted_local = lambda request: True
+        app.state.runtime_context.recommendation_engine = _FakeRec()
+        with TestClient(app) as client:
+            app.state.runtime_context.init_coordinator.try_start("active")
+            resp = client.get("/api/recommendations")
+        assert resp.status_code == 200
+        # serve() (writes recommendation rows + marks pool shown) must NOT run on
+        # a half-built pool during init — the side-effecting GET is gated too.
+        assert served == []

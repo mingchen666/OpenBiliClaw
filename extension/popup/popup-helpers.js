@@ -956,8 +956,6 @@ export function getPopupState({ online, items = [], error = null, runtimeStatus 
 
   const normalizedItems = items.map(normalizeRecommendation);
   const runtime = normalizeRuntimeStatus(runtimeStatus);
-  const refreshInProgress =
-    runtime.manual_refresh_state === "running" || runtime.pending_signal_events > 0;
   const hasPostInitRuntimeSignals =
     runtime.recommendation_count > 0 ||
     runtime.pool_available_count > 0 ||
@@ -966,20 +964,29 @@ export function getPopupState({ online, items = [], error = null, runtimeStatus 
     runtime.last_discovered_count > 0;
 
   if (normalizedItems.length === 0) {
-    if (refreshInProgress) {
-      return {
-        kind: "refreshing",
-        message: runtime.manual_refresh_message || "正在根据你最近的新行为补货，再刷一会儿就会更新。",
-        items: [],
-      };
-    }
+    const refreshMessage =
+      runtime.manual_refresh_message || "正在根据你最近的新行为补货，再刷一会儿就会更新。";
 
+    // Genuinely uninitialized (no profile, empty pool/recommendations) ALWAYS
+    // shows the guided-init entry, regardless of any refresh state. A refresh
+    // can't produce anything without a profile (refresh_if_needed returns
+    // not_initialized), so manual_refresh_state="running" / pending behavior
+    // signals must NOT mask the uninitialized state — that would hide the only
+    // in-UI way to start init and leave the popup stuck on "补货" forever
+    // (gui-init: live Windows testing). The init panel itself shows the CTA vs.
+    // live progress based on /api/init-status, so an in-flight run still renders
+    // correctly under this kind.
     if (!runtime.initialized && !hasPostInitRuntimeSignals) {
       return {
         kind: "uninitialized",
         message: "还没完成初始化，先运行 openbiliclaw init",
         items: [],
       };
+    }
+
+    // Initialized: an active refresh or queued behavior signals → replenishing.
+    if (runtime.manual_refresh_state === "running" || runtime.pending_signal_events > 0) {
+      return { kind: "refreshing", message: refreshMessage, items: [] };
     }
 
     return {

@@ -32,6 +32,16 @@ import {
 } from "./popup-helpers.js";
 import { createRuntimeStreamClient } from "./popup-stream.js";
 import {
+  buildInitChecklist,
+  describeInitReason,
+  describeInitStartError,
+  initProgressView,
+  INIT_SOURCE_OPTIONS,
+  INIT_SOURCE_LOGIN_HINT,
+  initSourceLabels,
+  initSelectedSourcesNeedingEnable,
+} from "./popup-init-control.js";
+import {
   getBackendBaseUrl,
   getBackendEndpointConfig,
   getBackendOrigin,
@@ -62,6 +72,7 @@ import {
   fetchChatTurns,
   fetchConfig,
   fetchHealth,
+  fetchInitStatus,
   fetchPendingDelight,
   fetchPendingDelightBatch,
   fetchProfileSummary,
@@ -69,6 +80,7 @@ import {
   fetchRuntimeStatus,
   fetchSourceShareSuggestion,
   markDelightSent,
+  startInit,
   readCachedConfigSnapshot,
   reportRecommendationClick,
   reshuffleRecommendations,
@@ -156,6 +168,14 @@ const elements = {
   emptyState: document.getElementById("emptyState"),
   emptyTitle: document.getElementById("emptyTitle"),
   emptyText: document.getElementById("emptyText"),
+  initPanel: document.getElementById("initPanel"),
+  initSources: document.getElementById("initSources"),
+  initChecklist: document.getElementById("initChecklist"),
+  initProgress: document.getElementById("initProgress"),
+  initProgressBar: document.getElementById("initProgressBar"),
+  initProgressLabel: document.getElementById("initProgressLabel"),
+  initStartBtn: document.getElementById("initStartBtn"),
+  initStartReason: document.getElementById("initStartReason"),
   list: document.getElementById("recommendationList"),
   refreshRecommendationsButton: document.getElementById("refreshRecommendationsButton"),
   poolStatus: document.getElementById("poolStatus"),
@@ -213,6 +233,8 @@ const elements = {
   chatSendButton: document.getElementById("chatSendButton"),
   chatStatus: document.getElementById("chatStatus"),
   openWebButton: document.getElementById("openWebButton"),
+  starButton: document.getElementById("starButton"),
+  starCount: document.getElementById("starCount"),
   mobileQrButton: document.getElementById("mobileQrButton"),
   mobileQrOverlay: document.getElementById("mobileQrOverlay"),
   mobileQrBack: document.getElementById("mobileQrBack"),
@@ -689,12 +711,299 @@ function showRecommendationEmptyState(title, message) {
   elements.emptyState.hidden = false;
   elements.emptyTitle.textContent = title;
   elements.emptyText.textContent = message;
+  // The guided-init panel is only for the uninitialized state; the
+  // uninitialized branch re-shows it via renderInitPanelIdle().
+  if (elements.initPanel instanceof HTMLElement) {
+    elements.initPanel.hidden = true;
+  }
 }
 
 function hideRecommendationEmptyState() {
   if (elements.emptyState instanceof HTMLElement) {
     elements.emptyState.hidden = true;
   }
+  if (elements.initPanel instanceof HTMLElement) {
+    elements.initPanel.hidden = true;
+  }
+  clearInitPolling();
+}
+
+// ── Guided init (gui-init F1) ──────────────────────────────────────────────
+let initPollTimer = null;
+
+function clearInitPolling() {
+  if (initPollTimer != null) {
+    clearTimeout(initPollTimer);
+    initPollTimer = null;
+  }
+}
+
+function _setInitStartButton(label, enabled) {
+  if (!(elements.initStartBtn instanceof HTMLButtonElement)) {
+    return;
+  }
+  elements.initStartBtn.textContent = label;
+  elements.initStartBtn.disabled = !enabled;
+  if (!elements.initStartBtn.dataset.bound) {
+    elements.initStartBtn.dataset.bound = "1";
+    elements.initStartBtn.addEventListener("click", () => {
+      void handleStartInitClick();
+    });
+  }
+}
+
+function _setInitReason(text) {
+  if (elements.initStartReason instanceof HTMLElement) {
+    elements.initStartReason.textContent = text || "";
+    elements.initStartReason.hidden = !text;
+  }
+}
+
+function _renderInitChecklist(status) {
+  // Show the prereq checklist (red ✗ / green ✓ / soft •) — only surfaced AFTER a
+  // click whose check failed, so the user sees exactly what to fix.
+  if (!(elements.initChecklist instanceof HTMLElement)) {
+    return;
+  }
+  elements.initChecklist.replaceChildren();
+  for (const row of buildInitChecklist(status)) {
+    const li = document.createElement("li");
+    li.className = `${row.ok ? "init-ok" : "init-missing"} ${row.hard ? "init-hard" : "init-soft"}`;
+    const head = document.createElement("div");
+    head.className = "init-row";
+    const mark = document.createElement("span");
+    mark.className = "init-mark";
+    mark.textContent = row.ok ? "✓" : row.hard ? "✗" : "•";
+    const label = document.createElement("span");
+    label.textContent = row.label;
+    head.append(mark, label);
+    li.append(head);
+    if (!row.ok && row.hint) {
+      const hint = document.createElement("p");
+      hint.className = "init-hint";
+      hint.textContent = row.hint;
+      li.append(hint);
+    }
+    elements.initChecklist.append(li);
+  }
+}
+
+// Render the platform-source checkboxes (gui-init: per-run source selection).
+// Bilibili is the required base (checked + disabled); the rest are opt-in. The
+// list is static so the idle panel paints instantly — eligibility (config
+// enabled + logged in) is validated on click, not via a slow upfront probe.
+function _renderInitSources() {
+  if (!(elements.initSources instanceof HTMLElement)) {
+    return;
+  }
+  elements.initSources.replaceChildren();
+  const title = document.createElement("p");
+  title.className = "init-sources-title";
+  title.textContent = "选择初始化数据来源";
+  elements.initSources.append(title);
+  for (const opt of INIT_SOURCE_OPTIONS) {
+    const row = document.createElement("label");
+    row.className = `init-source-row${opt.required ? " init-source-required" : ""}`;
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = opt.key;
+    box.dataset.initSource = opt.key;
+    box.checked = Boolean(opt.required);
+    box.disabled = Boolean(opt.required);
+    const span = document.createElement("span");
+    span.textContent = opt.required ? `${opt.label}（必选）` : opt.label;
+    row.append(box, span);
+    elements.initSources.append(row);
+  }
+  const hint = document.createElement("p");
+  hint.className = "init-sources-hint";
+  hint.textContent = INIT_SOURCE_LOGIN_HINT;
+  elements.initSources.append(hint);
+  elements.initSources.hidden = false;
+}
+
+// Read the currently-checked source keys (bilibili always included as the base).
+function _readSelectedInitSources() {
+  const selected = [];
+  if (elements.initSources instanceof HTMLElement) {
+    for (const box of elements.initSources.querySelectorAll("input[data-init-source]")) {
+      if (box.checked) {
+        selected.push(box.value);
+      }
+    }
+  }
+  if (!selected.includes("bilibili")) {
+    selected.push("bilibili");
+  }
+  return selected;
+}
+
+// Idle entry: source checkboxes + the actionable button + a one-line note.
+// Conditions are checked ON CLICK (no slow upfront probe / blank panel);
+// failures are surfaced only after a click that doesn't pass.
+function renderInitPanelIdle() {
+  if (!(elements.initPanel instanceof HTMLElement)) {
+    return;
+  }
+  elements.initPanel.hidden = false;
+  _renderInitSources();
+  if (elements.initChecklist instanceof HTMLElement) {
+    elements.initChecklist.replaceChildren();
+    const li = document.createElement("li");
+    li.className = "init-hint-row";
+    li.textContent = "点「开始初始化」会先检查 B 站登录 / AI 服务 / 向量模型，全部通过才开始。";
+    elements.initChecklist.append(li);
+  }
+  if (elements.initProgress instanceof HTMLElement) {
+    elements.initProgress.hidden = true;
+  }
+  _setInitStartButton("开始初始化", true);
+  _setInitReason("");
+}
+
+function renderInitProgress(status) {
+  if (!(elements.initPanel instanceof HTMLElement)) {
+    return;
+  }
+  elements.initPanel.hidden = false;
+  // Source selection is an idle-only affordance; hide it once a run is shown.
+  if (elements.initSources instanceof HTMLElement) {
+    elements.initSources.hidden = true;
+  }
+  if (elements.initChecklist instanceof HTMLElement) {
+    elements.initChecklist.replaceChildren();
+  }
+  const progress = initProgressView(status);
+  if (elements.initProgress instanceof HTMLElement) {
+    elements.initProgress.hidden = false;
+    if (elements.initProgressBar instanceof HTMLElement) {
+      elements.initProgressBar.style.width = `${progress.pct}%`;
+    }
+    if (elements.initProgressLabel instanceof HTMLElement) {
+      elements.initProgressLabel.textContent = progress.failed
+        ? `初始化未完成：${describeInitReason(status && status.reason) || progress.failedReason || "请稍后重试"}`
+        : progress.active
+          ? `${progress.stageLabel || "正在初始化"}（${progress.pct}%）`
+          : "初始化完成！";
+    }
+  }
+  if (progress.active) {
+    _setInitStartButton("初始化进行中…", false);
+    _setInitReason("");
+  } else if (progress.failed) {
+    _setInitStartButton("重试初始化", true);
+    _setInitReason("");
+  } else {
+    _setInitStartButton("已初始化", false);
+    _setInitReason("");
+  }
+}
+
+// Poll init-status while a run is in progress; on terminal, reload (success) or
+// leave the failure reason on screen with the button re-enabled for a retry.
+async function pollInitProgress() {
+  let status = null;
+  try {
+    status = await fetchInitStatus();
+  } catch {
+    clearInitPolling();
+    initPollTimer = setTimeout(() => {
+      void pollInitProgress();
+    }, 3000);
+    return;
+  }
+  renderInitProgress(status);
+  if (status.running) {
+    clearInitPolling();
+    initPollTimer = setTimeout(() => {
+      void pollInitProgress();
+    }, 3000);
+    return;
+  }
+  clearInitPolling();
+  if (status.initialized) {
+    state.profileLoaded = false;
+    setHint("初始化完成！正在加载画像和推荐…", "success");
+    scheduleRecommendationsRefresh();
+    void loadProfileSummary({ force: true });
+  }
+}
+
+function _startInitProgressPoll() {
+  clearInitPolling();
+  initPollTimer = setTimeout(() => {
+    void pollInitProgress();
+  }, 1200);
+}
+
+// THE click handler: run the condition checks on demand. If anything fails,
+// surface the checklist + reason and do NOT initialize; only start init when
+// every condition passes (gui-init: user-requested click-driven gating).
+async function handleStartInitClick() {
+  // Snapshot the source selection BEFORE we replace the panel contents.
+  const selectedSources = _readSelectedInitSources();
+  _setInitStartButton("检查中…", false);
+  _setInitReason("");
+  if (elements.initChecklist instanceof HTMLElement) {
+    elements.initChecklist.replaceChildren();
+    const li = document.createElement("li");
+    li.className = "init-checking";
+    li.textContent = "正在检查 B 站登录 / AI 服务 / 向量模型（实时请求测试，可能要十几秒）…";
+    elements.initChecklist.append(li);
+  }
+
+  let status = null;
+  try {
+    status = await fetchInitStatus();
+  } catch {
+    renderInitPanelIdle();
+    _setInitReason("前置检查没拉到（后端可能在忙），稍后再点「开始初始化」。");
+    return;
+  }
+
+  // Already running (double-click / a run started elsewhere) → show progress.
+  if (status.running) {
+    renderInitProgress(status);
+    _startInitProgressPoll();
+    return;
+  }
+
+  // The user checked a platform that isn't enabled in settings — the backend
+  // would silently drop it, so guide them to enable it (or uncheck) instead.
+  const needEnable = initSelectedSourcesNeedingEnable(selectedSources, status);
+  if (needEnable.length > 0) {
+    _renderInitChecklist(status);
+    _setInitStartButton("开始初始化", true);
+    _setInitReason(
+      `你勾选了 ${initSourceLabels(needEnable).join("、")}，但还没在设置里开启；到设置开启对应平台，或取消勾选后再点一次。`,
+    );
+    return;
+  }
+
+  // Conditions not met → show exactly what failed; do NOT initialize.
+  if (!status.can_start) {
+    _renderInitChecklist(status);
+    _setInitStartButton("开始初始化", true);
+    _setInitReason(
+      describeInitReason(status.reason) || "以下条件未满足，无法开始初始化，补齐后再点一次。",
+    );
+    return;
+  }
+
+  // All conditions pass → start with the chosen sources. The backend
+  // re-validates in its critical section, so a race can still 409 — surface
+  // that and let the user retry.
+  try {
+    await startInit({ force: false, sources: selectedSources });
+  } catch (error) {
+    _renderInitChecklist(status);
+    _setInitStartButton("开始初始化", true);
+    _setInitReason(describeInitStartError(error));
+    return;
+  }
+  setHint("初始化已开始，正在拉取数据…", "info");
+  renderInitProgress({ running: true, current_stage: 1, total_stages: 4, stages: [] });
+  _startInitProgressPoll();
 }
 
 function renderPoolStatus(runtimeStatus) {
@@ -1033,6 +1342,11 @@ function connectRuntimeStream() {
         event.type === "delight.chat"
       ) {
         setHint(String(event.message || ""), "success");
+      }
+      // Live guided-init progress (gui-init F1): drive the recommend-tab
+      // progress bar from the run's stage events.
+      if (event.type === "init_progress" || event.type === "init_failed") {
+        void pollInitProgress();
       }
       // Init completed: re-fetch everything including profile
       if (event.type === "init_completed") {
@@ -1580,6 +1894,92 @@ function openMobileWebUrl(url) {
     // Fall back to window.open below.
   }
   window.open(url, "_blank", "noopener");
+}
+
+const STAR_REPO_URL = "https://github.com/whiteguo233/OpenBiliClaw";
+
+// Wire the persistent header Star button: always present, opens the repo so the
+// user can give a GitHub Star.
+const STAR_REPO_SLUG = "whiteguo233/OpenBiliClaw";
+const STAR_COUNT_CACHE_KEY = "obc:starCount";
+const STAR_COUNT_TTL_MS = 12 * 60 * 60 * 1000;
+
+function _formatStarCount(n) {
+  if (typeof n !== "number" || !Number.isFinite(n)) {
+    return "";
+  }
+  if (n >= 10000) {
+    return `${(n / 1000).toFixed(0)}k`;
+  }
+  if (n >= 1000) {
+    return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  }
+  return String(n);
+}
+
+function _showStarCount(n) {
+  const el = elements.starCount;
+  const text = _formatStarCount(n);
+  if (el instanceof HTMLElement && text) {
+    el.textContent = text;
+    el.hidden = false;
+  }
+}
+
+// Fetch + cache the GitHub stargazers count for the count box (the GitHub-Buttons
+// look). api.github.com sends CORS `*`, so no host permission is needed; the
+// count is cached in localStorage so we don't hit the unauthenticated rate limit.
+async function loadStarCount() {
+  if (!(elements.starCount instanceof HTMLElement)) {
+    return;
+  }
+  let cachedTime = 0;
+  try {
+    const raw = localStorage.getItem(STAR_COUNT_CACHE_KEY);
+    if (raw) {
+      const { n, t } = JSON.parse(raw);
+      if (typeof n === "number") {
+        _showStarCount(n);
+        cachedTime = typeof t === "number" ? t : 0;
+      }
+    }
+  } catch {
+    cachedTime = 0;
+  }
+  if (Date.now() - cachedTime < STAR_COUNT_TTL_MS) {
+    return; // cached value is fresh enough
+  }
+  try {
+    const res = await fetch(`https://api.github.com/repos/${STAR_REPO_SLUG}`, {
+      headers: { Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) {
+      return;
+    }
+    const data = await res.json();
+    const n = data?.stargazers_count;
+    if (typeof n === "number") {
+      _showStarCount(n);
+      try {
+        localStorage.setItem(STAR_COUNT_CACHE_KEY, JSON.stringify({ n, t: Date.now() }));
+      } catch {
+        // storage full / unavailable → just skip caching
+      }
+    }
+  } catch {
+    // offline / rate-limited → keep the button without a count
+  }
+}
+
+function bindStarButton() {
+  const { starButton } = elements;
+  if (!(starButton instanceof HTMLElement)) {
+    return;
+  }
+  starButton.addEventListener("click", () => {
+    openMobileWebUrl(STAR_REPO_URL);
+  });
+  void loadStarCount();
 }
 
 async function renderMobileQrPanel() {
@@ -2810,7 +3210,8 @@ function renderProfileSummary(summary) {
     elements.profileCard.hidden = true;
     elements.profileEmpty.hidden = false;
     elements.profileEmptyTitle.textContent = "画像还没攒起来";
-    elements.profileEmptyText.textContent = "先跑一遍 openbiliclaw init，再回来看看。";
+    elements.profileEmptyText.textContent =
+      "还没初始化。去「推荐」页点『开始初始化』，攒好画像再回来看。";
     renderCognitionHistoryControls({
       items: [],
       hasMore: false,
@@ -3226,7 +3627,8 @@ function renderEditPanel(container, editState) {
   if (!editState || !editState.initialized || !editState.fields) {
     const note = document.createElement("p");
     note.className = "profile-edit-note";
-    note.textContent = "画像还没攒起来，先跑一遍 openbiliclaw init 再回来编辑。";
+    note.textContent =
+      "还没初始化。去「推荐」页点『开始初始化』，画像攒好后再来编辑。";
     container.append(note);
     return;
   }
@@ -4590,8 +4992,12 @@ function renderRecommendationState(stateShape) {
   }
 
   if (stateShape.kind === "uninitialized") {
-    showRecommendationEmptyState("还没完成初始化", stateShape.message);
-    setHint("先跑一遍 openbiliclaw init，把画像和候选池攒起来。");
+    showRecommendationEmptyState(
+      "还没完成初始化",
+      "点「开始初始化」，会先检查前置条件，通过后就在这里一步步建好画像和首轮内容池。",
+    );
+    setHint("先完成初始化，把画像和候选池攒起来。");
+    renderInitPanelIdle();
     return;
   }
 
@@ -4888,7 +5294,7 @@ async function handleManualRefresh() {
   try {
     const result = await reshuffleRecommendations();
     if (!Array.isArray(result.items)) {
-      setHint("先执行 openbiliclaw init，再回来刷新。", "error");
+      setHint("还没初始化好。去「推荐」页点「开始初始化」，完成后再刷新。", "error");
       return;
     }
     resetRecommendationAutoLoadIntent();
@@ -6017,6 +6423,7 @@ async function initializePopup() {
   bindOpenWeb();
   bindMobileQr();
   bindSettings();
+  bindStarButton();
 
   bindMessages();
   setActiveTab(

@@ -1258,12 +1258,13 @@
       <div class="inner install-panel">
         <div class="section-head reveal">
           <p class="eyebrow" data-i18n="installEyebrow">Start</p>
-          <h2 data-i18n="installTitle">把这句话交给 AI 编程助手，让它在本机帮你部署。</h2>
+          <h2 data-i18n="installTitle">下载桌面安装包，或把这句话交给 AI 编程助手，让它在本机部署后端。</h2>
           <p class="lead" data-i18n="installLead">
-            推荐先装浏览器插件（支持 Chrome、Edge、Brave、Arc 等），再让 Claude Code、Codex CLI、Cursor 或 Windsurf 按机器契约完成后端部署、健康检查和首次初始化。
+            先装浏览器插件（Chrome、Edge、Brave、Arc 等），再二选一部署后端：下载桌面安装包（最省事，自带本地 embedding），或让 Claude Code、Codex CLI、Cursor、Windsurf 等 AI 助手按机器契约自动部署、健康检查并初始化。
           </p>
           <div class="hero-actions">
             <a class="btn primary" href="https://chromewebstore.google.com/detail/cdfjfkdjjhdaccbldipkjhpibnfbiamg" data-i18n="installDownload">添加到 Chrome</a>
+            <a class="btn" href="https://github.com/whiteguo233/OpenBiliClaw/releases" data-i18n="installDesktop">下载桌面安装包</a>
             <a class="btn" href="https://github.com/whiteguo233/OpenBiliClaw/releases/latest" data-i18n="installManual">Firefox / 手动下载</a>
             <a class="btn" href="https://github.com/whiteguo233/OpenBiliClaw#readme" data-i18n="installReadme">查看 README</a>
           </div>
@@ -1284,6 +1285,13 @@
               <button class="copy-btn" data-copy="#shellInstall" data-i18n="copy">复制</button>
             </div>
             <pre><code id="shellInstall">curl -fsSL https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/scripts/install.sh | bash</code></pre>
+          </div>
+
+          <div class="note">
+            <h3 data-i18n="desktopNoteTitle">桌面安装包（最省事）</h3>
+            <p data-i18n="desktopNoteText">
+              macOS .dmg / Windows .exe，自带本地 Ollama embedding，常驻菜单栏 / 系统托盘。当前为未签名的实验性预发布，首次打开需绕过系统拦截（mac 右键 → 打开；Windows「更多信息 → 仍要运行」）。想改源码或深度定制，用上面的 AI 一句话部署。
+            </p>
           </div>
 
           <div class="note">
@@ -1574,9 +1582,10 @@
         heroVisualAlt: "OpenBiliClaw 浏览器侧边栏推荐界面",
         nextHint: "Install prompt below",
         installEyebrow: "Start",
-        installTitle: "把这句话交给 AI 编程助手，让它在本机帮你部署。",
-        installLead: "推荐先装浏览器插件（支持 Chrome、Edge、Brave、Arc 等），再让 Claude Code、Codex CLI、Cursor 或 Windsurf 按机器契约完成后端部署、健康检查和首次初始化。",
+        installTitle: "下载桌面安装包，或把这句话交给 AI 编程助手，让它在本机部署后端。",
+        installLead: "先装浏览器插件（Chrome、Edge、Brave、Arc 等），再二选一部署后端：下载桌面安装包（最省事，自带本地 embedding），或让 Claude Code、Codex CLI、Cursor、Windsurf 等 AI 助手按机器契约自动部署、健康检查并初始化。",
         installDownload: "添加到 Chrome",
+        installDesktop: "下载桌面安装包",
         installManual: "Firefox / 手动下载",
         installReadme: "查看 README",
         agentPromptLabel: "一句话安装提示",
@@ -1585,6 +1594,8 @@
         copy: "复制",
         copySuccess: "已复制",
         copyFallback: "手动复制",
+        desktopNoteTitle: "桌面安装包（最省事）",
+        desktopNoteText: "macOS .dmg / Windows .exe，自带本地 Ollama embedding，常驻菜单栏 / 系统托盘。当前为未签名的实验性预发布，首次打开需绕过系统拦截（mac 右键 → 打开；Windows「更多信息 → 仍要运行」）。想改源码或深度定制，用上面的 AI 一句话部署。",
         pluginNoteTitle: "插件是主要入口",
         pluginNoteText: "插件负责侧边栏推荐、行为采集、反馈、聊天，以及 B 站 / 小红书 / 抖音登录态任务桥。安装后请在同一个浏览器里登录你想接入的内容平台。",
         whyEyebrow: "Why it matters",
@@ -1708,9 +1719,10 @@
         heroVisualAlt: "OpenBiliClaw browser sidebar recommendation UI",
         nextHint: "Install prompt below",
         installEyebrow: "Start",
-        installTitle: "Give this prompt to an AI coding agent and let it deploy locally.",
-        installLead: "Install the browser extension first (Chrome, Edge, Brave, Arc, and other Chromium-based browsers all work), then ask Claude Code, Codex CLI, Cursor, or Windsurf to follow the machine-readable contract for backend deployment, health checks, and first initialization.",
+        installTitle: "Download the desktop installer, or hand this prompt to an AI coding agent to deploy the backend locally.",
+        installLead: "Install the browser extension first (Chrome, Edge, Brave, Arc, and other Chromium-based browsers all work), then deploy the backend one of two ways: download the desktop installer (easiest, bundles local embedding), or let Claude Code, Codex CLI, Cursor, or Windsurf deploy it automatically via the machine-readable contract — deployment, health checks, and first initialization.",
         installDownload: "Add to Chrome",
+        installDesktop: "Download desktop installer",
         installManual: "Firefox / manual download",
         installReadme: "View README",
         agentPromptLabel: "One-line install prompt",
@@ -1719,6 +1731,8 @@
         copy: "Copy",
         copySuccess: "Copied",
         copyFallback: "Copy manually",
+        desktopNoteTitle: "Desktop installer (easiest)",
+        desktopNoteText: "macOS .dmg / Windows .exe — bundles local Ollama embedding and lives in the menu bar / system tray. It's an unsigned experimental pre-release, so the first launch needs a system-prompt bypass (macOS: right-click → Open; Windows: 'More info → Run anyway'). To edit the source or customize deeply, use the AI one-line deploy above.",
         pluginNoteTitle: "The extension is the main entry point",
         pluginNoteText: "The extension powers sidebar recommendations, behavior capture, feedback, chat, and the logged-in task bridge for Bilibili, Xiaohongshu, and Douyin. After installing it, log in to the content platforms you want to use in the same browser.",
         whyEyebrow: "Why it matters",

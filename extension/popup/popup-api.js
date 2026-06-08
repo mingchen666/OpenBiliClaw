@@ -187,6 +187,28 @@ export async function fetchRuntimeStatus() {
   return requestJson("/runtime-status", { method: "GET" });
 }
 
+export async function fetchInitStatus() {
+  return requestJson("/init-status", { method: "GET" });
+}
+
+export async function startInit({ force = false, sources } = {}) {
+  const payload = { force };
+  // Only attach an explicit per-run platform selection when given; omitting it
+  // lets the backend fall back to all config-enabled sources (legacy behaviour).
+  if (Array.isArray(sources)) {
+    payload.sources = sources;
+  }
+  return requestJson("/init", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function cancelInit() {
+  return requestJson("/init/cancel", { method: "POST" });
+}
+
 export async function fetchUpdateStatus() {
   return requestJson("/update-status", { method: "GET" });
 }

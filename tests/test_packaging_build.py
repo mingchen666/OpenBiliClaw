@@ -69,3 +69,58 @@ def test_create_archive_writes_zip_with_packaged_root_contents(tmp_path: Path) -
 
     with zipfile.ZipFile(archive_path) as archive:
         assert "OpenBiliClaw/config.example.toml" in archive.namelist()
+
+
+def test_find_ollama_binary_prefers_explicit_path(tmp_path: Path, monkeypatch) -> None:
+    fake = tmp_path / "ollama"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.delenv("OPENBILICLAW_OLLAMA_BIN", raising=False)
+
+    assert build_module.find_ollama_binary(str(fake)) == fake.resolve()
+
+
+def test_find_ollama_binary_uses_env_when_no_explicit(tmp_path: Path, monkeypatch) -> None:
+    fake = tmp_path / "ollama"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("OPENBILICLAW_OLLAMA_BIN", str(fake))
+
+    assert build_module.find_ollama_binary() == fake.resolve()
+
+
+def test_find_ollama_binary_returns_none_when_absent(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENBILICLAW_OLLAMA_BIN", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))  # empty dir → ollama not on PATH
+
+    assert build_module.find_ollama_binary("/nonexistent/ollama") is None
+
+
+def test_bundle_ollama_binary_copies_into_onedir_with_sibling_lib(tmp_path: Path) -> None:
+    src_dir = tmp_path / "src"
+    (src_dir / "lib" / "ollama").mkdir(parents=True)
+    ollama = src_dir / "ollama"
+    ollama.write_text("binary\n", encoding="utf-8")
+    (src_dir / "lib" / "ollama" / "runner").write_text("r\n", encoding="utf-8")
+
+    dist = tmp_path / "dist"
+    (dist / "OpenBiliClaw").mkdir(parents=True)
+
+    written = build_module.bundle_ollama_binary(dist, ollama, platform_name="Windows")
+
+    dest = dist / "OpenBiliClaw" / "ollama.exe"
+    assert dest in written
+    assert dest.exists()
+    # Windows ollama needs its runner libs carried along.
+    assert (dist / "OpenBiliClaw" / "lib" / "ollama" / "runner").exists()
+
+
+def test_bundle_ollama_binary_targets_app_resources_on_macos(tmp_path: Path) -> None:
+    src = tmp_path / "ollama"
+    src.write_text("bin\n", encoding="utf-8")
+    dist = tmp_path / "dist"
+    (dist / "OpenBiliClaw").mkdir(parents=True)
+    (dist / "OpenBiliClaw.app" / "Contents" / "Resources").mkdir(parents=True)
+
+    written = build_module.bundle_ollama_binary(dist, src, platform_name="Darwin")
+
+    assert (dist / "OpenBiliClaw" / "ollama") in written
+    assert (dist / "OpenBiliClaw.app" / "Contents" / "Resources" / "ollama") in written

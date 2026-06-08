@@ -14,30 +14,47 @@
 
 </div>
 
-> The name comes from Bilibili (`Bili` = Bilibili, `Claw` = "the claw that grabs content for you") — the project started as a Bilibili-only tool. Since v0.3.0 it has evolved into a general cross-platform Agent: Bilibili / Xiaohongshu / Douyin / YouTube init signals, Douyin search / hot / feed discovery, and generic Web sources all live in production, with more platforms on the roadmap.
+## OpenBiliClaw in 10 Seconds
 
----
+A local-first AI discovery agent that learns your taste across Bilibili, Xiaohongshu, Douyin, YouTube and the open web — without handing your profile to another platform.
 
-## 💬 Community
+| Cross-platform | Local-first | Trainable |
+|---|---|---|
+| Bilibili / Xiaohongshu / Douyin / YouTube / Web | Data stays in your local SQLite by default | Likes, dislikes, and chat feedback shape future recommendations |
 
 <p align="center">
-  <img src="docs/images/user-community-qrcode.png" width="200" alt="User community QR code" />
+  <a href="https://chromewebstore.google.com/detail/cdfjfkdjjhdaccbldipkjhpibnfbiamg"><b>Install the browser extension</b></a>
+  ·
+  <a href="#quick-start"><b>Deploy the local backend with an AI coding agent</b></a>
 </p>
 
----
+<p align="center">
+  <sub><a href="https://github.com/whiteguo233/OpenBiliClaw">Star the project if you like the direction</a>.</sub>
+</p>
 
-## 📌 Login Autostart + Local Ollama Preflight (2026-06-05)
+<p align="center">
+  <img src="docs/images/hero-demo-en.gif" width="820" alt="OpenBiliClaw local-first cross-platform AI discovery agent demo: platform signals, local backend, taste profile, reasoned cards, and feedback loop" />
+</p>
 
-- **The extension settings page can enable login autostart** — the General tab now registers the local backend as a current-user login item through the local API.
-- **Current-user scope on all three desktop OSes** — macOS LaunchAgent, Windows HKCU Run, and Linux XDG autostart; no system service and no administrator permission required.
-- **Local Ollama gets a startup preflight** — when the current config needs the default `localhost:11434` Ollama daemon, `openbiliclaw start` probes it and can launch `ollama serve` in the background.
-- **Guarded config writes** — environment-managed settings, `config.local.toml` shadowing, and unsupported platforms produce explicit messages instead of creating a login item that will miss API keys or cookies.
+## Quick Start
 
-Full changelog: [docs/changelog.md](docs/changelog.md).
+Most users only need these four steps. Firefox, Docker, and manual setup paths are preserved later in [Setup Details](#setup-details).
 
----
+1. **Install the extension** from the [Chrome Web Store](https://chromewebstore.google.com/detail/cdfjfkdjjhdaccbldipkjhpibnfbiamg).
+2. **Deploy the backend (two ways — pick one, both recommended)**:
+   - 🖥️ **Download the desktop installer (easiest)**: grab the macOS `.dmg` / Windows `.exe` from [Releases](https://github.com/whiteguo233/OpenBiliClaw/releases), install, and launch — it bundles local embedding and lives in the menu bar / system tray. It's an **unsigned experimental pre-release**, so the first launch needs a system-prompt bypass; see [Setup Details](#setup-details).
+   - 🤖 **Let an AI coding agent deploy it (pick this to customize / edit the source)**: paste this prompt into Claude Code, Codex CLI, Cursor, Windsurf, or another coding agent.
+
+```text
+Please follow https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/docs/agent-install.md to deploy the OpenBiliClaw backend for me (use Bash `curl` to fetch the document, NOT WebFetch — WebFetch summarises markdown and drops critical commands).
+```
+
+3. **Log in to content platforms in the same browser**. Start with [Bilibili](https://www.bilibili.com), then opt in to [Xiaohongshu](https://www.xiaohongshu.com) / [Douyin](https://www.douyin.com) / [YouTube](https://www.youtube.com) when you want more signals.
+4. **Open the desktop or mobile Web UI**. Use `http://127.0.0.1:8420/web` on the same machine, or scan the extension QR code for `http://<your-LAN-IP>:8420/m/` on your phone.
 
 ## Why OpenBiliClaw?
+
+> The name comes from Bilibili (`Bili` = Bilibili, `Claw` = "the claw that grabs content for you") — the project started as a Bilibili-only tool. Since v0.3.0 it has evolved into a general cross-platform Agent: Bilibili / Xiaohongshu / Douyin / YouTube init signals, Douyin search / hot / feed discovery, and generic Web sources all live in production, with more platforms on the roadmap.
 
 Recommendation systems are essentially a **middleman** — the platform sits between millions of videos and millions of users, matching and distributing content at scale. Modern systems are far more sophisticated than "just optimizing CTR": they jointly weigh click-through rate, completion rate, like/coin probability, dwell time, user retention, creator ecosystem health, ad revenue, and a dozen other objectives, compressing them into a single weighted ranking score. Sounds scientific, but here's the catch: **the weights are set by the platform, and the optimization targets ultimately serve the platform** — user satisfaction is valued as a means to retention and monetization, not as an end in itself. You think you're choosing content, but really the middleman decides what you get to see. The result: recommendations look more and more like what you've already watched, and the occasional surprise is pure luck.
 
@@ -169,7 +186,21 @@ After starting the backend, open `http://127.0.0.1:8420/web` (or just `http://12
 
 </details>
 
-## 🚀 Quick Start
+## Recent Updates
+
+Latest: **v0.3.102 / extension v0.3.68: guided init in the UI (2026-06-07)**. Full history lives in [docs/changelog.md](docs/changelog.md).
+
+- **Initialize from the extension** — the Recommend tab shows the Bilibili login / LLM / embedding checklist and can start init directly when prerequisites are ready.
+- **Init-time write gate** — the backend pauses conflicting writes and background refresh work while the first profile is being built.
+- **Login autostart + local Ollama preflight** — the extension settings page can enable login autostart, and `openbiliclaw start` probes local Ollama when the current config needs it.
+
+## Community
+
+<p align="center">
+  <img src="docs/images/user-community-qrcode.png" width="200" alt="User community QR code" />
+</p>
+
+## Setup Details
 
 For most users, setup is four steps: install the extension, ask an AI coding agent to deploy the backend, log in to the content platforms in the same browser, and optionally open the Mobile Web app from your phone.
 
@@ -218,7 +249,26 @@ Caveat: temporary add-ons disappear on Firefox restart; signed AMO distribution 
 
 </details>
 
-### 2. Ask an AI coding agent to deploy the backend
+### 2. Deploy the backend (two options)
+
+Most users: the **desktop installer** is the least effort. Want to edit the source, swap LLMs, or customize deeply? Use the **AI one-line deploy**.
+
+#### Option A: Download the desktop installer (experimental, easiest)
+
+Grab the installer for your OS from [Releases](https://github.com/whiteguo233/OpenBiliClaw/releases):
+
+- **macOS**: `.dmg` (separate Apple-silicon `arm64` / Intel `x64` builds) — drag OpenBiliClaw into Applications.
+- **Windows**: `.exe` installer — double-click to install.
+
+It bundles local Ollama + `bge-m3` embedding (works out of the box) and lives in the **macOS menu bar / Windows system tray**; right-click for "Open Web UI / View runtime logs / Quit". Data is stored in `~/Library/Application Support/OpenBiliClaw` (mac) / `%LOCALAPPDATA%\OpenBiliClaw` (Windows) and survives upgrades and uninstalls.
+
+> ⚠️ **First launch needs a system-prompt bypass (the app isn't signed / notarized yet)**:
+> - **macOS**: right-click the icon → "Open" → click "Open" again in the dialog; or allow it under "System Settings → Privacy & Security".
+> - **Windows**: on the SmartScreen prompt, click "More info → Run anyway".
+>
+> This is an **experimental pre-release**: unsigned, rolling with the backend version, best for trying it fast without the command line. To hack on the source, use Option B.
+
+#### Option B: AI one-line deploy (customizable / editable source)
 
 Paste this whole prompt into Claude Code, Codex CLI, Cursor, Windsurf, or another AI coding agent. The parenthetical note is for the agent; you do not need to understand it.
 
@@ -264,7 +314,7 @@ Native Windows (PowerShell, no Docker or WSL2 required):
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; iwr https://raw.githubusercontent.com/whiteguo233/OpenBiliClaw/main/scripts/install.ps1 -UseBasicParsing | iex
 ```
 
-The script needs `git` and Python 3.11+. It clones the repo, installs dependencies, starts the backend, runs a health check, then asks for LLM, embedding, Bilibili cookie, Xiaohongshu opt-in, Douyin opt-in, and YouTube opt-in choices. Once the confirmations are complete, it first checks that the LLM provider and embedding service can really respond, then automatically runs init to build the first profile and discovery pool. If unsure, press Enter or choose the default.
+The script needs `git` and Python 3.11+. It clones the repo, then asks for LLM provider, embedding, Bilibili cookie, Xiaohongshu opt-in, Douyin opt-in, and YouTube opt-in choices in the terminal wizard before installing dependencies or starting the backend. Once the confirmations are complete, it starts the backend, runs the health check, verifies that the LLM provider and embedding service can really respond, then automatically runs init to build the first profile and discovery pool. If unsure, press Enter or choose the default.
 
 </details>
 
@@ -470,6 +520,7 @@ The whole loop stays local — OpenClaw just calls the CLI bridge; your profile 
 - 💬 **Warm Recommendations** — Not "because you watched similar videos", but friend-like explanations of why you'd enjoy something
 - 🔄 **Continuous Learning** — Socratic dialogue + behavioral analysis + instant feedback, understands you better over time
 - 🧩 **Browser Extension (Chrome / Edge / Brave / Arc and more)** — Side panel for recommendations, cross-site behavior collection (Bilibili + Xiaohongshu + Douyin + YouTube), chat, and cognition update cards — install and go
+- 🚀 **Guided init in the UI** — No terminal required: the extension's "Recommend" tab shows a prerequisite checklist (Bilibili login / LLM / embedding) and a "Start init" button that builds your profile and first content pool right in the panel (the CLI `openbiliclaw init` remains an equivalent entry point)
 - 🔬 **Self-Optimizing Eval Loops** — Five modules each have an LLM-as-judge SGD/RL loop that automatically improves prompt quality over rounds — no manual tuning needed
 - 🔒 **Fully Private** — All data in local SQLite; LLM calls use your own key; each instance is built for exactly one person
 - 🔌 **Local Embedding Provider** — Optional Ollama + bge-m3, no extra embedding API key required for similarity computation (CPU-only, runs on Mac/Win/Linux)
@@ -582,7 +633,7 @@ OpenBiliClaw/
 
 ## 📜 Release History
 
-Latest: **v0.3.101 / extension v0.3.67: login autostart and local Ollama preflight (2026-06-05)**. The top highlight callout keeps the current release visible; full history lives in [docs/changelog.md](docs/changelog.md). Extension packages live on [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases); backend source updates use `backend-v*` tags and do not publish backend desktop packages.
+Latest: **v0.3.102 / extension v0.3.68: guided init in the UI (2026-06-07)**. The recent updates section keeps the current release visible; full history lives in [docs/changelog.md](docs/changelog.md). Extension packages live on [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases); backend source updates use `backend-v*` tags and do not publish backend desktop packages.
 
 ## 🗺️ Roadmap
 
@@ -605,6 +656,10 @@ Contributions welcome! See the [Contributing Guide](docs/contributing.md) to get
 ## ⭐ Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=whiteguo233/OpenBiliClaw&type=Date)](https://www.star-history.com/#whiteguo233/OpenBiliClaw&Date)
+
+## Privacy at a glance
+
+Default data flow: browser extension → your configured local OpenBiliClaw backend → SQLite on your machine. The extension does not send data to servers operated by OpenBiliClaw developers. If you configure a cloud LLM or embedding provider, the relevant content is sent to that provider according to your configuration. See the [Privacy Policy](docs/privacy.md).
 
 ## 📄 License
 
