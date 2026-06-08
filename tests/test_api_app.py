@@ -2055,6 +2055,8 @@ class TestBackendAPI:
                     "content_id": "BV1NEW",
                     "content_url": "https://www.bilibili.com/video/BV1NEW",
                     "source_platform": "bilibili",
+                    "content_type": "video",
+                    "body_text": "",
                 }
             ]
         }
@@ -2128,6 +2130,8 @@ class TestBackendAPI:
                     "content_id": "BV1NEXT",
                     "content_url": "https://www.bilibili.com/video/BV1NEXT",
                     "source_platform": "bilibili",
+                    "content_type": "video",
+                    "body_text": "",
                 }
             ]
         }

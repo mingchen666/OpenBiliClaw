@@ -3300,6 +3300,8 @@ class Database:
                 COALESCE(c.content_id, r.bvid) AS content_id,
                 COALESCE(c.content_url, '') AS content_url,
                 COALESCE(c.source_platform, '') AS source_platform,
+                COALESCE(c.content_type, 'video') AS content_type,
+                COALESCE(c.body_text, '') AS body_text,
                 COALESCE(c.franchise_key, '') AS franchise_key
             FROM recommendations AS r
             LEFT JOIN content_cache AS c ON c.bvid = COALESCE(

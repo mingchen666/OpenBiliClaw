@@ -1051,6 +1051,11 @@ class RecommendationEngine:
                 "duration": c.duration,
                 "view_count": c.view_count,
                 "source_strategy": c.source_strategy,
+                "content_type": c.content_type,
+                # Text-first items (X tweets/threads) carry their full text
+                # here — titles are low-information for those, so the LLM
+                # needs body_text to judge relevance. Empty for video sources.
+                "body_text": c.body_text,
             }
             for c in batch
         ]
@@ -1267,6 +1272,8 @@ class RecommendationEngine:
                 "style_key": content.style_key,
                 "topic_group": content.topic_group,
                 "relevance_score": content.relevance_score,
+                "content_type": content.content_type,
+                "body_text": content.body_text,
             },
             reason_stub=reason_stub,
             tone_profile=tone_profile,
@@ -1323,6 +1330,8 @@ class RecommendationEngine:
                 "style_key": item.style_key,
                 "topic_group": item.topic_group,
                 "relevance_score": item.relevance_score,
+                "content_type": item.content_type,
+                "body_text": item.body_text,
             }
             for item in batch
         ]
@@ -1578,6 +1587,8 @@ class RecommendationEngine:
                 "style_key": content.style_key,
                 "topic_group": content.topic_group,
                 "relevance_score": content.relevance_score,
+                "content_type": content.content_type,
+                "body_text": content.body_text,
             },
             tone_profile=tone_profile,
             source_platform=content.source_platform or "bilibili",

@@ -123,7 +123,37 @@ export function normalizeRecommendation(item) {
     content_id: normalizeText(item?.content_id) || normalizeText(item?.bvid),
     content_url: normalizeText(item?.content_url) || "",
     source_platform: normalizeText(item?.source_platform) || "bilibili",
+    content_type: normalizeText(item?.content_type) || "video",
+    body_text: normalizeText(item?.body_text),
   };
+}
+
+const TEXT_CARD_CONTENT_TYPES = new Set(["tweet", "thread"]);
+
+/**
+ * Decide how a recommendation card should render its media slot.
+ *
+ * Text-first sources (X tweets / threads) ship no cover image — the
+ * value is the text. For those (content_type tweet/thread, or simply an
+ * empty cover_url) the card shows a "no-cover text card" built from
+ * body_text/title instead of an <img> thumbnail, so the popup never
+ * paints a broken-image node.
+ *
+ * @param {object} item - A (normalized or raw) recommendation item.
+ * @returns {{kind: "text"|"cover", coverUrl: string, text: string}}
+ */
+export function getRecommendationCardKind(item) {
+  const contentType = normalizeText(item?.content_type).toLowerCase();
+  const coverUrl = normalizeCoverUrl(item?.cover_url);
+  const isText = TEXT_CARD_CONTENT_TYPES.has(contentType) || !coverUrl;
+  if (isText) {
+    return {
+      kind: "text",
+      coverUrl: "",
+      text: normalizeText(item?.body_text) || normalizeText(item?.title),
+    };
+  }
+  return { kind: "cover", coverUrl, text: "" };
 }
 
 export function normalizeSavedItem(item) {

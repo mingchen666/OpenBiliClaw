@@ -98,6 +98,11 @@ class RecommendationOut(BaseModel):
     content_id: str = ""
     content_url: str = ""
     source_platform: str = ""
+    # Text-first sources (X tweet/thread): the popup renders a no-cover
+    # text card from body_text/title when content_type is tweet/thread or
+    # cover_url is empty.
+    content_type: str = "video"
+    body_text: str = ""
 
 
 class RecommendationListResponse(BaseModel):

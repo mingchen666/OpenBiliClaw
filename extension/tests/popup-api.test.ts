@@ -68,6 +68,8 @@ test("reshuffleRecommendations posts to reshuffle endpoint", async () => {
         content_id: "BV1NEW",
         content_url: "",
         source_platform: "bilibili",
+        content_type: "video",
+        body_text: "",
       },
     ],
   });
@@ -119,6 +121,8 @@ test("appendRecommendations posts excluded bvids to append endpoint", async () =
         content_id: "BV1APPEND",
         content_url: "",
         source_platform: "bilibili",
+        content_type: "video",
+        body_text: "",
       },
     ],
   });
@@ -185,6 +189,8 @@ test("fetchRecommendations normalizes cover urls from the recommend endpoint", a
       content_id: "BV1FETCH",
       content_url: "",
       source_platform: "bilibili",
+      content_type: "video",
+      body_text: "",
     },
   ]);
 });

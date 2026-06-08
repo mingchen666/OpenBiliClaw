@@ -15,6 +15,7 @@ import {
   getNextExpandedCognitionIndex,
   getManualRefreshResultHint,
   getReadyRecommendationHint,
+  getRecommendationCardKind,
   getHintBannerState,
   getRuntimeRefreshSubmissionState,
   getPopupState,
@@ -4677,9 +4678,10 @@ function renderRecommendations(items, { append = false } = {}) {
 
     const cover = document.createElement("div");
     cover.className = "recommendation-cover";
-    if (item.cover_url) {
+    const cardMedia = getRecommendationCardKind(item);
+    if (cardMedia.kind === "cover") {
       const image = document.createElement("img");
-      void setProxyImageSrc(image, item.cover_url);
+      void setProxyImageSrc(image, cardMedia.coverUrl);
       image.alt = `${item.title} 的封面`;
       image.addEventListener("error", () => {
         image.remove();
@@ -4691,8 +4693,13 @@ function renderRecommendations(items, { append = false } = {}) {
       });
       cover.append(image);
     } else {
-      cover.classList.add("is-fallback");
-      cover.textContent = "先看标题也行";
+      // No-cover text card (X tweet/thread or empty cover): show the
+      // body text instead of a thumbnail — never an <img> node.
+      cover.classList.add("is-fallback", "is-text-card");
+      const textNode = document.createElement("p");
+      textNode.className = "recommendation-cover-text";
+      textNode.textContent = cardMedia.text || "先看标题也行";
+      cover.append(textNode);
     }
 
     const content = document.createElement("div");

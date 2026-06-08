@@ -20,6 +20,7 @@ import {
   getHintBannerState,
   getManualRefreshResultHint,
   getReadyRecommendationHint,
+  getRecommendationCardKind,
   getNextExpandedCognitionIndex,
   getRuntimeRefreshSubmissionState,
   getSubmissionProgressMessage,
@@ -89,6 +90,70 @@ test("normalizeRecommendation keeps title and up-name fallbacks but leaves copy 
   assert.equal(item.expression, "");
   assert.equal(item.topic_label, "");
   assert.equal(item.presented, false);
+});
+
+test("normalizeRecommendation carries content_type and body_text for X items", () => {
+  const item = normalizeRecommendation({
+    id: 9,
+    bvid: "1790000000000000001",
+    title: "1/ thread on systems",
+    source_platform: "twitter",
+    content_type: "thread",
+    body_text: "1/ long-form note_tweet body about systems design",
+    cover_url: "",
+  });
+
+  assert.equal(item.content_type, "thread");
+  assert.equal(item.body_text, "1/ long-form note_tweet body about systems design");
+  assert.equal(item.cover_url, "");
+  assert.equal(item.source_platform, "twitter");
+});
+
+test("getRecommendationCardKind renders a text card for tweet/thread items", () => {
+  const tweet = getRecommendationCardKind({
+    content_type: "tweet",
+    cover_url: "",
+    body_text: "a pure-text tweet body",
+    title: "tweet title",
+  });
+  assert.equal(tweet.kind, "text");
+  assert.equal(tweet.coverUrl, "");
+  // Shows body_text (no thumbnail / <img> node is produced by callers).
+  assert.equal(tweet.text, "a pure-text tweet body");
+
+  const thread = getRecommendationCardKind({
+    content_type: "thread",
+    cover_url: "",
+    body_text: "",
+    title: "thread fallback title",
+  });
+  assert.equal(thread.kind, "text");
+  // Falls back to title when body_text is empty.
+  assert.equal(thread.text, "thread fallback title");
+});
+
+test("getRecommendationCardKind renders a text card when cover_url is empty", () => {
+  const result = getRecommendationCardKind({
+    content_type: "video",
+    cover_url: "",
+    body_text: "",
+    title: "no-cover video",
+  });
+  assert.equal(result.kind, "text");
+  assert.equal(result.coverUrl, "");
+  assert.equal(result.text, "no-cover video");
+});
+
+test("getRecommendationCardKind keeps a cover card for video items with a cover", () => {
+  const result = getRecommendationCardKind({
+    content_type: "video",
+    cover_url: "https://i0.hdslb.com/bfs/archive/cover.jpg",
+    body_text: "",
+    title: "a bilibili video",
+  });
+  assert.equal(result.kind, "cover");
+  assert.equal(result.coverUrl, "https://i0.hdslb.com/bfs/archive/cover.jpg");
+  assert.equal(result.text, "");
 });
 
 test("normalizeProfileSummary keeps speculative avoidances", () => {
