@@ -111,7 +111,9 @@ CREATE TABLE IF NOT EXISTS content_cache (
     recommended_at TIMESTAMP,
     feedback_type TEXT,
     feedback_at TIMESTAMP,
-    source      TEXT                 -- Which discovery strategy found it
+    source      TEXT,                -- Which discovery strategy found it
+    body_text   TEXT DEFAULT '',     -- Full text body for text-first sources (X tweet/thread)
+    content_type TEXT DEFAULT 'video'  -- Content shape: "video"|"note"|"tweet"|"thread"
 );
 
 -- Unified raw discovery candidate queue.
@@ -125,6 +127,7 @@ CREATE TABLE IF NOT EXISTS discovery_candidates (
     source_strategy       TEXT NOT NULL DEFAULT '',
     source_context        TEXT NOT NULL DEFAULT '',
     content_type          TEXT NOT NULL DEFAULT 'video',
+    body_text             TEXT NOT NULL DEFAULT '',
     bvid                  TEXT NOT NULL DEFAULT '',
     content_id            TEXT NOT NULL DEFAULT '',
     content_url           TEXT NOT NULL DEFAULT '',
@@ -940,11 +943,13 @@ class Database:
                 content_id,
                 content_url,
                 source_platform,
-                author_name
+                author_name,
+                body_text,
+                content_type
             )
             VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                CURRENT_TIMESTAMP, ?, ?, ?, ?, ?
+                CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(bvid) DO UPDATE SET
                 title = excluded.title,
@@ -1022,6 +1027,16 @@ class Database:
                     NULLIF(excluded.author_name, ''),
                     content_cache.author_name,
                     ''
+                ),
+                body_text = COALESCE(
+                    NULLIF(excluded.body_text, ''),
+                    content_cache.body_text,
+                    ''
+                ),
+                content_type = COALESCE(
+                    NULLIF(excluded.content_type, ''),
+                    content_cache.content_type,
+                    'video'
                 )
             """,
             (
@@ -1049,6 +1064,8 @@ class Database:
                 kwargs.get("content_url", ""),
                 kwargs.get("source_platform", "bilibili"),
                 kwargs.get("author_name", ""),
+                kwargs.get("body_text", ""),
+                kwargs.get("content_type", "video") or "video",
             ),
         )
 
@@ -1109,6 +1126,7 @@ class Database:
                     source_strategy,
                     source_context,
                     content_type,
+                    body_text,
                     bvid,
                     content_id,
                     content_url,
@@ -1127,7 +1145,7 @@ class Database:
                     raw_payload
                 )
                 VALUES (
-                    ?, 'pending_eval', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, 'pending_eval', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -1136,6 +1154,7 @@ class Database:
                     str(self._candidate_value(candidate, "source_strategy", "") or ""),
                     str(self._candidate_value(candidate, "source_context", "") or ""),
                     str(self._candidate_value(candidate, "content_type", "video") or "video"),
+                    str(self._candidate_value(candidate, "body_text", "") or ""),
                     str(self._candidate_value(candidate, "bvid", "") or ""),
                     str(self._candidate_value(candidate, "content_id", "") or ""),
                     str(self._candidate_value(candidate, "content_url", "") or ""),
@@ -3608,6 +3627,8 @@ class Database:
             "content_url": "TEXT DEFAULT ''",
             "source_platform": "TEXT DEFAULT 'bilibili'",
             "author_name": "TEXT DEFAULT ''",
+            "body_text": "TEXT DEFAULT ''",
+            "content_type": "TEXT DEFAULT 'video'",
         }
         added = False
         for column_name, column_type in required_columns.items():
@@ -3629,6 +3650,7 @@ class Database:
             "score_threshold": "REAL NOT NULL DEFAULT 0.0",
             "eval_attempts": "INTEGER NOT NULL DEFAULT 0",
             "batch_eval_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "body_text": "TEXT NOT NULL DEFAULT ''",
         }
         for column_name, column_type in required_columns.items():
             if column_name in existing_columns:
