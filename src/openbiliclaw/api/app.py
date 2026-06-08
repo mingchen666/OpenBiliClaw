@@ -5444,6 +5444,50 @@ def create_app(
             raise HTTPException(status_code=404, detail="Subscription not found")
         return {"ok": True}
 
+    # ── X (Twitter) account subscriptions ──────────────────────────
+    # No extension round-trip: the X producer fetches each subscription
+    # server-side via XCreatorStrategy. This block only owns the
+    # x_creator_subscriptions table + CRUD (mirrors the XHS creators above).
+
+    from openbiliclaw.sources.x_tasks import XCreatorStore, normalize_handle
+
+    _x_creator_store: XCreatorStore | None = None
+    if hasattr(ctx.database, "conn"):
+        _x_creator_store = XCreatorStore(ctx.database)
+
+    @app.get("/api/sources/x/creators")
+    def x_list_creators() -> dict[str, Any]:
+        """List all X account subscriptions."""
+        if _x_creator_store is None:
+            return {"items": []}
+        return {"items": _x_creator_store.list_all()}
+
+    @app.post("/api/sources/x/creators", status_code=201)
+    def x_add_creator(payload: dict[str, Any]) -> dict[str, Any]:
+        """Add an X account subscription (idempotent; leading @ stripped)."""
+        from fastapi import HTTPException
+
+        handle = normalize_handle(str(payload.get("handle", "")))
+        if not handle:
+            raise HTTPException(status_code=422, detail="handle is required")
+
+        if _x_creator_store is None:
+            raise HTTPException(status_code=503, detail="x not configured")
+        _x_creator_store.add(handle)
+        return {"ok": True}
+
+    @app.delete("/api/sources/x/creators/{sub_id}")
+    def x_delete_creator(sub_id: int) -> dict[str, Any]:
+        """Delete an X account subscription."""
+        from fastapi import HTTPException
+
+        if _x_creator_store is None:
+            raise HTTPException(status_code=503, detail="x not configured")
+        deleted = _x_creator_store.delete(sub_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        return {"ok": True}
+
     # ── Douyin task queue endpoints (extension dispatcher) ──────────
     # Independent from the XHS block above by design — see
     # docs/plans/2026-05-06-douyin-bootstrap-import-design.md
