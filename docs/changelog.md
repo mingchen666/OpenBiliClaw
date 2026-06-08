@@ -4,6 +4,13 @@
 
 ---
 
+## v0.3.103 / extension v0.3.69: 桌面安装包运行体验修复（2026-06-09）
+
+- 修复 Windows 桌面安装包推荐流在低库存 / 空库存时的卡顿与“突然整批换内容”：`/api/recommendations/reshuffle` 与 `/append` 在可用池为 0 时立即返回空列表，并通过后台任务 + 30 秒防抖触发补货，不再让用户滚动交互等待补货链路。
+- 修复桌面 Web 图片加载慢：追加推荐卡片先渲染，再异步预热封面；首屏 delight 封面改为 eager/high priority/async decode，避免原生 lazy loading 拖慢第一屏观感。
+- 修复安装包升级后仍像“没更新”的静态资源缓存问题：`/web` 与 `/web/` 动态注入 CSS/JS `?v=` 指纹，并返回 `Cache-Control: no-store`，确保新安装包打开的是新前端代码。
+- 补充回归测试覆盖空池补货、推荐引擎空候选短路、桌面 Web 图片加载优先级与静态资源 cache-bust；桌面安装包由 `desktop-v0.3.103` tag 触发自动发布。
+
 ## v0.3.102 / extension v0.3.69: 图形化引导初始化（GUI guided init）（2026-06-07）
 
 - README 用户交流群区块新增微信用户群二维码入口，并保留原 QQ 群二维码，方便用户按常用平台加入社区。

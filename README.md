@@ -192,11 +192,11 @@
 
 ## 最近更新
 
-最新版本：**v0.3.102 / extension v0.3.68: 图形化引导初始化（2026-06-07）**。完整历史见 [docs/changelog.md](docs/changelog.md)。
+最新版本：**v0.3.103 / extension v0.3.69: 桌面安装包运行体验修复（2026-06-09）**。完整历史见 [docs/changelog.md](docs/changelog.md)。
 
-- **插件内可直接初始化** —— 推荐 tab 会展示 B 站登录 / LLM / embedding 前置清单，满足条件后可点「开始初始化」，在界面里跟进画像和首轮内容池进度。
-- **初始化期间写入门控** —— 后端会暂停会干扰画像构建的写操作和后台刷新，避免首次画像被并发任务打乱。
-- **开机自启动 + 本机 Ollama 预检** —— 插件设置页可开启登录自启动；`openbiliclaw start` 会在需要默认本机 Ollama 时做启动前探测。
+- **桌面推荐流更稳** —— 空池 / 低库存时立即返回并后台防抖补货，不再因为补货链路卡住滚动或突然整批换内容。
+- **图片加载更快** —— 追加推荐卡片先渲染再异步预热封面，首屏 delight 封面使用 eager/high priority 加载。
+- **安装包前端不吃旧缓存** —— `/web` 自动给 CSS / JS 注入版本指纹并返回 `no-store`，升级后能确认打开的是新代码。
 
 ## 用户交流群
 
@@ -654,7 +654,7 @@ OpenBiliClaw/
 
 ## 📜 更新日志
 
-最新版本：**v0.3.102 / extension v0.3.68: 图形化引导初始化（2026-06-07）**。最近更新见上方摘要；完整历史见 [docs/changelog.md](docs/changelog.md)。插件包见 [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases)，后端源码更新看 `backend-v*` tag，不发布后端桌面包。
+最新版本：**v0.3.103 / extension v0.3.69: 桌面安装包运行体验修复（2026-06-09）**。最近更新见上方摘要；完整历史见 [docs/changelog.md](docs/changelog.md)。插件包和桌面安装包见 [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases)，后端源码更新看 `backend-v*` tag。
 
 ## 🗺️ 后续规划
 

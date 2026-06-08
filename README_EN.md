@@ -188,11 +188,11 @@ After starting the backend, open `http://127.0.0.1:8420/web` (or just `http://12
 
 ## Recent Updates
 
-Latest: **v0.3.102 / extension v0.3.68: guided init in the UI (2026-06-07)**. Full history lives in [docs/changelog.md](docs/changelog.md).
+Latest: **v0.3.103 / extension v0.3.69: desktop installer runtime UX fixes (2026-06-09)**. Full history lives in [docs/changelog.md](docs/changelog.md).
 
-- **Initialize from the extension** — the Recommend tab shows the Bilibili login / LLM / embedding checklist and can start init directly when prerequisites are ready.
-- **Init-time write gate** — the backend pauses conflicting writes and background refresh work while the first profile is being built.
-- **Login autostart + local Ollama preflight** — the extension settings page can enable login autostart, and `openbiliclaw start` probes local Ollama when the current config needs it.
+- **Smoother desktop recommendation feed** — empty / low inventory returns immediately and triggers debounced replenishment in the background, so scrolling no longer waits on the refill path or swaps the whole list unexpectedly.
+- **Faster cover rendering** — appended recommendation cards render before cover prewarm, and the first-view delight cover uses eager/high-priority loading.
+- **Installer web UI cache-busting** — `/web` injects versioned CSS / JS URLs and returns `no-store`, so upgrades open the newly packaged frontend code.
 
 ## Community
 
@@ -643,7 +643,7 @@ OpenBiliClaw/
 
 ## 📜 Release History
 
-Latest: **v0.3.102 / extension v0.3.68: guided init in the UI (2026-06-07)**. The recent updates section keeps the current release visible; full history lives in [docs/changelog.md](docs/changelog.md). Extension packages live on [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases); backend source updates use `backend-v*` tags and do not publish backend desktop packages.
+Latest: **v0.3.103 / extension v0.3.69: desktop installer runtime UX fixes (2026-06-09)**. The recent updates section keeps the current release visible; full history lives in [docs/changelog.md](docs/changelog.md). Extension packages and desktop installers live on [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases); backend source updates use `backend-v*` tags.
 
 ## 🗺️ Roadmap
 
