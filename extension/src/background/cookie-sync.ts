@@ -13,7 +13,8 @@
  *
  * Backend endpoints: POST /api/bilibili/cookie validates against Bilibili
  * nav before persisting; POST /api/sources/dy/cookie stores the browser
- * Douyin cookie for direct discovery smoke / recall.
+ * Douyin cookie for direct discovery smoke / recall; POST /api/sources/x/cookie
+ * stores the browser X (Twitter) cookie for server-side cookie-replay discovery.
  */
 
 // .ts extension: see service-worker.ts for the node:test resolver rationale.
@@ -63,6 +64,10 @@ const IMPORTANT_DOUYIN_COOKIE_NAMES = [
   "passport_auth_status",
   "odin_tt",
 ];
+// X (Twitter) server-side cookie replay needs BOTH the session token
+// (auth_token) and the CSRF token (ct0). Without either, twitter-cli calls
+// 401 immediately, so we don't bother pushing partial jars to the backend.
+const REQUIRED_X_COOKIE_NAMES = ["auth_token", "ct0"];
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let cookieSyncStarted = false;
@@ -140,6 +145,31 @@ export async function readDouyinCookieHeader(): Promise<string | null> {
   const have = new Set(cookies.map((c) => c.name));
   if (!DOUYIN_AUTH_SIGNAL_COOKIE_NAMES.some((name) => have.has(name))) {
     return null;
+  }
+  return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+}
+
+/**
+ * Read all x.com cookies and return them as a Cookie header.
+ *
+ * Returns null unless BOTH `auth_token` and `ct0` are present — those are
+ * the two cookies twitter-cli needs to authenticate server-side. We send
+ * the full header (guest_id etc help with anti-bot) but gate on the two
+ * required names so we never push a useless logged-out jar.
+ */
+export async function readXCookieHeader(): Promise<string | null> {
+  const chromeApi = getChromeApi();
+  if (!chromeApi?.cookies?.getAll) {
+    return null;
+  }
+  const cookies = (await chromeApi.cookies.getAll({ domain: "x.com" })).filter(
+    (cookie) => cookie.name && cookie.value,
+  );
+  const have = new Set(cookies.map((c) => c.name));
+  for (const required of REQUIRED_X_COOKIE_NAMES) {
+    if (!have.has(required)) {
+      return null;
+    }
   }
   return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
 }
@@ -266,6 +296,50 @@ export async function syncDouyinCookieToBackend(
   }
 }
 
+export async function syncXCookieToBackend(
+  source: string = "extension",
+): Promise<boolean> {
+  const cookieHeader = await readXCookieHeader();
+  if (!cookieHeader) {
+    // Not logged into x.com (or missing auth_token / ct0) — nothing to send.
+    return false;
+  }
+  try {
+    const response = await fetch(await apiUrl("/sources/x/cookie"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cookie: cookieHeader,
+        source,
+      }),
+    });
+    if (!response.ok) {
+      console.warn(`[openbiliclaw] x cookie sync HTTP ${response.status}`);
+      scheduleCookieSyncAlarm(COOKIE_SYNC_RETRY_MINUTES);
+      return false;
+    }
+    const result = (await response.json()) as {
+      ok: boolean;
+      has_cookie: boolean;
+      error_code?: string;
+      message?: string;
+    };
+    if (result.ok && result.has_cookie) {
+      console.log(`[openbiliclaw] x cookie synced via ${source}`);
+      scheduleHourlyCookieSync();
+      return true;
+    }
+    const message = String(result.message || "");
+    console.warn(`[openbiliclaw] x cookie sync rejected (${source}): ${message}`);
+    scheduleCookieSyncAlarm(COOKIE_SYNC_VALIDATION_NETWORK_RETRY_MINUTES);
+    return false;
+  } catch (err) {
+    console.warn("[openbiliclaw] x cookie sync failed:", err);
+    scheduleCookieSyncAlarm(COOKIE_SYNC_RETRY_MINUTES);
+    return false;
+  }
+}
+
 /**
  * Handle backend runtime-stream events that explicitly ask the extension
  * to push the current site cookie now.
@@ -278,6 +352,10 @@ export function handleCookieSyncRuntimeEvent(event: Record<string, unknown>): bo
   }
   if (eventType === "douyin_cookie_sync_requested") {
     void syncDouyinCookieToBackend("runtime-stream-request");
+    return true;
+  }
+  if (eventType === "x_cookie_sync_requested") {
+    void syncXCookieToBackend("runtime-stream-request");
     return true;
   }
   return false;
@@ -296,6 +374,7 @@ function scheduleCookieSync(source: string): void {
     debounceTimer = null;
     void syncBilibiliCookieToBackend(source);
     void syncDouyinCookieToBackend(source);
+    void syncXCookieToBackend(source);
   }, COOKIE_SYNC_DEBOUNCE_MS);
 }
 
@@ -318,6 +397,7 @@ export function startCookieSync(): void {
   // installing the extension; this catches that case.
   void syncBilibiliCookieToBackend("startup");
   void syncDouyinCookieToBackend("startup");
+  void syncXCookieToBackend("startup");
 
   // React to login / logout / refresh.
   chromeApi.cookies.onChanged.addListener((changeInfo) => {
@@ -336,6 +416,15 @@ export function startCookieSync(): void {
         return;
       }
       scheduleCookieSync(changeInfo.removed ? "douyin-logout" : "douyin-cookies-onchange");
+      return;
+    }
+    if (domain.endsWith("x.com")) {
+      if (!REQUIRED_X_COOKIE_NAMES.includes(changeInfo.cookie.name)) {
+        // x.com sets dozens of analytics cookies; only auth_token / ct0
+        // moving means a login / logout / token refresh worth syncing.
+        return;
+      }
+      scheduleCookieSync(changeInfo.removed ? "x-logout" : "x-cookies-onchange");
     }
   });
 
@@ -356,5 +445,6 @@ export function handleCookieSyncAlarm(alarmName: string): boolean {
   }
   void syncBilibiliCookieToBackend("hourly-alarm");
   void syncDouyinCookieToBackend("hourly-alarm");
+  void syncXCookieToBackend("hourly-alarm");
   return true;
 }

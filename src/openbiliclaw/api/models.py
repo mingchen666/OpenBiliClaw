@@ -310,6 +310,34 @@ class DouyinCookieResponse(BaseModel):
     error_code: str = ""
 
 
+class XCookieIn(BaseModel):
+    """Cookie sync payload for X (Twitter) server-side cookie-replay discovery."""
+
+    cookie: str = Field(
+        ...,
+        description="Cookie header string from x.com.",
+        min_length=1,
+    )
+    source: str = Field(
+        default="extension",
+        description="Where the cookie came from. Used for telemetry only.",
+    )
+
+
+class XCookieResponse(BaseModel):
+    """Result of syncing an X (Twitter) Cookie header.
+
+    ``has_cookie`` is true only when BOTH ``auth_token`` and ``ct0`` are
+    present — twitter-cli needs both to authenticate.
+    """
+
+    ok: bool
+    has_cookie: bool
+    cookie_names: list[str] = Field(default_factory=list)
+    message: str = ""
+    error_code: str = ""
+
+
 class NotificationAckIn(BaseModel):
     """Acknowledge one browser notification delivery."""
 

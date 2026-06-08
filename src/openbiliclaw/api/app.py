@@ -95,6 +95,8 @@ from openbiliclaw.api.models import (
     WatchLaterItem,
     WatchLaterListResponse,
     WatchLaterStateResponse,
+    XCookieIn,
+    XCookieResponse,
     XiaohongshuSourceConfigOut,
     YoutubeSourceConfigOut,
 )
@@ -142,6 +144,66 @@ _EMBEDDING_READY_TTL_SECONDS = 30.0
 _EMBEDDING_FAIL_TTL_SECONDS = 8.0
 _EMBEDDING_PROBE_TIMEOUT_SECONDS = 15.0
 _AUTO_REPLENISH_DEBOUNCE_SECONDS = 30.0
+
+# X (Twitter) server-side cookie replay needs BOTH of these cookies; the
+# browser may send a far larger jar, but ``has_cookie`` only goes true when
+# both are present (twitter-cli 401s otherwise).
+_X_REQUIRED_COOKIE_NAMES = ("auth_token", "ct0")
+_X_COOKIE_FILENAME = "x_cookie.json"
+
+
+class XCookieManager:
+    """Store the user's X (Twitter) Cookie header outside config.toml.
+
+    Mirrors ``openbiliclaw.sources.douyin_auth.DouyinCookieManager``: the
+    browser extension keeps ``data/x_cookie.json`` fresh; secrets never land
+    in config.toml.
+    """
+
+    def __init__(self, data_dir: Path) -> None:
+        self._data_dir = data_dir
+        self._cookie_path = data_dir / _X_COOKIE_FILENAME
+
+    @property
+    def cookie_path(self) -> Path:
+        return self._cookie_path
+
+    def set_cookie(self, cookie: str, *, source: str = "unknown") -> None:
+        import json
+
+        normalized = cookie.strip()
+        self._data_dir.mkdir(parents=True, exist_ok=True)
+        with open(self._cookie_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {"cookie": normalized, "source": source.strip() or "unknown"},
+                f,
+                ensure_ascii=False,
+            )
+
+    def load_cookie(self) -> str:
+        import json
+
+        if not self._cookie_path.exists():
+            return ""
+        with open(self._cookie_path, encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return ""
+        return str(payload.get("cookie", "") or "").strip()
+
+
+def resolve_x_cookie(*, data_dir: Path, cookie_env: str = "OPENBILICLAW_X_COOKIE") -> str:
+    """Resolve the X (Twitter) Cookie header for server-side discovery.
+
+    The environment variable is the explicit override for debugging, while the
+    browser extension keeps ``data/x_cookie.json`` fresh for normal use. Env
+    always wins over the persisted file (mirrors ``resolve_douyin_cookie``).
+    """
+    env_cookie = os.environ.get(cookie_env, "").strip()
+    if env_cookie:
+        return env_cookie
+    return XCookieManager(data_dir).load_cookie()
+
 
 SOURCE_LABELS = {
     "feedback": "推荐反馈",
@@ -1800,6 +1862,54 @@ def create_app(
             has_cookie=True,
             cookie_names=cookie_names,
             message="Douyin Cookie synced.",
+        )
+
+    @app.post("/api/sources/x/cookie", response_model=XCookieResponse)
+    async def sync_x_cookie(payload: XCookieIn) -> XCookieResponse:
+        """Receive an X (Twitter) cookie from the browser extension.
+
+        The browser extension already gates on ``auth_token`` + ``ct0`` before
+        posting, but we persist whatever header arrives and recompute
+        ``has_cookie`` server-side so the env-override path and the file stay
+        consistent. ``has_cookie`` is true only when BOTH required cookies are
+        present — twitter-cli 401s without either.
+        """
+        from openbiliclaw.sources.douyin_direct import parse_cookie_header
+
+        cookie_value = payload.cookie.strip()
+        if not cookie_value:
+            return XCookieResponse(
+                ok=False,
+                has_cookie=False,
+                message="cookie payload is empty",
+                error_code="empty_cookie",
+            )
+
+        runtime_config = getattr(ctx, "config", None) or config
+        XCookieManager(runtime_config.data_path).set_cookie(cookie_value, source=payload.source)
+        cookie_pairs = parse_cookie_header(cookie_value)
+        cookie_names = sorted(cookie_pairs.keys())
+        has_cookie = all(name in cookie_pairs for name in _X_REQUIRED_COOKIE_NAMES)
+
+        with suppress(Exception):
+            await ctx.event_hub.publish(
+                {
+                    "type": "x_cookie_synced",
+                    "source": payload.source,
+                    "has_cookie": has_cookie,
+                    "cookie_names": cookie_names,
+                }
+            )
+
+        return XCookieResponse(
+            ok=True,
+            has_cookie=has_cookie,
+            cookie_names=cookie_names,
+            message=(
+                "X Cookie synced."
+                if has_cookie
+                else "X Cookie stored but missing auth_token / ct0."
+            ),
         )
 
     @app.post("/api/init-completed")
