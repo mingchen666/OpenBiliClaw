@@ -405,5 +405,67 @@ def test_single_instance_lock_separate_dirs_both_acquire(tmp_path: Path) -> None
     handle_b.close()
 
 
+# --------------------------------------------------------------------------- #
+# _view_runtime_logs — macOS "查看运行日志" tray action
+#
+# The old `osascript … tell application "Terminal"` needed Apple-Events
+# automation permission an unsigned packaged .app is denied, so the menu item
+# silently did nothing. The fix opens a .command as a document (no permission)
+# and checks the return code so it can fall back to the default app.
+# --------------------------------------------------------------------------- #
+
+
+def test_view_runtime_logs_macos_opens_terminal_with_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(entry.os, "name", "posix")
+    monkeypatch.setattr(entry.sys, "platform", "darwin")
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+        stderr = ""
+
+    monkeypatch.setattr(
+        entry.subprocess, "run", lambda cmd, *a, **k: (calls.append(cmd), _Result())[1]
+    )
+    log = tmp_path / "logs" / "desktop.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("hi", encoding="utf-8")
+
+    entry._view_runtime_logs(log)
+
+    helper = tmp_path / "logs" / "view-logs.command"
+    assert helper.exists()
+    body = helper.read_text(encoding="utf-8")
+    assert 'tail -n 200 -f "' in body and str(log) in body
+    # Launched as a document via `open -a Terminal` (no osascript / Apple Events).
+    assert calls and calls[0][:3] == ["open", "-a", "Terminal"]
+    assert calls[0][-1] == str(helper)
+
+
+def test_view_runtime_logs_macos_falls_back_when_terminal_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(entry.os, "name", "posix")
+    monkeypatch.setattr(entry.sys, "platform", "darwin")
+
+    class _Result:
+        returncode = 1
+        stderr = "boom"
+
+    monkeypatch.setattr(entry.subprocess, "run", lambda *a, **k: _Result())
+    opened: list[Path] = []
+    monkeypatch.setattr(entry, "_open_in_default_app", lambda p: opened.append(p))
+    log = tmp_path / "logs" / "desktop.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("hi", encoding="utf-8")
+
+    entry._view_runtime_logs(log)
+
+    # Non-zero return code → fall back to opening the file in the default app.
+    assert opened == [log]
+
+
 if __name__ == "__main__":  # pragma: no cover - convenience
     raise SystemExit(pytest.main([__file__, "-q"]))

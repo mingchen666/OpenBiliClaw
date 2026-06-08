@@ -431,11 +431,27 @@ def _view_runtime_logs(log_path: Path) -> None:
             )
             return
         if sys.platform == "darwin":
-            # Open Terminal live-tailing the log (the macOS analogue of the
-            # Windows console). Path is double-quoted to survive spaces.
-            script = f'tell application "Terminal" to do script "tail -n 200 -f \\"{log_path}\\""'
-            subprocess.Popen(["osascript", "-e", script])  # noqa: S603,S607
-            return
+            # Live-tail in Terminal by opening a tiny .command as a *document*
+            # (`open -a Terminal file.command`). The previous approach —
+            # `osascript … tell application "Terminal"` — needs Apple-Events
+            # automation permission, which an unsigned packaged .app is silently
+            # denied, so the menu item did nothing (and Popen never saw the
+            # error). A document open needs no such permission; Terminal just
+            # runs the script. Paths are double-quoted to survive the space in
+            # "Application Support". Fall back to the default app if Terminal
+            # can't be launched (return code checked, unlike the old Popen).
+            helper = log_path.parent / "view-logs.command"
+            helper.write_text(f'#!/bin/bash\ntail -n 200 -f "{log_path}"\n', encoding="utf-8")
+            helper.chmod(0o755)
+            opened = subprocess.run(  # noqa: S603
+                ["open", "-a", "Terminal", str(helper)],  # noqa: S607
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if opened.returncode == 0:
+                return
+            print(f"[OpenBiliClaw] 用 Terminal 打开日志失败,改用默认应用: {opened.stderr.strip()}")
     except Exception as exc:  # noqa: BLE001 — fall back to opening the file
         print(f"[OpenBiliClaw] 打开实时日志失败: {exc}")
     _open_in_default_app(log_path)
