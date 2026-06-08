@@ -200,9 +200,19 @@
 
 ## 用户交流群
 
-<p align="center">
-  <img src="docs/images/user-community-qrcode.png" width="200" alt="用户交流群二维码" />
-</p>
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/images/user-community-qrcode.png" width="200" alt="QQ 用户交流群二维码" /><br/>
+      <b>QQ 用户群</b>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/images/wechat-user-community-qrcode.jpg" width="200" alt="微信用户群二维码" /><br/>
+      <b>微信用户群</b><br/>
+      <sub>二维码 7 天内有效，失效后会更新</sub>
+    </td>
+  </tr>
+</table>
 
 ## 安装与部署详情
 

@@ -196,9 +196,19 @@ Latest: **v0.3.102 / extension v0.3.68: guided init in the UI (2026-06-07)**. Fu
 
 ## Community
 
-<p align="center">
-  <img src="docs/images/user-community-qrcode.png" width="200" alt="User community QR code" />
-</p>
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/images/user-community-qrcode.png" width="200" alt="QQ user community QR code" /><br/>
+      <b>QQ Community</b>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/images/wechat-user-community-qrcode.jpg" width="200" alt="WeChat user community QR code" /><br/>
+      <b>WeChat Community</b><br/>
+      <sub>The QR code is valid for 7 days and will be refreshed after it expires.</sub>
+    </td>
+  </tr>
+</table>
 
 ## Setup Details
 

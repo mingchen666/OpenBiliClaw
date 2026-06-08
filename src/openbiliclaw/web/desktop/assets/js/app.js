@@ -216,6 +216,68 @@
     state.dismissOnReshuffle = storageGet(DISMISS_ON_RESHUFFLE_KEY) === "1";
     const SIDE_DRAWER_OPEN_KEY = "openbiliclaw.sideDrawerOpen";
     const DELIGHT_QUEUE_LIMIT_KEY = "openbiliclaw.webui.delightQueueLimit";
+    const STAR_REPO_URL = "https://github.com/whiteguo233/OpenBiliClaw";
+    const STAR_REPO_SLUG = "whiteguo233/OpenBiliClaw";
+    const STAR_COUNT_CACHE_KEY = "openbiliclaw.webui.starCount";
+    const STAR_COUNT_TTL_MS = 12 * 60 * 60 * 1000;
+
+    function formatStarCount(n) {
+      if (typeof n !== "number" || !Number.isFinite(n)) return "";
+      if (n >= 10000) return `${(n / 1000).toFixed(0)}k`;
+      if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+      return String(n);
+    }
+
+    function showStarCount(n) {
+      const el = $("#starCount");
+      const text = formatStarCount(n);
+      if (el && text) {
+        el.textContent = text;
+        el.hidden = false;
+      }
+    }
+
+    async function loadStarCount() {
+      const el = $("#starCount");
+      if (!(el instanceof HTMLElement)) return;
+      let cachedTime = 0;
+      try {
+        const raw = storageGet(STAR_COUNT_CACHE_KEY);
+        if (raw) {
+          const { n, t } = JSON.parse(raw);
+          if (typeof n === "number") {
+            showStarCount(n);
+            cachedTime = typeof t === "number" ? t : 0;
+          }
+        }
+      } catch {
+        cachedTime = 0;
+      }
+      if (Date.now() - cachedTime < STAR_COUNT_TTL_MS) return;
+      try {
+        const res = await fetch(`https://api.github.com/repos/${STAR_REPO_SLUG}`, {
+          headers: { Accept: "application/vnd.github+json" },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const n = data?.stargazers_count;
+        if (typeof n === "number") {
+          showStarCount(n);
+          storageSet(STAR_COUNT_CACHE_KEY, JSON.stringify({ n, t: Date.now() }));
+        }
+      } catch {
+        // Offline / rate-limited: keep the CTA visible without a count.
+      }
+    }
+
+    function bindStarButton() {
+      const button = $("#starButton");
+      if (!(button instanceof HTMLElement)) return;
+      button.addEventListener("click", () => {
+        window.open(STAR_REPO_URL, "_blank", "noopener,noreferrer");
+      });
+      void loadStarCount();
+    }
 
     function normalizeBackendHost(host) {
       const trimmed = String(host || "").trim();
@@ -3346,6 +3408,7 @@
     safeBind("#activityMoreBtn", "click", () => loadActivityPage());
     safeBind("#settingsBtn", "click", () => openSettingsPage("models"));
     safeBind("#openSettingsHero", "click", () => openSettingsPage("models"));
+    bindStarButton();
     syncTopbarHeight();
     window.addEventListener("resize", syncTopbarHeight);
     ["#dismissOnReshuffleToggle", "#dismissOnReshuffleSetting"].forEach((selector) => {

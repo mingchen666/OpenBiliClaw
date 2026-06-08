@@ -45,3 +45,22 @@ def test_desktop_pool_update_does_not_replace_recommendation_list() -> None:
     assert "recommendation.reshuffled" not in trigger
     assert "config_reloaded" in trigger
     assert "init_completed" in trigger
+
+
+def test_desktop_web_shows_github_star_cta() -> None:
+    """Desktop web should ask happy users for a GitHub Star in the top bar."""
+    app_js = Path("src/openbiliclaw/web/desktop/assets/js/app.js").read_text(encoding="utf-8")
+    app_css = Path("src/openbiliclaw/web/desktop/assets/css/app.css").read_text(encoding="utf-8")
+    index_html = Path("src/openbiliclaw/web/desktop/index.html").read_text(encoding="utf-8")
+    top_actions = re.search(r'<div class="top-actions"[\s\S]*?</div>', index_html)
+
+    assert top_actions is not None, "desktop top actions block not found"
+    assert 'id="starButton"' in top_actions.group(0)
+    assert 'id="starCount"' in top_actions.group(0)
+    assert "好用求 Star" in top_actions.group(0)
+    assert "gh-star-left" in app_css
+    assert "gh-star-count" in app_css
+    assert 'STAR_REPO_URL = "https://github.com/whiteguo233/OpenBiliClaw"' in app_js
+    assert "https://api.github.com/repos/${STAR_REPO_SLUG}" in app_js
+    assert "openbiliclaw.webui.starCount" in app_js
+    assert "bindStarButton();" in app_js

@@ -128,7 +128,7 @@
     button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: none; box-shadow: var(--focus-ring); }
     a { color: inherit; text-decoration: none; }
     .app-shell { min-height: 100vh; overflow-x: clip; }
-    .topbar { position: sticky; top: 0; z-index: 20; display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 620px) minmax(0, 1fr); align-items: center; gap: var(--space-4); padding: var(--space-4) clamp(var(--space-4), 3vw, var(--space-8)); background: color-mix(in oklab, var(--bg), transparent 6%); border-bottom: 1px solid var(--border-soft); backdrop-filter: blur(18px); }
+    .topbar { position: sticky; top: 0; z-index: 20; display: grid; grid-template-columns: minmax(220px, 1fr) minmax(280px, 560px) auto; align-items: center; gap: var(--space-4); padding: var(--space-4) clamp(var(--space-4), 3vw, var(--space-8)); background: color-mix(in oklab, var(--bg), transparent 6%); border-bottom: 1px solid var(--border-soft); backdrop-filter: blur(18px); }
     .top-left { display: flex; align-items: center; gap: var(--space-4); min-width: 0; justify-self: start; }
     .brand { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
     .brand-copy { display: grid; gap: 3px; min-width: 0; }
@@ -145,6 +145,13 @@
     .nav-action svg { width: 17px; height: 17px; stroke-width: 1.9; }
     .nav-action-text { line-height: 1; }
     .backend-status-pill { min-height: 38px; display: inline-flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-4); border: 1px solid var(--border-soft); border-radius: var(--radius-pill); background: var(--surface); color: var(--muted); box-shadow: var(--elev-ring); font-size: 13px; }
+    .gh-star { flex-shrink: 0; display: inline-flex; align-items: stretch; min-height: 38px; padding: 0; border: 1px solid color-mix(in oklab, var(--accent), var(--border-soft) 45%); border-radius: var(--radius-pill); overflow: hidden; background: var(--surface); color: var(--fg); box-shadow: var(--elev-ring); font-size: 13px; font-weight: 750; }
+    .gh-star:hover { border-color: var(--accent); background: color-mix(in oklab, var(--surface), var(--accent) 7%); }
+    .gh-star-left, .gh-star-count { display: inline-flex; align-items: center; justify-content: center; }
+    .gh-star-left { gap: 7px; padding: 0 var(--space-4); background: var(--fg); color: var(--surface); }
+    .gh-star-mark { width: 16px; height: 16px; flex: 0 0 auto; }
+    .gh-star-count { min-width: 44px; padding: 0 var(--space-3); border-left: 1px solid var(--border-soft); background: var(--surface); color: var(--fg-2); font-family: var(--font-mono); font-size: 12px; }
+    .gh-star-count[hidden] { display: none; }
     .top-message-btn { position: relative; width: 38px; height: 38px; display: inline-grid; place-items: center; border: 1px solid var(--border-soft); border-radius: var(--radius-pill); background: var(--surface); color: var(--fg); box-shadow: var(--elev-ring); }
     .top-message-btn:hover, .backend-status-pill:hover { background: var(--surface-warm); color: var(--fg); }
     .top-message-btn svg { width: 18px; height: 18px; stroke-width: 1.8; }
@@ -521,6 +528,12 @@
     .mobile-summary-card .activity-list { margin-top: 0; }
 
     @media (max-width: 1180px) {
+      .topbar { grid-template-columns: minmax(180px, auto) minmax(220px, 1fr) auto; }
+      .brand-sub, #statusLabel, .gh-star-copy { display: none; }
+      .backend-status-pill { width: 38px; padding: 0; justify-content: center; }
+      .backend-status-pill .badge-dot { margin-right: 0; }
+      .gh-star-left { padding: 0 11px; }
+      .gh-star-count { min-width: 38px; padding: 0 9px; }
       .layout { display: block; }
       .main-col { display: grid; }
       .card-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--recommendation-card-min)), var(--recommendation-card-max))); }
