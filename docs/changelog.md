@@ -4,6 +4,14 @@
 
 ---
 
+## v0.3.112 / extension v0.3.73: 探针反馈重复推送修复（2026-06-10）
+
+修复用户在安装包/常驻进程场景下点过兴趣探针或避雷探针后，旧探针仍可能从后台推送、画像页或消息缓存里重新出现的问题。
+
+- 探针反馈状态改为原子更新：`discovery_runtime.json` 的正向/避雷反馈历史、短期探索 buffer、probe 冷却 map 与 `last_probe_kind` 都通过进程内锁 + 文件锁 + 临时文件原子替换写入；旧快照保存会和磁盘最新状态合并，不再覆盖用户刚点过的确认/拒绝记录。
+- 正向 `InterestSpeculator` 与负向 `AvoidanceSpeculator` 在 `tick/force_tick` 生成前会重新读取最新反馈历史；确认、拒绝和聊天产生的已处理反馈都会进入 novelty guard，避免同一个 domain/specific 被再次生成。runtime 主动推送也只选择 `active` 候选，确认/拒绝后的 stale 探针不会继续被推到前端。
+- 插件 side panel、移动 Web 和桌面 Web 统一增加本地 handled probe key：用户点击确认、拒绝或探针内聊后，当前 domain 会立即从 inbox/profile/pending hydration 中隐藏；如果后端返回 stale/`ok=false`，前端只移除旧卡片并刷新画像，不再显示误导性的成功提示。
+
 ## v0.3.111 / extension v0.3.73: 图形化初始化入口对齐（2026-06-09）
 
 桌面 Web、安装包首启向导和浏览器插件的首次初始化入口统一到同一套 guided-init 判断与进度流，避免 fresh install 用户被带回命令行。

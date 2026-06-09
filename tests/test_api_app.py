@@ -3346,6 +3346,77 @@ class TestBackendAPI:
             }
         ]
 
+    def test_interest_probe_confirm_e2e_removes_from_pending_and_profile(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from fastapi.testclient import TestClient
+
+        from openbiliclaw.memory.manager import MemoryManager
+        from openbiliclaw.soul.profile import OnionProfile
+        from openbiliclaw.soul.speculator import (
+            InterestSpeculator,
+            SpeculativeInterest,
+            SpeculativeState,
+            load_speculative_state,
+            save_speculative_state,
+        )
+
+        memory = MemoryManager(tmp_path)
+        memory.initialize()
+        save_speculative_state(
+            tmp_path,
+            SpeculativeState(
+                active=[
+                    SpeculativeInterest(
+                        domain="城市基础设施观察",
+                        category="城市",
+                        reason="从城市漫游兴趣桥接到空间系统理解。",
+                        confidence=0.67,
+                    )
+                ]
+            ),
+        )
+
+        class FakeSoulEngine:
+            def __init__(self) -> None:
+                self._speculator = InterestSpeculator(llm_service=None, data_dir=tmp_path)
+
+            async def get_profile(self) -> OnionProfile:
+                return OnionProfile()
+
+        app = create_app(
+            memory_manager=memory,
+            database=memory._database,
+            soul_engine=FakeSoulEngine(),
+        )
+        app.state.runtime_context.config = SimpleNamespace(data_path=tmp_path)
+        client = TestClient(app)
+
+        assert client.get("/api/interest-probes/pending").json()["items"][0]["domain"] == (
+            "城市基础设施观察"
+        )
+        assert client.get("/api/profile-summary").json()["speculative_interests"][0]["domain"] == (
+            "城市基础设施观察"
+        )
+
+        response = client.post(
+            "/api/interest-probes/respond",
+            json={"domain": "城市基础设施观察", "response": "confirm"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        assert client.get("/api/interest-probes/pending").json()["items"] == []
+        assert client.get("/api/profile-summary").json()["speculative_interests"] == []
+        history = memory.load_discovery_runtime_state()["probe_feedback_history"]
+        assert history[0]["domain"] == "城市基础设施观察"
+        assert history[0]["response"] == "confirm"
+        spec_state = load_speculative_state(tmp_path)
+        assert all(item.domain != "城市基础设施观察" for item in spec_state.active)
+
     def test_interest_probe_trigger_runtime_event_includes_probe_mode_challenge_metadata(
         self,
     ) -> None:
@@ -4166,6 +4237,94 @@ class TestBackendAPI:
         assert response.status_code == 200
         assert response.json()["items"][0]["domain"] == "浅层热点复读"
         assert len(response.json()["items"]) == 1
+
+    def test_avoidance_probe_confirm_e2e_removes_from_pending_and_profile(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from fastapi.testclient import TestClient
+
+        from openbiliclaw.api import app as app_module
+        from openbiliclaw.memory.manager import MemoryManager
+        from openbiliclaw.soul.avoidance_speculator import (
+            AvoidanceSpeculator,
+            AvoidanceState,
+            SpeculativeAvoidance,
+            SpeculativeAvoidanceSpecific,
+            save_avoidance_state,
+        )
+        from openbiliclaw.soul.profile import OnionProfile
+
+        async def fake_apply_new_dislikes(**_kwargs: object) -> list[str]:
+            return []
+
+        monkeypatch.setattr(
+            app_module,
+            "apply_new_dislikes",
+            fake_apply_new_dislikes,
+            raising=False,
+        )
+
+        memory = MemoryManager(tmp_path)
+        memory.initialize()
+        save_avoidance_state(
+            tmp_path,
+            AvoidanceState(
+                active=[
+                    SpeculativeAvoidance(
+                        domain="浅层热点复读",
+                        reason="用户可能想避开无信息增量的热点复读内容。",
+                        source_mode="negative_signal",
+                        source_signal="thumbs_down",
+                        confidence=0.66,
+                        specifics=[SpeculativeAvoidanceSpecific(name="标题党热点解读")],
+                    )
+                ]
+            ),
+        )
+
+        class FakeSoulEngine:
+            def __init__(self) -> None:
+                self._avoidance_speculator = AvoidanceSpeculator(
+                    llm_service=None,
+                    data_dir=tmp_path,
+                )
+                self._embedding_service = None
+
+            async def get_profile(self) -> OnionProfile:
+                return OnionProfile()
+
+        app = create_app(
+            memory_manager=memory,
+            database=memory._database,
+            soul_engine=FakeSoulEngine(),
+        )
+        app.state.runtime_context.config = SimpleNamespace(data_path=tmp_path)
+        client = TestClient(app)
+
+        assert client.get("/api/avoidance-probes/pending").json()["items"][0]["domain"] == (
+            "浅层热点复读"
+        )
+        assert (
+            client.get("/api/profile-summary").json()["speculative_avoidances"][0]["domain"]
+            == "浅层热点复读"
+        )
+
+        response = client.post(
+            "/api/avoidance-probes/respond",
+            json={"domain": "浅层热点复读", "response": "confirm"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        assert client.get("/api/avoidance-probes/pending").json()["items"] == []
+        assert client.get("/api/profile-summary").json()["speculative_avoidances"] == []
+        history = memory.load_discovery_runtime_state()["avoidance_probe_feedback_history"]
+        assert history[0]["domain"] == "浅层热点复读"
+        assert history[0]["response"] == "confirm"
 
     def test_avoidance_probe_confirm_adds_disliked_specific_topics(
         self,

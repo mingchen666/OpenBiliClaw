@@ -113,13 +113,14 @@ result = await controller.drain_discovery_candidates_once(batch_size=30)
 - `True`：至少一个订阅者队列接收了事件。
 - `False`：当前没有订阅者，或所有订阅者队列都未接收事件。
 
-`ContinuousRefreshController._publish_probe_if_available()` 使用这个返回值保护主动探针：只有 `interest.probe` 或 `avoidance.probe` 实际进入至少一个 runtime stream 后，才会把本次 domain / axis / probe distance 写入 `discovery_runtime.json` 的短期去重状态，并更新 `last_probe_kind`。普通状态事件仍可忽略返回值。
+`ContinuousRefreshController._publish_probe_if_available()` 使用这个返回值保护主动探针：只有 `interest.probe` 或 `avoidance.probe` 实际进入至少一个 runtime stream 后，才会把本次 domain / axis / probe distance 写入 `discovery_runtime.json` 的短期去重状态，并更新 `last_probe_kind`。这些写入走 `MemoryManager.update_discovery_runtime_state()` 的原子读改写，和 API 反馈历史、短期探索 buffer 合并，避免后台循环用旧状态覆盖用户刚点击过的探针反馈。普通状态事件仍可忽略返回值。
 
 主动探针仲裁规则：
 
 - 每轮 proactive push 最多发布一条 probe；惊喜推荐仍走独立 `delight.candidate` 逻辑。
 - 正向和负向都有候选时，根据上一次成功投递的 `last_probe_kind` 反向优先，形成 `interest -> avoidance -> interest` 的轮转。
 - 发布失败（例如没有订阅者）时不写 `last_probe_kind`，也不消耗 `probed_domains` / `probed_avoidance_domains`。
+- runtime 只会投递 `status="active"` 的正向/负向探针；已经确认、拒绝或过期的旧候选即使仍残留在某次内存快照中，也不会再次进入 `interest.probe` / `avoidance.probe` 事件流。
 - `interest.probe` 正向探针还会记录 `probed_distance_bands`，并在下一次选择时优先尝试没在冷却窗口内问过的 `near/lateral/bridge/wildcard` 档位。
 - `interest.probe` runtime event 暴露 `probe_mode` 和 `challenge`，移动 Web、桌面 Web、插件 inbox 与 OpenClaw 都可以把挑战探针和普通确认区分开；`near` 普通池最多 5 条，`lateral/bridge/wildcard` 挑战池另有 3 条 active 额度。
 - `avoidance.probe` 选取会避开近期 `probed_avoidance_domains` / `probed_avoidance_axes`，并读取 `avoidance_probe_feedback_history` 中用户否认过的方向。

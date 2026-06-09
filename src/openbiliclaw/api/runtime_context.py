@@ -786,6 +786,8 @@ class RuntimeContext:
                             speculator,
                             profile,
                             feedback_history,
+                            "probe_feedback_history",
+                            self.memory_manager,
                         ),
                     )
                     logger.debug("post-reload speculator scheduled as background task")
@@ -801,6 +803,8 @@ class RuntimeContext:
                             avoidance_speculator,
                             profile,
                             avoidance_feedback,
+                            "avoidance_probe_feedback_history",
+                            self.memory_manager,
                         ),
                     )
                     logger.debug("post-reload avoidance speculator scheduled as background task")
@@ -826,16 +830,35 @@ class RuntimeContext:
         speculator: Any,
         profile: Any,
         feedback_history: object,
+        feedback_history_key: str,
+        memory_manager: Any,
     ) -> None:
         """Run post-reload speculation without blocking config PUT."""
+        load_runtime_state = getattr(memory_manager, "load_discovery_runtime_state", None)
+
+        def _load_feedback_history() -> object:
+            if not callable(load_runtime_state):
+                return []
+            runtime_state = load_runtime_state()
+            if not isinstance(runtime_state, dict):
+                return []
+            return runtime_state.get(feedback_history_key, [])
+
         try:
             try:
                 await speculator.force_tick(
                     profile,
                     feedback_history=feedback_history,
+                    feedback_history_loader=_load_feedback_history,
                 )
             except TypeError:
-                await speculator.force_tick(profile)
+                try:
+                    await speculator.force_tick(
+                        profile,
+                        feedback_history=feedback_history,
+                    )
+                except TypeError:
+                    await speculator.force_tick(profile)
         except Exception:
             pass
 

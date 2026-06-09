@@ -85,9 +85,20 @@ def _call_accepts_pool_snapshot(fn: Any) -> bool:
     )
 
 
+def _string_state_map(value: object) -> dict[str, str]:
+    """Normalize a JSON object field into a string-to-string map."""
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): str(item) for key, item in value.items()}
+
+
 class SupportsRuntimeState(Protocol):
     def load_discovery_runtime_state(self) -> dict[str, object]: ...
     def save_discovery_runtime_state(self, state: dict[str, object]) -> None: ...
+    def update_discovery_runtime_state(
+        self,
+        mutator: Callable[[dict[str, object]], dict[str, object] | None],
+    ) -> dict[str, object]: ...
     def get_layer(self, name: str) -> Any: ...
 
 
@@ -701,6 +712,19 @@ class ContinuousRefreshController:
             return registry.track(name, coro)
         return asyncio.create_task(coro, name=name)
 
+    def _update_discovery_runtime_state(
+        self,
+        mutator: Callable[[dict[str, object]], dict[str, object] | None],
+    ) -> dict[str, object]:
+        update_state = getattr(self.memory_manager, "update_discovery_runtime_state", None)
+        if callable(update_state):
+            return cast("dict[str, object]", update_state(mutator))
+        state = self.memory_manager.load_discovery_runtime_state()
+        result = mutator(state)
+        next_state = state if result is None else result
+        self.memory_manager.save_discovery_runtime_state(next_state)
+        return next_state
+
     def get_pending_notification(self) -> dict[str, object] | None:
         """Return one recommendation candidate for browser notification."""
         state = self.memory_manager.load_discovery_runtime_state()
@@ -722,9 +746,10 @@ class ContinuousRefreshController:
     def mark_notification_sent(self, bvid: str) -> None:
         """Persist notification delivery markers."""
         self.database.mark_notification_sent(bvid)
-        state = self.memory_manager.load_discovery_runtime_state()
-        state["last_notification_at"] = self._now().isoformat()
-        self.memory_manager.save_discovery_runtime_state(state)
+        now = self._now().isoformat()
+        self._update_discovery_runtime_state(
+            lambda state: state.update({"last_notification_at": now})
+        )
 
     def get_pending_delight(self) -> dict[str, object] | None:
         """Return one proactive delight candidate for browser notification.
@@ -806,9 +831,10 @@ class ContinuousRefreshController:
     def mark_delight_sent(self, bvid: str) -> None:
         """Persist delight notification delivery markers."""
         self.database.mark_delight_notified(bvid)
-        state = self.memory_manager.load_discovery_runtime_state()
-        state["last_delight_notification_at"] = self._now().isoformat()
-        self.memory_manager.save_discovery_runtime_state(state)
+        now = self._now().isoformat()
+        self._update_discovery_runtime_state(
+            lambda state: state.update({"last_delight_notification_at": now})
+        )
 
     async def prepare_delight_candidates(self) -> int:
         """Warm ready-to-push delight candidates even when no refresh runs."""
@@ -1005,11 +1031,13 @@ class ContinuousRefreshController:
         if replenished_count <= 0:
             return
 
-        state = self.memory_manager.load_discovery_runtime_state()
-        state["last_replenished_count"] = replenished_count
+        state = self._update_discovery_runtime_state(
+            lambda runtime_state: runtime_state.update(
+                {"last_replenished_count": replenished_count}
+            )
+        )
         discovered_count = self._int_state_value(state, "last_discovered_count")
         recent_pool_topics = self._list_state_value(state, "recent_pool_topics")
-        self.memory_manager.save_discovery_runtime_state(state)
         self._last_published_pool_count = after_pool_count
         logger.info(
             "Periodic precompute made %s pool candidates available (pool_available %s -> %s)",
@@ -1657,20 +1685,23 @@ class ContinuousRefreshController:
 
         now = self._now().isoformat()
         latest_event_id = self.database.get_latest_event_id()
+        runtime_updates: dict[str, object] = {}
         if "search" in flattened_strategies or "related_chain" in flattened_strategies:
-            state["last_event_refresh_at"] = now
-            state["last_processed_event_id"] = latest_event_id
+            runtime_updates["last_event_refresh_at"] = now
+            runtime_updates["last_processed_event_id"] = latest_event_id
         if "trending" in flattened_strategies:
-            state["last_trending_refresh_at"] = now
+            runtime_updates["last_trending_refresh_at"] = now
         if "explore" in flattened_strategies:
-            state["last_explore_refresh_at"] = now
+            runtime_updates["last_explore_refresh_at"] = now
         after_pool_counts = self._pool_readiness_counts()
         after_pool_count = after_pool_counts["available"]
-        state["last_discovered_count"] = len(all_discovered) + pipeline_discovered_count
-        state["last_replenished_count"] = max(0, after_pool_count - before_pool_count)
+        runtime_updates["last_discovered_count"] = len(all_discovered) + pipeline_discovered_count
+        runtime_updates["last_replenished_count"] = max(0, after_pool_count - before_pool_count)
         if replenished_topics:
-            state["recent_pool_topics"] = self._dedupe_topics(replenished_topics)[:3]
-        self.memory_manager.save_discovery_runtime_state(state)
+            runtime_updates["recent_pool_topics"] = self._dedupe_topics(replenished_topics)[:3]
+        state = self._update_discovery_runtime_state(
+            lambda runtime_state: runtime_state.update(runtime_updates)
+        )
         discovered_count = self._int_state_value(state, "last_discovered_count")
         replenished_count = self._int_state_value(state, "last_replenished_count")
         await self._publish_event(
@@ -1785,7 +1816,11 @@ class ContinuousRefreshController:
         get_active = getattr(speculator, "get_active_speculations", None)
         if not callable(get_active):
             return False
-        specs = list(get_active())
+        specs = [
+            spec
+            for spec in get_active()
+            if str(getattr(spec, "status", "active")).strip().lower() == "active"
+        ]
         if not specs:
             return False
 
@@ -1861,14 +1896,21 @@ class ContinuousRefreshController:
             return False
 
         # Record this probe only after it has reached at least one runtime stream.
-        probed[domain.lower()] = now.isoformat()
-        state["probed_domains"] = probed
-        if axis:
-            probed_axes[axis] = now.isoformat()
-        state["probed_axes"] = probed_axes
-        probed_distance_bands[probe_mode] = now.isoformat()
-        state["probed_distance_bands"] = probed_distance_bands
-        self.memory_manager.save_discovery_runtime_state(state)
+        delivered_at = now.isoformat()
+
+        def _record_probe(runtime_state: dict[str, object]) -> None:
+            latest_probed = _string_state_map(runtime_state.get("probed_domains"))
+            latest_probed[domain.lower()] = delivered_at
+            runtime_state["probed_domains"] = latest_probed
+            latest_axes = _string_state_map(runtime_state.get("probed_axes"))
+            if axis:
+                latest_axes[axis] = delivered_at
+            runtime_state["probed_axes"] = latest_axes
+            latest_bands = _string_state_map(runtime_state.get("probed_distance_bands"))
+            latest_bands[probe_mode] = delivered_at
+            runtime_state["probed_distance_bands"] = latest_bands
+
+        self._update_discovery_runtime_state(_record_probe)
         return True
 
     async def _publish_avoidance_probe_if_available(self) -> bool:
@@ -1877,13 +1919,17 @@ class ContinuousRefreshController:
         get_active = getattr(speculator, "get_active_avoidances", None)
         if not callable(get_active):
             return False
-        avoidances = list(get_active())
+        avoidances = [
+            avoidance
+            for avoidance in get_active()
+            if str(getattr(avoidance, "status", "active")).strip().lower() == "active"
+        ]
         if not avoidances:
             return False
 
         state = self.memory_manager.load_discovery_runtime_state()
-        probed: dict[str, str] = state.get("probed_avoidance_domains", {})  # type: ignore[assignment]
-        probed_axes: dict[str, str] = state.get("probed_avoidance_axes", {})  # type: ignore[assignment]
+        probed = _string_state_map(state.get("probed_avoidance_domains"))
+        probed_axes = _string_state_map(state.get("probed_avoidance_axes"))
         now = self._now()
         cutoff = (now - timedelta(hours=self._PROBE_COOLDOWN_HOURS)).isoformat()
         probed = {d: t for d, t in probed.items() if t > cutoff}
@@ -1941,12 +1987,18 @@ class ContinuousRefreshController:
             logger.debug("avoidance probe skipped: no runtime-stream subscriber")
             return False
 
-        probed[domain.lower()] = now.isoformat()
-        state["probed_avoidance_domains"] = probed
-        if axis:
-            probed_axes[axis] = now.isoformat()
-        state["probed_avoidance_axes"] = probed_axes
-        self.memory_manager.save_discovery_runtime_state(state)
+        delivered_at = now.isoformat()
+
+        def _record_avoidance_probe(runtime_state: dict[str, object]) -> None:
+            latest_probed = _string_state_map(runtime_state.get("probed_avoidance_domains"))
+            latest_probed[domain.lower()] = delivered_at
+            runtime_state["probed_avoidance_domains"] = latest_probed
+            latest_axes = _string_state_map(runtime_state.get("probed_avoidance_axes"))
+            if axis:
+                latest_axes[axis] = delivered_at
+            runtime_state["probed_avoidance_axes"] = latest_axes
+
+        self._update_discovery_runtime_state(_record_avoidance_probe)
         return True
 
     async def _publish_probe_if_available(self) -> bool:
@@ -1967,9 +2019,15 @@ class ContinuousRefreshController:
             delivered = await publish()
             if not delivered:
                 continue
-            latest_state = self.memory_manager.load_discovery_runtime_state()
-            latest_state["last_probe_kind"] = kind
-            self.memory_manager.save_discovery_runtime_state(latest_state)
+
+            def _record_last_probe_kind(
+                runtime_state: dict[str, object],
+                *,
+                probe_kind: str = kind,
+            ) -> None:
+                runtime_state["last_probe_kind"] = probe_kind
+
+            self._update_discovery_runtime_state(_record_last_probe_kind)
             return True
         return False
 

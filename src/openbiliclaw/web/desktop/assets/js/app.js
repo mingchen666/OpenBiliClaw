@@ -1936,7 +1936,14 @@
 
     function speculativeHtml(items, options = {}) {
       const isAvoidance = options.kind === "avoidance";
-      const list = asArray(items);
+      const probeType = isAvoidance ? "avoidance.probe" : "interest.probe";
+      const list = asArray(items).filter((item) => {
+        if (typeof item !== "object") return !state.handledProbeKeys.has(probeKey(probeType, item));
+        const domain = item.domain || item.name || item.title;
+        if (!domain || state.handledProbeKeys.has(probeKey(probeType, domain))) return false;
+        const status = String(item.status || "active").trim().toLowerCase();
+        return status === "active" || status === "pending";
+      });
       if (!list.length) return `<p class="video-meta">${isAvoidance ? "阿B 暂时没有待确认的避雷方向。" : "阿B 还没有正在试探的新方向。"}</p>`;
       const statusLabels = { active: "待确认", pending: "待观察", confirmed: "已确认", deprecated: "已弃", rejected: "已排除" };
       const fallbackTitle = isAvoidance ? "猜测避雷" : "猜测兴趣";
@@ -2325,11 +2332,15 @@
     }
 
     function probeKey(type, domain) {
-      return `${messageType({ type })}:${String(domain || "")}`;
+      const normalizedDomain = String(domain || "").trim().toLowerCase();
+      return normalizedDomain ? `${messageType({ type })}:${normalizedDomain}` : "";
     }
 
     function messageKey(msg) {
       const type = messageType(msg);
+      if (type === "interest.probe" || type === "avoidance.probe") {
+        return probeKey(type, msg?.domain || msg?.title);
+      }
       return `${type}:${msg?.bvid || msg?.domain || msg?.title || msg?.reason || ""}`;
     }
 
@@ -2353,6 +2364,9 @@
       const domain = item.domain || item.name || item.title;
       if (!domain) return null;
       const probeType = type === "avoidance.probe" || item.kind === "avoidance" ? "avoidance.probe" : "interest.probe";
+      if (state.handledProbeKeys.has(probeKey(probeType, domain))) return null;
+      const status = String(item.status || "active").trim().toLowerCase();
+      if (status !== "active" && status !== "pending") return null;
       return {
         type: probeType,
         domain: String(domain),
@@ -2399,22 +2413,23 @@
       if (speculations == null || speculations === "") return;
       const normalizedType = messageType({ type });
       const items = asArray(speculations);
-      const active = items.filter((item) => item && item.domain && (!item.status || item.status === "active"));
-      const activeDomains = new Set(active.map((item) => String(item.domain)));
+      const active = items.filter((item) => item && item.domain && (!item.status || item.status === "active") && !state.handledProbeKeys.has(probeKey(normalizedType, item.domain)));
+      const activeKeys = new Set(active.map((item) => probeKey(normalizedType, item.domain)));
       const preserveCurrentProbeList = isMessagesDrawerOpen();
       state.messages = state.messages.filter((msg) => {
         if (messageType(msg) !== normalizedType) return true;
         const domain = String(msg.domain || "");
         if (!domain || state.handledProbeKeys.has(probeKey(normalizedType, domain))) return false;
         if (state.resolvingMessageKeys.has(messageKey(msg))) return true;
-        return preserveCurrentProbeList || activeDomains.has(domain);
+        return preserveCurrentProbeList || activeKeys.has(probeKey(normalizedType, domain));
       });
-      const existing = new Set(state.messages.filter((msg) => messageType(msg) === normalizedType).map((msg) => String(msg.domain || "")));
+      const existing = new Set(state.messages.filter((msg) => messageType(msg) === normalizedType).map((msg) => probeKey(normalizedType, msg.domain)));
       for (const item of active) {
         const domain = String(item.domain);
-        if (state.handledProbeKeys.has(probeKey(normalizedType, domain)) || existing.has(domain)) continue;
+        const key = probeKey(normalizedType, domain);
+        if (!key || state.handledProbeKeys.has(key) || existing.has(key)) continue;
         state.messages.push(normalizeMessageItem({ ...item, type: normalizedType }));
-        existing.add(domain);
+        existing.add(key);
       }
       syncMessageCount();
     }
@@ -2518,10 +2533,23 @@
       el.classList.add("is-resolving");
       state.resolvingMessageKeys.add(key);
       actions?.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      const probeType = messageType(msg);
+      const domain = msg.domain || "";
+      const handledKey = probeKey(probeType, domain);
+      if (handledKey) state.handledProbeKeys.add(handledKey);
       try {
-        const isAvoidance = messageType(msg) === "avoidance.probe";
+        const isAvoidance = probeType === "avoidance.probe";
         const endpoint = isAvoidance ? ENDPOINTS.avoidanceProbeRespond : ENDPOINTS.interestProbeRespond;
-        await requestJson(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domain: msg.domain, response, message: "" }) });
+        const apiResp = await requestJson(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domain: msg.domain, response, message: "" }) });
+        if (apiResp && apiResp.ok === false) {
+          state.resolvingMessageKeys.delete(key);
+          state.messages = state.messages.filter((item) => messageKey(item) !== key);
+          if (state.messageListSnapshot) state.messageListSnapshot = state.messageListSnapshot.filter((item) => messageKey(item) !== key);
+          state.messageListDomLocked = false;
+          renderMessages();
+          void refreshProfile();
+          return;
+        }
         const result = isAvoidance
           ? response === "confirm" ? "已确认避雷方向，后续会减少类似内容。" : "已搁置，暂时不作为避雷方向。"
           : response === "confirm" ? "已确认，后续推荐会提高权重。" : "已搁置，后续会少试探这个方向。";
@@ -2539,7 +2567,6 @@
           collapseMessageItem(key, el, () => {
             state.resolvingMessageKeys.delete(key);
             state.resolvedMessageResults.delete(key);
-            if (msg.domain) state.handledProbeKeys.add(probeKey(messageType(msg), msg.domain));
             state.messages = state.messages.filter((item) => messageKey(item) !== key);
             if (state.messageListSnapshot) state.messageListSnapshot = state.messageListSnapshot.filter((item) => messageKey(item) !== key);
             state.messageListDomLocked = false;
@@ -2553,6 +2580,7 @@
         state.messageListDomLocked = false;
         el.classList.remove("is-resolving");
         el.style.minHeight = "";
+        if (handledKey) state.handledProbeKeys.delete(handledKey);
         actions?.querySelectorAll("button").forEach((button) => { button.disabled = false; });
         showToast(`确认反馈失败：${error.message || "后端不可用"}`);
       }
@@ -2570,19 +2598,27 @@
       const response = button.dataset.specResponse;
       if (!domain || !response) return;
       row.querySelectorAll("[data-spec-response]").forEach((btn) => { btn.disabled = true; });
+      const type = button.dataset.specType || "interest.probe";
+      const key = probeKey(type, domain);
+      if (key) state.handledProbeKeys.add(key);
       try {
-        const type = button.dataset.specType || "interest.probe";
         const isAvoidance = isAvoidanceProbe(type);
         const endpoint = isAvoidance ? ENDPOINTS.avoidanceProbeRespond : ENDPOINTS.interestProbeRespond;
         const payload = { domain, response, message: "" };
         if (!isAvoidance) payload.surface = "profile";
-        await requestJson(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        const apiResp = await requestJson(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        if (apiResp && apiResp.ok === false) {
+          row.remove();
+          state.messages = state.messages.filter((msg) => messageKey(msg) !== key);
+          if (state.messageListSnapshot) state.messageListSnapshot = state.messageListSnapshot.filter((msg) => messageKey(msg) !== key);
+          renderMessages();
+          void refreshProfile();
+          return;
+        }
         const result = isAvoidance
           ? (response === "confirm" ? `好，「${escapeHtml(domain)}」会作为避雷方向处理。` : `好，「${escapeHtml(domain)}」不记成避雷。`)
           : (response === "confirm" ? `好，「${escapeHtml(domain)}」记住了。` : `好，「${escapeHtml(domain)}」先不看了。`);
         row.innerHTML = `<p class="spec-result">${result}</p>`;
-        const key = probeKey(type, domain);
-        state.handledProbeKeys.add(key);
         state.messages = state.messages.filter((msg) => messageKey(msg) !== key);
         if (state.messageListSnapshot) state.messageListSnapshot = state.messageListSnapshot.filter((msg) => messageKey(msg) !== key);
         renderMessages();
@@ -2591,6 +2627,7 @@
           : response === "confirm" ? "已确认这个猜测兴趣" : "已排除这个猜测兴趣");
         setTimeout(() => { void refreshProfile(); }, 1200);
       } catch (error) {
+        if (key) state.handledProbeKeys.delete(key);
         row.querySelectorAll("[data-spec-response]").forEach((btn) => { btn.disabled = false; });
         showToast(`确认反馈失败：${error.message || "后端不可用"}`);
       }
@@ -4028,6 +4065,10 @@
       const text = input?.value?.trim() || "";
       if (!text) return;
       input.value = "";
+      if (state.messageChatDomain && (state.messageChatScope === "probe" || state.messageChatScope === "avoidance_probe")) {
+        const probeType = state.messageChatScope === "avoidance_probe" ? "avoidance.probe" : "interest.probe";
+        state.handledProbeKeys.add(probeKey(probeType, state.messageChatDomain));
+      }
       sendChat(text, {
         contextPrefix: state.messageChatPrompt,
         scope: state.messageChatScope,

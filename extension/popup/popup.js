@@ -1,4 +1,5 @@
 import {
+  buildStaleProbeResponseState,
   buildImageProxyPath,
   getActivityCardState,
   buildFeedbackPayload,
@@ -24,8 +25,12 @@ import {
   mergeRuntimeStatusEvent,
   mergeDelightCandidate,
   normalizeActivityFeed,
+  normalizeProbeType,
   normalizeRuntimeStatus,
   normalizeProfileSummary,
+  probeMessageKey,
+  shouldDisplayProbeFromWebSocket,
+  shouldHydrateProbe,
   shouldAutoLoadRecommendations,
   shouldFetchProfileSummary,
   shouldSubmitChatOnEnter,
@@ -143,6 +148,7 @@ const state = {
   refreshStatusMessage: "",
   pendingProbe: null,
   pendingAvoidanceProbe: null,
+  handledProbeKeys: new Set(),
   messages: [],
 };
 
@@ -1230,10 +1236,6 @@ async function runScheduledActivityFeedRefresh() {
   }
 }
 
-function normalizeProbeType(type) {
-  return type === "avoidance.probe" ? "avoidance.probe" : "interest.probe";
-}
-
 function isAvoidanceProbeType(type) {
   return normalizeProbeType(type) === "avoidance.probe";
 }
@@ -1243,14 +1245,43 @@ function isChallengeProbe(probe) {
   return Boolean(probe?.challenge) || mode === "lateral" || mode === "bridge" || mode === "wildcard";
 }
 
-function probeMessageKey(type, domain) {
-  return `${normalizeProbeType(type)}:${String(domain || "")}`;
+function rememberHandledProbe(domain, type = "interest.probe") {
+  const key = probeMessageKey(type, domain);
+  if (key) {
+    state.handledProbeKeys.add(key);
+  }
+  return key;
+}
+
+function forgetHandledProbe(domain, type = "interest.probe") {
+  const key = probeMessageKey(type, domain);
+  if (key) {
+    state.handledProbeKeys.delete(key);
+  }
+}
+
+function applyStaleProbeResponse(domain, type = "interest.probe") {
+  const nextState = buildStaleProbeResponseState({
+    messages: state.messages,
+    pendingProbe: state.pendingProbe,
+    pendingAvoidanceProbe: state.pendingAvoidanceProbe,
+    domain,
+    type,
+  });
+  if (nextState.handledKey) {
+    state.handledProbeKeys.add(nextState.handledKey);
+  }
+  state.messages = nextState.messages;
+  state.pendingProbe = nextState.pendingProbe;
+  state.pendingAvoidanceProbe = nextState.pendingAvoidanceProbe;
+  updateMessageBadge();
 }
 
 function addProbeMessage(event, type = event?.type) {
   if (!event?.domain) return;
   const normalizedType = normalizeProbeType(type);
   const key = probeMessageKey(normalizedType, event.domain);
+  if (state.handledProbeKeys.has(key)) return;
   if (state.messages.some((m) => probeMessageKey(m?.type, m?.domain) === key)) return;
   state.messages.push({ ...event, type: normalizedType });
   updateMessageBadge();
@@ -1308,12 +1339,18 @@ function connectRuntimeStream() {
         void loadProfileSummary({ force: true });
       }
       // Probe events: add to messages inbox
-      if (event.type === "interest.probe" && event.domain) {
+      if (
+        event.type === "interest.probe" &&
+        shouldDisplayProbeFromWebSocket(event, "interest.probe", state.handledProbeKeys)
+      ) {
         state.pendingProbe = event;
         addProbeMessage(event, "interest.probe");
         renderProbeCard();
       }
-      if (event.type === "avoidance.probe" && event.domain) {
+      if (
+        event.type === "avoidance.probe" &&
+        shouldDisplayProbeFromWebSocket(event, "avoidance.probe", state.handledProbeKeys)
+      ) {
         state.pendingAvoidanceProbe = event;
         addProbeMessage(event, "avoidance.probe");
         void loadProfileSummary({ force: true });
@@ -1558,8 +1595,12 @@ function renderSpeculativeInterests(container, items, { kind = "interest" } = {}
     return;
   }
   const isAvoidance = kind === "avoidance";
+  const probeType = isAvoidance ? "avoidance.probe" : "interest.probe";
+  const visibleItems = Array.isArray(items)
+    ? items.filter((item) => shouldHydrateProbe(item, probeType, state.handledProbeKeys))
+    : [];
   container.replaceChildren();
-  if (!items || items.length === 0) {
+  if (visibleItems.length === 0) {
     const fallback = document.createElement("p");
     fallback.className = "is-fallback";
     fallback.textContent = isAvoidance ? "暂时没有待确认避雷方向。" : "暂时没有在试探的方向，过一阵会有的。";
@@ -1573,7 +1614,7 @@ function renderSpeculativeInterests(container, items, { kind = "interest" } = {}
     deprecated: "已弃",
     rejected: "已排除",
   };
-  for (const item of items) {
+  for (const item of visibleItems) {
     const row = document.createElement("div");
     row.className = `speculative-item is-status-${item.status || "active"}`;
     if (item.status) {
@@ -1677,6 +1718,7 @@ function renderSpeculativeInterests(container, items, { kind = "interest" } = {}
 async function handleSpecResponse(domain, responseType, rowEl, type = "interest.probe") {
   if (!domain) return;
   const isAvoidance = isAvoidanceProbeType(type);
+  rememberHandledProbe(domain, type);
   // Disable buttons immediately so double-click can't fire twice.
   if (rowEl instanceof HTMLElement) {
     rowEl.querySelectorAll(".probe-btn").forEach((b) => {
@@ -1685,7 +1727,15 @@ async function handleSpecResponse(domain, responseType, rowEl, type = "interest.
   }
   try {
     const respond = isAvoidance ? respondToAvoidanceProbe : respondToInterestProbe;
-    await respond(domain, responseType);
+    const apiResp = await respond(domain, responseType);
+    if (apiResp && apiResp.ok === false) {
+      if (rowEl instanceof HTMLElement) {
+        rowEl.remove();
+      }
+      applyStaleProbeResponse(domain, type);
+      await loadProfileSummary({ force: true });
+      return;
+    }
     if (rowEl instanceof HTMLElement) {
       rowEl.replaceChildren();
       const msg = document.createElement("p");
@@ -1709,6 +1759,7 @@ async function handleSpecResponse(domain, responseType, rowEl, type = "interest.
     }, 2200);
   } catch (err) {
     console.error("spec response failed:", err);
+    forgetHandledProbe(domain, type);
     if (rowEl instanceof HTMLElement) {
       rowEl.querySelectorAll(".probe-btn").forEach((b) => {
         if (b instanceof HTMLButtonElement) b.disabled = false;
@@ -1800,8 +1851,17 @@ async function handleProbeResponse(responseType) {
     return;
   }
 
+  rememberHandledProbe(domain, "interest.probe");
   try {
-    await respondToInterestProbe(domain, responseType);
+    const apiResp = await respondToInterestProbe(domain, responseType);
+    if (apiResp && apiResp.ok === false) {
+      if (probeCard) {
+        probeCard.remove();
+      }
+      applyStaleProbeResponse(domain, "interest.probe");
+      await loadProfileSummary({ force: true });
+      return;
+    }
 
     // Show feedback
     if (probeCard) {
@@ -1827,6 +1887,7 @@ async function handleProbeResponse(responseType) {
     }, 2700);
   } catch (err) {
     console.error("Failed to respond to probe:", err);
+    forgetHandledProbe(domain, "interest.probe");
   }
 }
 
@@ -2511,6 +2572,7 @@ async function sendInlineChat(itemEl, domain, input, sendBtn, type = "interest.p
 
   sendBtn.disabled = true;
   const turnId = createClientTurnId(isAvoidance ? "avoidance_probe" : "probe");
+  rememberHandledProbe(domain, type);
 
   // Show a thinking placeholder so the user knows we\u2019re waiting
   // on the LLM. The composer\u2019s send button alone going gray
@@ -2562,6 +2624,7 @@ async function sendInlineChat(itemEl, domain, input, sendBtn, type = "interest.p
     }
   } catch (err) {
     console.error("Inline chat failed:", err);
+    forgetHandledProbe(domain, type);
     thinking.remove();
     sendBtn.disabled = false;
     // Show error hint inline
@@ -2585,6 +2648,7 @@ function dismissMessage(domain, type = "") {
 
 async function handleMessageResponse(domain, responseType, type = "interest.probe") {
   const isAvoidance = isAvoidanceProbeType(type);
+  rememberHandledProbe(domain, type);
   try {
     const respond = isAvoidance ? respondToAvoidanceProbe : respondToInterestProbe;
     const apiResp = await respond(domain, responseType);
@@ -2592,22 +2656,19 @@ async function handleMessageResponse(domain, responseType, type = "interest.prob
     const item = elements.messagesList?.querySelector(`[data-domain="${CSS.escape(domain)}"][data-type="${CSS.escape(normalizeProbeType(type))}"]`);
     // ok=false means the backend no longer recognises this domain
     // (typical: probe rotated out by TTL or a fresh force_tick while
-    // the popup sat open with a stale inbox). Tell the user, then
-    // force-refetch and re-render so the panel matches reality.
+    // the popup sat open with a stale inbox). Remove it locally and
+    // force-refetch so the panel matches reality without showing a
+    // misleading success state.
     if (apiResp && apiResp.ok === false) {
       if (item) {
-        item.replaceChildren();
-        const stale = document.createElement("p");
-        stale.className = "message-result";
-        stale.textContent = "\u8FD9\u6761\u5DF2\u7ECF\u8FC7\u671F\u4E86\uFF0C\u6B63\u5728\u5237\u65B0\u2026";
-        item.append(stale);
+        item.remove();
       }
+      applyStaleProbeResponse(domain, type);
       try {
         await loadProfileSummary({ force: true });
       } catch {
         /* fall through */
       }
-      removeMessageFromState(domain, type);
       renderMessagesList();
       return;
     }
@@ -2636,6 +2697,7 @@ async function handleMessageResponse(domain, responseType, type = "interest.prob
     }, 1800);
   } catch (err) {
     console.error("Failed to respond to message:", err);
+    forgetHandledProbe(domain, type);
   }
 }
 
@@ -5072,6 +5134,9 @@ function hydrateInboxFromProfile(profile) {
 function hydrateInboxFromSpeculations(speculations, type = "interest.probe") {
   if (!Array.isArray(speculations)) return;
   const normalizedType = normalizeProbeType(type);
+  const activeItems = speculations.filter((item) =>
+    shouldHydrateProbe(item, normalizedType, state.handledProbeKeys),
+  );
   // Speculator regenerates probes on a runtime cycle; older actives may
   // have rotated to cooldown.  We must REPLACE the interest.probe slice
   // of state.messages with the current active set, otherwise the inbox
@@ -5079,28 +5144,26 @@ function hydrateInboxFromSpeculations(speculations, type = "interest.probe") {
   // what the profile section shows.
   // Delight messages are preserved untouched — they live on a separate
   // lifecycle (delight/pending endpoint).
-  const activeDomains = new Set(
-    speculations
-      .filter((s) => s && s.domain && (!s.status || s.status === "active"))
-      .map((s) => s.domain),
+  const activeKeys = new Set(
+    activeItems.map((item) => probeMessageKey(normalizedType, item.domain)),
   );
   // Drop probe entries of the same type no longer in the active set.
   state.messages = state.messages.filter((m) => {
     const itemType = normalizeProbeType(m?.type);
     if (itemType !== normalizedType) return true;
-    return m.domain && activeDomains.has(m.domain);
+    return activeKeys.has(probeMessageKey(itemType, m?.domain));
   });
   // Add any current active probes not yet in state.messages.
-  const existingDomains = new Set(
+  const existingKeys = new Set(
     state.messages
       .filter((m) => normalizeProbeType(m?.type) === normalizedType && m?.domain)
-      .map((m) => m.domain),
+      .map((m) => probeMessageKey(normalizedType, m.domain)),
   );
-  for (const item of speculations) {
-    if (!item || (item.status && item.status !== "active") || !item.domain) continue;
-    if (existingDomains.has(item.domain)) {
+  for (const item of activeItems) {
+    const itemKey = probeMessageKey(normalizedType, item.domain);
+    if (existingKeys.has(itemKey)) {
       const existing = state.messages.find(
-        (m) => normalizeProbeType(m?.type) === normalizedType && m?.domain === item.domain,
+        (m) => probeMessageKey(m?.type, m?.domain) === itemKey,
       );
       if (existing) {
         existing.probe_mode = item.probe_mode || "";
@@ -5116,7 +5179,7 @@ function hydrateInboxFromSpeculations(speculations, type = "interest.probe") {
       probe_mode: item.probe_mode || "",
       challenge: Boolean(item.challenge),
     });
-    existingDomains.add(item.domain);
+    existingKeys.add(itemKey);
   }
   updateMessageBadge();
 }

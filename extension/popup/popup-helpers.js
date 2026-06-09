@@ -8,6 +8,72 @@ function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+export function normalizeProbeType(type) {
+  return normalizeText(type) === "avoidance.probe" ? "avoidance.probe" : "interest.probe";
+}
+
+export function probeMessageKey(type, domain) {
+  const normalizedDomain = normalizeText(domain).toLowerCase();
+  if (!normalizedDomain) {
+    return "";
+  }
+  return `${normalizeProbeType(type)}:${normalizedDomain}`;
+}
+
+function hasProbeKey(handledProbeKeys, key) {
+  return Boolean(key && handledProbeKeys && typeof handledProbeKeys.has === "function" && handledProbeKeys.has(key));
+}
+
+export function shouldHydrateProbe(item, type = "interest.probe", handledProbeKeys = new Set()) {
+  const domain = normalizeText(item?.domain);
+  if (!domain) {
+    return false;
+  }
+  const status = normalizeText(item?.status).toLowerCase() || "active";
+  if (status !== "active") {
+    return false;
+  }
+  return !hasProbeKey(handledProbeKeys, probeMessageKey(type, domain));
+}
+
+export function shouldDisplayProbeFromWebSocket(
+  event,
+  type = event?.type || "interest.probe",
+  handledProbeKeys = new Set(),
+) {
+  return shouldHydrateProbe(
+    { domain: event?.domain, status: "active" },
+    normalizeProbeType(type),
+    handledProbeKeys,
+  );
+}
+
+export function buildStaleProbeResponseState({
+  messages = [],
+  pendingProbe = null,
+  pendingAvoidanceProbe = null,
+  domain = "",
+  type = "interest.probe",
+} = {}) {
+  const normalizedType = normalizeProbeType(type);
+  const handledKey = probeMessageKey(normalizedType, domain);
+  const nextMessages = Array.isArray(messages)
+    ? messages.filter((message) => probeMessageKey(message?.type, message?.domain) !== handledKey)
+    : [];
+  return {
+    handledKey,
+    messages: nextMessages,
+    pendingProbe:
+      normalizedType === "interest.probe" && probeMessageKey("interest.probe", pendingProbe?.domain) === handledKey
+        ? null
+        : pendingProbe,
+    pendingAvoidanceProbe:
+      normalizedType === "avoidance.probe" && probeMessageKey("avoidance.probe", pendingAvoidanceProbe?.domain) === handledKey
+        ? null
+        : pendingAvoidanceProbe,
+  };
+}
+
 function normalizeCoverUrl(value) {
   const text = normalizeText(value);
   if (!text) {

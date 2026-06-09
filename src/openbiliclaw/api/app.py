@@ -12,7 +12,6 @@ import socket
 import subprocess
 import time
 import uuid
-from collections.abc import Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote
@@ -2915,10 +2914,7 @@ def create_app(
 
         nonlocal auto_replenishment_started_at, auto_replenishment_task
         now = time.monotonic()
-        if (
-            auto_replenishment_task is not None
-            and not auto_replenishment_task.done()
-        ):
+        if auto_replenishment_task is not None and not auto_replenishment_task.done():
             logger.debug("Pool low - automatic replenishment already running; skipping")
             return
         if now - auto_replenishment_started_at < _AUTO_REPLENISH_DEBOUNCE_SECONDS:
@@ -3190,9 +3186,13 @@ def create_app(
         # trigger.
         memory_manager = getattr(ctx.runtime_controller, "memory_manager", None)
         if memory_manager is not None:
-            state = memory_manager.load_discovery_runtime_state()
-            state.pop("last_delight_notification_at", None)
-            memory_manager.save_discovery_runtime_state(state)
+            update_state = getattr(memory_manager, "update_discovery_runtime_state", None)
+            if callable(update_state):
+                update_state(lambda state: state.pop("last_delight_notification_at", None))
+            else:
+                state = memory_manager.load_discovery_runtime_state()
+                state.pop("last_delight_notification_at", None)
+                memory_manager.save_discovery_runtime_state(state)
         return {"ok": True, "pushed_count": len(pushed), "bvids": pushed}
 
     @app.get("/api/delight/pending", response_model=PendingDelightResponse)
@@ -3577,10 +3577,10 @@ def create_app(
             memory_manager = getattr(ctx.runtime_controller, "memory_manager", None)
         load_state = getattr(memory_manager, "load_discovery_runtime_state", None)
         save_state = getattr(memory_manager, "save_discovery_runtime_state", None)
-        if not callable(load_state) or not callable(save_state):
+        update_state = getattr(memory_manager, "update_discovery_runtime_state", None)
+        if not callable(update_state) and (not callable(load_state) or not callable(save_state)):
             return
         try:
-            state = load_state()
             if metadata is not None:
                 entry = dict(metadata)
             elif metadata_fn is not None:
@@ -3597,11 +3597,21 @@ def create_app(
                 entry["classifier"] = classifier
             if resulting_action:
                 entry["resulting_action"] = resulting_action
-            state[state_key] = append_probe_feedback_history(
-                state.get(state_key, []),
-                entry,
-            )
-            save_state(state)
+
+            def _mutate(state: dict[str, object]) -> None:
+                state[state_key] = append_probe_feedback_history(
+                    state.get(state_key, []),
+                    entry,
+                )
+
+            if callable(update_state):
+                update_state(_mutate)
+            else:
+                load_state_fn = cast("Callable[[], dict[str, object]]", load_state)
+                save_state_fn = cast("Callable[[dict[str, object]], None]", save_state)
+                state = load_state_fn()
+                _mutate(state)
+                save_state_fn(state)
         except Exception:
             logger.exception("Failed to record probe feedback history")
 
@@ -3806,24 +3816,41 @@ def create_app(
         memory_manager = getattr(ctx, "memory_manager", None)
         load_state = getattr(memory_manager, "load_discovery_runtime_state", None)
         save_state = getattr(memory_manager, "save_discovery_runtime_state", None)
-        if not callable(load_state) or not callable(save_state):
+        update_state = getattr(memory_manager, "update_discovery_runtime_state", None)
+        if not callable(update_state) and (not callable(load_state) or not callable(save_state)):
             return
         try:
-            state = load_state()
-            if not isinstance(state, dict):
-                state = {}
             now = datetime.now(UTC)
-            buffer_state = record_buffer_event(
-                state.get("short_term_exploration_buffer", {}),
-                domain=clean_domain,
-                source_event=source_event,
-                specifics=specifics or [],
-                evidence_id=evidence_id,
-                now=now,
-            )
-            promoted, buffer_state = pop_promotable_buffer_entries(buffer_state, now=now)
-            state["short_term_exploration_buffer"] = buffer_state
-            save_state(state)
+
+            promoted: list[dict[str, object]] = []
+
+            def _mutate(state: dict[str, object]) -> None:
+                nonlocal promoted
+                raw_buffer_state = state.get("short_term_exploration_buffer", {})
+                existing_buffer_state = (
+                    raw_buffer_state if isinstance(raw_buffer_state, dict) else {}
+                )
+                buffer_state = record_buffer_event(
+                    existing_buffer_state,
+                    domain=clean_domain,
+                    source_event=source_event,
+                    specifics=specifics or [],
+                    evidence_id=evidence_id,
+                    now=now,
+                )
+                promoted, buffer_state = pop_promotable_buffer_entries(buffer_state, now=now)
+                state["short_term_exploration_buffer"] = buffer_state
+
+            if callable(update_state):
+                update_state(_mutate)
+            else:
+                load_state_fn = cast("Callable[[], dict[str, object]]", load_state)
+                save_state_fn = cast("Callable[[dict[str, object]], None]", save_state)
+                state = load_state_fn()
+                if not isinstance(state, dict):
+                    state = {}
+                _mutate(state)
+                save_state_fn(state)
             _promote_exploration_buffer_entries(promoted)
         except Exception:
             logger.exception("Failed to record exploration buffer event")
@@ -4174,19 +4201,42 @@ def create_app(
                                         "probe_feedback_history",
                                         [],
                                     )
+
+                            def _load_feedback_history() -> object:
+                                if not callable(load_runtime_state):
+                                    return []
+                                runtime_state = load_runtime_state()
+                                if not isinstance(runtime_state, dict):
+                                    return []
+                                return runtime_state.get("probe_feedback_history", [])
+
                             if asyncio.iscoroutinefunction(tick_fn):
                                 try:
                                     await tick_fn(
                                         profile,
                                         feedback_history=feedback_history,
+                                        feedback_history_loader=_load_feedback_history,
                                     )
                                 except TypeError:
-                                    await tick_fn(profile)
+                                    try:
+                                        await tick_fn(
+                                            profile,
+                                            feedback_history=feedback_history,
+                                        )
+                                    except TypeError:
+                                        await tick_fn(profile)
                             else:
                                 try:
-                                    tick_fn(profile, feedback_history=feedback_history)
+                                    tick_fn(
+                                        profile,
+                                        feedback_history=feedback_history,
+                                        feedback_history_loader=_load_feedback_history,
+                                    )
                                 except TypeError:
-                                    tick_fn(profile)
+                                    try:
+                                        tick_fn(profile, feedback_history=feedback_history)
+                                    except TypeError:
+                                        tick_fn(profile)
                         except Exception:
                             logger.exception("Background force_tick after confirm failed")
 
@@ -5026,8 +5076,14 @@ def create_app(
             # Idempotent: only write when content changes (avoid sqlite churn).
             if isinstance(existing, dict) and existing == self_info:
                 return
-            state["xhs_self_info"] = self_info
-            memory_manager.save_discovery_runtime_state(state)
+            update_state = getattr(memory_manager, "update_discovery_runtime_state", None)
+            if callable(update_state):
+                update_state(
+                    lambda runtime_state: runtime_state.update({"xhs_self_info": self_info})
+                )
+            else:
+                state["xhs_self_info"] = self_info
+                memory_manager.save_discovery_runtime_state(state)
             logger.info(
                 "xhs self_info persisted: user_id=%s nickname=%r",
                 self_info.get("user_id", ""),

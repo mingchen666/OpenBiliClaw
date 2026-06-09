@@ -623,6 +623,7 @@ class _FakeSpeculation:
         entry_load: str = "",
         probe_mode: str = "near",
         specifics: list[object] | None = None,
+        status: str = "active",
     ) -> None:
         self.domain = domain
         self.category = category
@@ -634,6 +635,7 @@ class _FakeSpeculation:
         self.entry_load = entry_load
         self.probe_mode = probe_mode
         self.specifics = specifics or []
+        self.status = status
 
 
 class _FakeSpeculator:
@@ -1667,6 +1669,48 @@ async def test_publish_interest_probe_skips_recent_axis_repeat() -> None:
     assert probe_events[0]["domain"] == "城市漫游"
 
 
+async def test_publish_interest_probe_skips_confirmed_or_rejected_items() -> None:
+    event_hub = _FakeEventHub()
+    memory = _FakeMemoryManager(
+        {
+            "probed_domains": {},
+            "probed_axes": {},
+            "probed_distance_bands": {},
+        }
+    )
+
+    class _SoulEngineWithSpeculator(_FakeSoulEngine):
+        def __init__(self) -> None:
+            self._speculator = _FakeSpeculator(
+                [
+                    _FakeSpeculation(
+                        domain="建筑美学",
+                        reason="handled",
+                        status="confirmed",
+                    ),
+                    _FakeSpeculation(
+                        domain="城市基础设施",
+                        reason="handled",
+                        status="rejected",
+                    ),
+                ]
+            )
+
+    controller = ContinuousRefreshController(
+        memory_manager=memory,
+        database=_FakeDatabase(events=[]),
+        soul_engine=_SoulEngineWithSpeculator(),
+        discovery_engine=_FakeDiscoveryEngine(),
+        recommendation_engine=_FakeRecommendationEngine(),
+        event_hub=event_hub,
+    )
+
+    delivered = await controller._publish_interest_probe_if_available()
+
+    assert delivered is False
+    assert [event for event in event_hub.events if event["type"] == "interest.probe"] == []
+
+
 async def test_publish_interest_probe_records_probed_distance_bands() -> None:
     event_hub = _FakeEventHub()
     memory = _FakeMemoryManager(
@@ -1801,6 +1845,47 @@ async def test_publish_avoidance_probe_skips_recent_axis_repeat() -> None:
     probe_events = [event for event in event_hub.events if event["type"] == "avoidance.probe"]
     assert len(probe_events) == 1
     assert probe_events[0]["domain"] == "浅层情绪争吵"
+
+
+async def test_publish_avoidance_probe_skips_confirmed_or_rejected_items() -> None:
+    event_hub = _FakeEventHub()
+    memory = _FakeMemoryManager(
+        {
+            "probed_avoidance_domains": {},
+            "probed_avoidance_axes": {},
+        }
+    )
+
+    class _SoulEngineWithAvoidanceSpeculator(_FakeSoulEngine):
+        def __init__(self) -> None:
+            self._avoidance_speculator = _FakeAvoidanceSpeculator(
+                [
+                    _FakeSpeculation(
+                        domain="标题党热点解读",
+                        reason="handled",
+                        status="confirmed",
+                    ),
+                    _FakeSpeculation(
+                        domain="浅层情绪争吵",
+                        reason="handled",
+                        status="rejected",
+                    ),
+                ]
+            )
+
+    controller = ContinuousRefreshController(
+        memory_manager=memory,
+        database=_FakeDatabase(events=[]),
+        soul_engine=_SoulEngineWithAvoidanceSpeculator(),
+        discovery_engine=_FakeDiscoveryEngine(),
+        recommendation_engine=_FakeRecommendationEngine(),
+        event_hub=event_hub,
+    )
+
+    delivered = await controller._publish_avoidance_probe_if_available()
+
+    assert delivered is False
+    assert [event for event in event_hub.events if event["type"] == "avoidance.probe"] == []
 
 
 async def test_publish_avoidance_probe_does_not_record_without_stream_subscriber() -> None:

@@ -6555,7 +6555,25 @@ def probe() -> None:
         ok = speculator.user_confirm_speculation(domain)
         if ok:
             # Trigger promotion
-            speculator.force_tick(asyncio.run(soul_engine.get_profile()))
+            memory = getattr(soul_engine, "_memory", None)
+            load_runtime_state = getattr(memory, "load_discovery_runtime_state", None)
+
+            def _load_feedback_history() -> object:
+                if not callable(load_runtime_state):
+                    return []
+                runtime_state = load_runtime_state()
+                if not isinstance(runtime_state, dict):
+                    return []
+                return runtime_state.get("probe_feedback_history", [])
+
+            profile = asyncio.run(soul_engine.get_profile())
+            asyncio.run(
+                speculator.force_tick(
+                    profile,
+                    feedback_history=_load_feedback_history(),
+                    feedback_history_loader=_load_feedback_history,
+                )
+            )
             console.print(f"  好，「{domain}」记住了，已转入正式兴趣。")
         else:
             console.print(f"  [yellow]未找到活跃的「{domain}」猜测。[/yellow]")

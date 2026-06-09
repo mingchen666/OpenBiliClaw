@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import {
+  buildStaleProbeResponseState,
   buildContentUrl,
   buildImageProxyPath,
   buildRecommendationClickPayload,
@@ -27,10 +28,14 @@ import {
   mergeDelightCandidate,
   normalizeCognitionUpdateCard,
   normalizeDelightCandidate,
+  normalizeProbeType,
   getRealtimePoolStatusSummary,
   getPoolStatusSummary,
   getPopupState,
+  probeMessageKey,
+  shouldDisplayProbeFromWebSocket,
   shouldSubmitChatOnEnter,
+  shouldHydrateProbe,
   getTabButtonState,
   mergeRuntimeStatusEvent,
   normalizeActivityFeed,
@@ -70,6 +75,80 @@ test("buildContentUrl and click payload keep YouTube items source-aware", () => 
     topic_label: "",
     up_name: "这位 UP 还没认出来",
   });
+});
+
+test("probeMessageKey normalizes type and domain", () => {
+  assert.equal(normalizeProbeType("avoidance.probe"), "avoidance.probe");
+  assert.equal(normalizeProbeType("unknown"), "interest.probe");
+  assert.equal(
+    probeMessageKey("avoidance.probe", "  MixedCase Domain  "),
+    "avoidance.probe:mixedcase domain",
+  );
+  assert.equal(probeMessageKey("interest.probe", "   "), "");
+});
+
+test("probe hydration skips locally handled and inactive probes", () => {
+  const handled = new Set([probeMessageKey("interest.probe", "建筑美学")]);
+
+  assert.equal(
+    shouldHydrateProbe({ domain: "建筑美学", status: "active" }, "interest.probe", handled),
+    false,
+  );
+  assert.equal(
+    shouldHydrateProbe({ domain: "建筑美学", status: "active" }, "avoidance.probe", handled),
+    true,
+  );
+  assert.equal(
+    shouldHydrateProbe({ domain: "城市基础设施", status: "confirmed" }, "interest.probe"),
+    false,
+  );
+  assert.equal(
+    shouldHydrateProbe({ domain: "城市基础设施" }, "interest.probe"),
+    true,
+  );
+});
+
+test("probe websocket display skips locally handled probes", () => {
+  const handled = new Set([probeMessageKey("avoidance.probe", "浅层热点复读")]);
+
+  assert.equal(
+    shouldDisplayProbeFromWebSocket(
+      { type: "avoidance.probe", domain: "浅层热点复读" },
+      "avoidance.probe",
+      handled,
+    ),
+    false,
+  );
+  assert.equal(
+    shouldDisplayProbeFromWebSocket(
+      { type: "interest.probe", domain: "浅层热点复读" },
+      "interest.probe",
+      handled,
+    ),
+    true,
+  );
+});
+
+test("buildStaleProbeResponseState removes only matching probe state", () => {
+  const result = buildStaleProbeResponseState({
+    domain: "建筑美学",
+    type: "interest.probe",
+    pendingProbe: { domain: "建筑美学" },
+    pendingAvoidanceProbe: { domain: "建筑美学" },
+    messages: [
+      { type: "interest.probe", domain: "建筑美学" },
+      { type: "avoidance.probe", domain: "建筑美学" },
+      { type: "interest.probe", domain: "城市基础设施" },
+    ],
+  });
+
+  assert.equal(result.handledKey, probeMessageKey("interest.probe", "建筑美学"));
+  assert.equal(result.pendingProbe, null);
+  assert.deepEqual(result.pendingAvoidanceProbe, { domain: "建筑美学" });
+  assert.deepEqual(result.messages, [
+    { type: "avoidance.probe", domain: "建筑美学" },
+    { type: "interest.probe", domain: "城市基础设施" },
+  ]);
 });
 
 test("normalizeRecommendation keeps title and up-name fallbacks but leaves copy empty", () => {

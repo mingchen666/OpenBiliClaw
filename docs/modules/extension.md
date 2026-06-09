@@ -16,8 +16,8 @@
 | 8.2 后端 API | ✅ | Python 侧 `/api/events`、`/api/health`、`/api/recommendations` 已可联调 |
 | 8.3 Side Panel | ✅ | 已切到 side panel 主入口，继续复用 `popup/` 页面承载推荐 / 稍后 / 收藏 / 画像 / 对话五个 tab；顶部功能区提供移动端二维码入口，按当前插件后端地址生成 `/m/` 扫码链接；460px 以下窄宽度会把 Web、二维码、消息、设置按钮换到品牌区下一行靠右排列，避免和标题 / 状态徽标重叠；如果当前后端地址仍是 `127.0.0.1` / `localhost`，会先读 `/api/health.lan_ip` 并用局域网 IP 生成二维码，提示为 info 状态；后端会优先返回 `192.168.x.x` / `10.x.x.x` / `172.16-31.x.x` 这类真实局域网地址，排除 `198.18.x.x` 等 VPN/TUN 地址；移动 Web 推荐页首屏先渲染 `/api/recommendations`，再异步补 runtime status / activity / delight，慢请求不会让页面无限停在 loading；聊天改走后端 durable turn，Chrome 丢弃或切 tab 后可恢复；惊喜推荐、兴趣猜测和避雷探针的内联聊天也会按 `scope=delight/probe/avoidance_probe` 恢复 pending/completed/failed turn；聊天 tab 激活时隐藏底部活动栏，聊天记录区独立滚动并占满上方空间，输入框固定在底部且会轮播想法、口味、自我描述、近期状态等多场景提示语 |
 | Runtime stream 合并刷新 | ✅ | 插件 side panel、桌面 Web 和移动 Web 对 `activity.added` / `profile_updated` 等运行时事件做 debounce 与 single-flight；`refresh.pool_updated` 只合并池子状态并刷新 header / pool chips，不再重拉推荐列表，避免覆盖用户已经 append 出来的历史卡片。 |
-| 兴趣挑战探针 UI | ✅ | `interest.probe` 和 `speculative_interests` 会保留后端的 `probe_mode` / `challenge` metadata；profile 页确认会向 `/api/interest-probes/respond` 传 `surface="profile"`，写回为 `profile_confirmed`，而 inbox / runtime probe 卡片确认保持默认 `probe_confirmed`。插件 side panel、移动 Web 和桌面 Web 会把普通 `near` 兴趣探针与 `lateral/bridge/wildcard` 挑战探针拆成不同样式和提示：普通兴趣强调继续探索，挑战探针提示“把口味往侧边推一点”，区别于避雷探针。 |
-| 避雷探针 UI | ✅ | popup inbox 支持 `avoidance.probe`，按钮文案为「确实不喜欢 / 不是 / 多聊聊」；画像页显示 `speculative_avoidances` 的待确认避雷方向，确认后通过 `/api/avoidance-probes/respond` 写回后端。插件 side panel、移动 Web 和桌面 Web 会用避雷专属样式和“少看这类 / 猜错点不是”提示，区别于正向兴趣试探。移动 Web 在任一探针按钮点击后会锁住同一卡片其它动作，避免一次 active 探针被连续提交 confirm + reject；消息收件箱空态不会重建 header，X 关闭入口保持可用。 |
+| 兴趣挑战探针 UI | ✅ | `interest.probe` 和 `speculative_interests` 会保留后端的 `probe_mode` / `challenge` metadata；profile 页确认会向 `/api/interest-probes/respond` 传 `surface="profile"`，写回为 `profile_confirmed`，而 inbox / runtime probe 卡片确认保持默认 `probe_confirmed`。插件 side panel、移动 Web 和桌面 Web 会把普通 `near` 兴趣探针与 `lateral/bridge/wildcard` 挑战探针拆成不同样式和提示：普通兴趣强调继续探索，挑战探针提示“把口味往侧边推一点”，区别于避雷探针。用户对同一 domain 做确认、拒绝或探针内聊后，三端会用 handled probe key 立即从 inbox、画像页和 runtime hydration 里隐藏该探针，避免后端旧快照/缓存再次把它展示出来。 |
+| 避雷探针 UI | ✅ | popup inbox 支持 `avoidance.probe`，按钮文案为「确实不喜欢 / 不是 / 多聊聊」；画像页显示 `speculative_avoidances` 的待确认避雷方向，确认后通过 `/api/avoidance-probes/respond` 写回后端。插件 side panel、移动 Web 和桌面 Web 会用避雷专属样式和“少看这类 / 猜错点不是”提示，区别于正向兴趣试探。移动 Web 在任一探针按钮点击后会锁住同一卡片其它动作，避免一次 active 探针被连续提交 confirm + reject；三端也会在本地记录 handled 避雷 key，使已处理 domain 不再从 profile summary、pending probes 或 runtime stream 重复水合；消息收件箱空态不会重建 header，X 关闭入口保持可用。 |
 | 封面图代理加载 | ✅ | side panel 的推荐卡片、惊喜推荐和消息封面会用当前配置的后端 origin 拼接 `/api/image-proxy?url=...`，不再直连平台 CDN，也不再设置 `referrerPolicy`。 |
 | 收藏夹 / 稍后再看 | ✅ | 推荐卡和 delight banner 都提供「时钟=稍后再看」「星星=收藏」两个互相独立的 SVG toggle（乐观 UI、失败回退、懒加载状态）；popup tab bar 已对齐移动 Web / 桌面 Web，提供独立「稍后」页（`viewWatchLater/watchLaterList`，`loadWatchLater` 拉 `/api/watch-later`）和「收藏」页（`viewFavorites/favoritesList`，`loadFavorites` 拉 `/api/favorites`），列表项展示 16:9 头图缩略图并支持打开 / 单条移除；封面 URL 会和推荐卡一样归一化后走 `/api/image-proxy`。插件 popup 侧保存状态统一由 `popup-saved-sync.js` 管理：同一 bvid 的推荐卡、惊喜横幅按钮、保存列表移除会同步更新，且用户刚点击后的状态不会被旧的懒加载查询覆盖。详见 [收藏夹 spec](../specs/favorites.md) 与 [稍后再看 spec](../specs/watch-later.md)。 |
 | 惊喜推荐正向保留 | ✅ | 插件 side panel、桌面 Web 和移动 Web 对惊喜推荐采用同一反馈语义：`喜欢 / 收藏 / 稍后再看 / 聊一聊 / 去看看` 保留当前卡片并更新状态，`不感兴趣 / 忽略 / 关闭` 才立即移出当前队列。 |
@@ -73,7 +73,7 @@ extension/
 │   ├── popup.js
 │   ├── popup-autostart-control.js
 │   ├── popup-saved-sync.js
-│   └── popup-helpers.js
+│   └── popup-helpers.js    # popup 纯函数：runtime 状态归一化、探针 key / stale 过滤等
 ├── src/
 │   ├── background/
 │   │   ├── buffer.ts
