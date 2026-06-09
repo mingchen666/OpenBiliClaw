@@ -1147,6 +1147,7 @@ def test_llm_and_embedding_fallback_defaults_are_disabled() -> None:
     assert config.llm.fallback_provider == ""
     assert config.llm.embedding.fallback_enabled is False
     assert config.llm.embedding.fallback_provider == ""
+    assert config.llm.embedding.output_dimensionality == 1024
 
 
 def test_save_config_round_trips_embedding_credentials(tmp_path: Path) -> None:
@@ -1159,6 +1160,7 @@ def test_save_config_round_trips_embedding_credentials(tmp_path: Path) -> None:
     config.llm.embedding.model = "text-embedding-3-small"
     config.llm.embedding.api_key = "sk-dedicated-embedding-xyz"
     config.llm.embedding.base_url = "https://embed.example.com/v1"
+    config.llm.embedding.output_dimensionality = 768
     config.llm.embedding.similarity_threshold = 0.91
     config.llm.embedding.fallback_enabled = True
     config.llm.embedding.fallback_provider = "openai_compatible"
@@ -1170,6 +1172,7 @@ def test_save_config_round_trips_embedding_credentials(tmp_path: Path) -> None:
     assert loaded.llm.embedding.model == "text-embedding-3-small"
     assert loaded.llm.embedding.api_key == "sk-dedicated-embedding-xyz"
     assert loaded.llm.embedding.base_url == "https://embed.example.com/v1"
+    assert loaded.llm.embedding.output_dimensionality == 768
     assert loaded.llm.embedding.similarity_threshold == 0.91
     assert loaded.llm.embedding.fallback_enabled is True
     assert loaded.llm.embedding.fallback_provider == "openai_compatible"
@@ -1204,6 +1207,7 @@ similarity_threshold = 0.88
     assert loaded.llm.embedding.provider == "ollama"
     assert loaded.llm.embedding.api_key == ""
     assert loaded.llm.embedding.base_url == ""
+    assert loaded.llm.embedding.output_dimensionality == 1024
     assert loaded.llm.embedding.similarity_threshold == 0.88
 
 

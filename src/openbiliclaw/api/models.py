@@ -783,6 +783,7 @@ class EmbeddingConfigOut(BaseModel):
     # v0.3.32+ embedding owns its own credentials; api_key is masked.
     api_key: str = ""
     base_url: str = ""
+    output_dimensionality: int = 1024
     similarity_threshold: float = 0.82
     fallback_enabled: bool = False
     fallback_provider: str = ""

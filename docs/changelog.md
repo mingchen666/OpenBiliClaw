@@ -4,6 +4,16 @@
 
 ---
 
+## v0.3.113: Embedding 维度独立配置（2026-06-10）
+
+Embedding 与 chat LLM 的配置边界进一步收紧：embedding 默认目标维度统一为 1024，并显式暴露到配置 API 与桌面 Web 设置页。
+
+- 新增 `[llm.embedding].output_dimensionality`，默认 `1024`，与本地 Ollama `bge-m3` 对齐；设为 `0` 时使用 provider 原生默认维度。Gemini embedding 会传 `output_dimensionality`，官方 OpenAI `text-embedding-3-*` 会传 `dimensions`，Ollama / OpenRouter / 泛 OpenAI-compatible 等未确认支持的后端不传伪参数。
+- `EmbeddingService` 的 L2 cache 迁移为 `(text_key, model)` 复合主键，并仅在 provider 确认支持目标维度时按 `model#dim=N` 签名读写，避免同一文本的不同维度向量互相覆盖，同时不把未生效的兼容后端伪装成指定维度。
+- 升级影响：既有 Gemini / 官方 OpenAI embedding 用户会从 provider 原生默认维度切到 1024 目标维度；项目当前只把向量持久化在 L2 `embedding_cache.db`，旧 L2 cache 不会被新签名复用，首次推荐/预热会按 1024 重新生成。若确实要继续使用 provider 原生维度，可把 `output_dimensionality` 设为 `0`。
+- `/api/config` 与桌面 Web 设置页新增「Embedding 维度」字段。切换 chat LLM provider / model 不会影响 embedding provider / model / 维度，embedding 继续由 `[llm.embedding]` 独立控制。
+- 修复 Gemini provider 的 timeout 单位：Google GenAI SDK 使用毫秒，配置里的秒级 timeout 现在会转换后再传入；该修复同时影响 Gemini chat 与 embedding 调用，避免请求被过早超时。
+
 ## v0.3.112 / extension v0.3.73: 探针反馈重复推送修复（2026-06-10）
 
 修复用户在安装包/常驻进程场景下点过兴趣探针或避雷探针后，旧探针仍可能从后台推送、画像页或消息缓存里重新出现的问题。

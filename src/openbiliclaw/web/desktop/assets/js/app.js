@@ -3462,6 +3462,7 @@
       setInput("embeddingModel", llm.embedding?.model);
       setInput("embeddingApiKey", llm.embedding?.api_key);
       setInput("embeddingBaseUrl", llm.embedding?.base_url);
+      setInput("embeddingOutputDimensionality", llm.embedding?.output_dimensionality ?? 1024);
       setInput("embeddingSimilarity", llm.embedding?.similarity_threshold);
       if (embeddingFallbackProvider) {
         setInput("embeddingFallbackModel", llm[embeddingFallbackProvider]?.model);
@@ -3802,6 +3803,7 @@
         fallback_enabled: Boolean(embeddingFallbackProvider),
         fallback_provider: embeddingFallbackProvider,
         model: getInput("embeddingModel"),
+        output_dimensionality: Math.max(0, getIntInput("embeddingOutputDimensionality", 1024)),
         similarity_threshold: getFloatInput("embeddingSimilarity", 0.82)
       };
       if (getInput("embeddingApiKey")) embedding.api_key = getInput("embeddingApiKey");

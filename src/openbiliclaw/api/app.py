@@ -6326,6 +6326,7 @@ def create_app(
                     model=cfg.llm.embedding.model,
                     api_key=_mask(cfg.llm.embedding.api_key),
                     base_url=cfg.llm.embedding.base_url,
+                    output_dimensionality=cfg.llm.embedding.output_dimensionality,
                     similarity_threshold=cfg.llm.embedding.similarity_threshold,
                     fallback_enabled=cfg.llm.embedding.fallback_enabled,
                     fallback_provider=cfg.llm.embedding.fallback_provider,
@@ -6619,6 +6620,17 @@ def create_app(
                     new_base_url = str(emb["base_url"])
                     if new_base_url.strip() or not cfg.llm.embedding.base_url.strip():
                         cfg.llm.embedding.base_url = new_base_url
+                if "output_dimensionality" in emb:
+                    try:
+                        cfg.llm.embedding.output_dimensionality = max(
+                            0,
+                            int(emb["output_dimensionality"] or 0),
+                        )
+                    except (TypeError, ValueError) as exc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="llm.embedding.output_dimensionality must be an integer",
+                        ) from exc
                 if "similarity_threshold" in emb:
                     cfg.llm.embedding.similarity_threshold = float(emb["similarity_threshold"])
                 if "fallback_enabled" in emb:

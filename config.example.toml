@@ -190,10 +190,13 @@ model = ""
 # v0.3.32+: dedicated embedding credentials. Leave empty to fall back to
 # [llm.<provider>].api_key / .base_url (back-compat — emits a one-time
 # WARNING; will be removed in a future release). Ollama doesn't need an
-# api_key. base_url is optional for Ollama (defaults to localhost) and
-# OpenAI (defaults to api.openai.com); Gemini SDK ignores it.
+# api_key. base_url is optional for Ollama (defaults to localhost), OpenAI
+# (defaults to api.openai.com), and Gemini (defaults to the official API).
 api_key = ""
 base_url = ""
+# Target embedding vector dimension. Default 1024 matches local Ollama bge-m3.
+# Set 0 only when you intentionally want the provider's native default.
+output_dimensionality = 1024
 # Cosine similarity threshold: topics above this are considered "same topic"
 similarity_threshold = 0.82
 # 默认关闭 embedding fallback；只有 fallback_provider 非空时才会尝试一个显式备选 provider。

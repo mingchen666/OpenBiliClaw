@@ -160,6 +160,38 @@ def test_put_config_round_trips_explicit_fallback_providers(monkeypatch, tmp_pat
     assert body["llm"]["embedding"]["fallback_provider"] == "ollama"
 
 
+def test_put_config_round_trips_embedding_output_dimensionality(monkeypatch, tmp_path) -> None:
+    client, _cfg, config_path = _make_client(monkeypatch, tmp_path, _base_config())
+
+    response = client.put(
+        "/api/config",
+        json={"llm": {"embedding": {"output_dimensionality": 768}}},
+    )
+
+    assert response.status_code == 200
+    assert load_config_from_path(config_path).llm.embedding.output_dimensionality == 768
+
+    get_response = client.get("/api/config")
+    assert get_response.status_code == 200
+    body = get_response.json()
+    assert body["llm"]["embedding"]["output_dimensionality"] == 768
+
+
+def test_put_config_rejects_invalid_embedding_output_dimensionality(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    client, _cfg, config_path = _make_client(monkeypatch, tmp_path, _base_config())
+
+    response = client.put(
+        "/api/config",
+        json={"llm": {"embedding": {"output_dimensionality": "wide"}}},
+    )
+
+    assert response.status_code == 400
+    assert load_config_from_path(config_path).llm.embedding.output_dimensionality == 1024
+
+
 def test_put_config_ignores_whitespace_only_chat_provider_api_key(monkeypatch, tmp_path) -> None:
     client, _cfg, config_path = _make_client(monkeypatch, tmp_path, _base_config())
 
