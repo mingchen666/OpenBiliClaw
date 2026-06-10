@@ -22,7 +22,7 @@
 | 兴趣探针投递保护 | ✅ | `interest.probe` 只有成功投递到 runtime stream 后才写入 `probed_domains` / `probed_axes` / `probed_distance_bands` 冷却状态；事件 payload 会带 `probe_mode` 与 `challenge`，前端离线时不会消耗 active probe。普通 `near` 探针与挑战探针使用独立 active 额度，运行时选择时仍统一仲裁。 |
 | 避雷探针投递与仲裁 | ✅ | `avoidance.probe` 与 `interest.probe` 共用 proactive push 循环；每轮最多投递一个 probe，并用 `last_probe_kind` 在正向/负向都有候选时轮流选择，避免探针频率翻倍。 |
 | 图片代理 API | ✅ | `/api/image-proxy` 为移动 Web 和浏览器插件代理白名单 CDN 封面图，逐跳校验 redirect，并在返回前完成类型和 10MB 大小校验；成功封面写入 `data/image-cache/`（小红书 token 归一化），并按「已消费且未保存」定期清理、保护无法重抓的封面。 |
-| 自动更新 | ✅ | `AutoUpdateService` 检查 backend git tag，支持 `/api/update-status`、`/api/runtime-status` 更新摘要、手动 check/apply、apply 锁、可信 remote / dirty worktree / fast-forward guard，并通过 runtime stream 推送后端更新事件。 |
+| 自动更新 | ✅ | `AutoUpdateService` 检查 backend git tag，支持 `/api/update-status`、`/api/runtime-status` 更新摘要、手动 check/apply、apply 锁、可信 remote / dirty worktree / fast-forward guard，并通过 runtime stream 推送后端更新事件。dirty worktree guard 豁免仅 `uv.lock` 的改动（发布 tag 带过期 lock 时 `uv sync` 必然改写它），apply 前会重置 `uv.lock` 再快进。`detect_install_mode()` 上报 `frozen / git / unsupported` 安装形态，桌面冻结包据此在前端禁用自动更新开关。 |
 | 开机自启动管理 | ✅ | `runtime.autostart` 提供 macOS LaunchAgent、Windows HKCU Run + `.pyw`、Linux XDG autostart 三套当前用户作用域 manager；`/api/autostart-status`、`/api/autostart/apply`、`openbiliclaw autostart` 和插件设置页共用 env / shadow guard 与方向化 enable/disable 事务。 |
 | Ollama 启动预检与生命周期 | ✅ | `runtime.ollama_supervisor` 统一提供 `ollama_required()`、endpoint 归一化、loopback 判定和 `_ollama_is_running()` / `_ollama_start_serve_background()`；`start` 仅在默认 `localhost:11434` 需要本机 Ollama 时尝试后台拉起，远端 / 自定义端口不强行 `serve`。托管启动会给子进程默认传入 `OLLAMA_KEEP_ALIVE=24h`（若用户已设置则保留用户值），减少 `bge-m3` / `llama-server` 在 UI 请求间隔中卸载再冷启动。`_ollama_start_serve_background()` 现在记录**亲手拉起**的 `Popen` 句柄（复用外部已运行实例时句柄留空），`stop_managed_ollama()` 据此在退出时停掉整棵进程树（Windows `taskkill /T`、类 Unix 进程组 `SIGTERM`），对外部托管的 Ollama 一律不动 —— 桌面托盘「退出」经此调用，clean quit 不再遗留孤儿 `ollama serve` / `llama-server` runner。 |
 | 账号同步 | ✅ | `AccountSyncService` 同步 B 站账号历史、收藏和关注等信号；历史按 `view_at + 同秒 bvid 集合` 增量导入，收藏 / 关注只把新增 ID 转成画像事件，避免重放旧信号。 |
@@ -46,10 +46,11 @@ status_code, apply_payload = await service.request_apply(tag="backend-v0.3.92")
 核心调用：
 
 - `check_now()`：立即检查 GitHub tags，只刷新后端更新状态，不自动应用。
-- `request_apply(tag="backend-vX.Y.Z")`：先检查 git repo、可信 `origin`、worktree clean、未 merge/rebase、目标 tag 存在且当前 HEAD 可 fast-forward，再返回 `202/applying` 并在后台执行 `git merge --ff-only <tag>`、依赖同步和 `os.execv` 重启。
+- `request_apply(tag="backend-vX.Y.Z")`：先检查 git repo、可信 `origin`、worktree clean（仅 `uv.lock` 改动豁免——发布 tag 携带过期 lock 时安装侧 `uv sync` 必然改写它，不能因此永久阻塞更新）、未 merge/rebase、目标 tag 存在且当前 HEAD 可 fast-forward，再返回 `202/applying` 并在后台执行 `git checkout -- uv.lock`、`git merge --ff-only <tag>`、依赖同步和 `os.execv` 重启。
 - `check_and_update_if_due()` / `check_and_update_now()`：供后台调度使用；只有 `scheduler.auto_update_enabled=true` 时才会定时自动应用。
-- `get_update_status()`：返回 `/api/update-status` 使用的 backend 状态对象。
-- `get_runtime_status()`：返回 `/api/runtime-status` 合并用的自动更新摘要，包含当前版本、最新远端版本、上次检查、错误和状态原因。
+- `detect_install_mode()`（模块级函数）：上报安装形态——`frozen`（PyInstaller 桌面包，结构上无法 git 自更新）、`git`（installer / agent / dev 克隆）、`unsupported`（其他）。
+- `get_update_status()`：返回 `/api/update-status` 使用的 backend 状态对象，含 `install_mode`。
+- `get_runtime_status()`：返回 `/api/runtime-status` 合并用的自动更新摘要，包含当前版本、最新远端版本、上次检查、错误、状态原因和 `install_mode`。
 
 ### ContinuousRefreshController
 
@@ -100,6 +101,7 @@ result = await controller.drain_discovery_candidates_once(batch_size=30)
 `GET /api/runtime-status` 会保留自动更新摘要字段，供插件和 Web 前端在统一 runtime 状态对象中读取：
 
 - `auto_update_enabled`：当前后台定时自动更新是否开启；关闭时仍允许手动检查和手动 apply。
+- `install_mode`：安装形态（`frozen` / `git` / `unsupported`）。桌面 Web 设置页在非 `git` 时禁用自动更新开关并提示用安装包升级。
 - `current_version`：本地后端版本。
 - `latest_remote_version`：最近一次检查得到的后端远端版本。
 - `last_update_check_at`：最近一次检查时间。
@@ -270,6 +272,7 @@ XHS / 抖音 / YouTube 的插件任务桥保留两层去重：
 - GitHub `/releases/latest` 当前由扩展 artifact 占用，不能代表后端源码版本；`AutoUpdateService._fetch_latest_version()` 直接查询 `/tags`，分页过滤 backend tag 后选择最高版本。
 - 默认忽略 prerelease；若只有更新的 `backend-vX.Y.Z-rc/beta/dev`，状态上报 `up_to_date` + `prerelease_ignored`。
 - 浏览器插件更新不由 `AutoUpdateService` 管理：Chrome Web Store / Edge Add-ons / AMO 版本交给浏览器原生更新，GitHub zip / sideload 用户按插件 release 文档手动下载和重新加载。
+- **版本 bump 必须重新 lock**：发布提交除 `pyproject.toml` / `openbiliclaw.__version__` 外必须同步运行 `uv lock`（或 `uv sync`）并提交 `uv.lock`。tag 携带过期 lock 时，安装侧首次 `uv sync` 会改写 `uv.lock` 把 worktree 弄脏，历史上曾让所有 git 安装的自动更新永久卡在 `dirty_worktree`。`tests/test_release_consistency.py` 断言三处版本一致；updater 守卫额外豁免仅 `uv.lock` 的脏改动作为存量安装兜底。
 
 这样可以避免后端 `0.3.64` 把 `extension-v0.3.24` 解析成 `(0,)` 并误报 "Already up-to-date"。
 
