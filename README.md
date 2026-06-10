@@ -192,7 +192,7 @@
 
 ## 最近更新
 
-最新版本：**v0.3.116 / extension v0.3.75: 惊喜推荐生命周期闭环（2026-06-10）**。完整变更详见 [docs/changelog.md](docs/changelog.md)。
+最新版本：**v0.3.117 / extension v0.3.76: SenseNova LLM 探活修复（2026-06-10）**。完整变更详见 [docs/changelog.md](docs/changelog.md)。
 
 - **点喜欢的惊喜不再消失** —— 喜欢过的惊喜推荐在重新打开后保留在队列里，并恢复「已喜欢」状态。
 - **浏览过即已读** —— 点「去看看」看过的惊喜下次不再重复出现；只是刷到没点开的会一直保留。
@@ -664,7 +664,7 @@ OpenBiliClaw/
 
 ## 📜 更新日志
 
-最新版本：**v0.3.116 / extension v0.3.75: 惊喜推荐生命周期闭环（2026-06-10）**。最近更新见上方摘要；完整历史见 [docs/changelog.md](docs/changelog.md)。插件包和桌面安装包见 [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases)，后端源码更新看 `backend-v*` tag。
+最新版本：**v0.3.117 / extension v0.3.76: SenseNova LLM 探活修复（2026-06-10）**。最近更新见上方摘要；完整历史见 [docs/changelog.md](docs/changelog.md)。插件包和桌面安装包见 [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases)，后端源码更新看 `backend-v*` tag。
 
 ## 🗺️ 后续规划
 

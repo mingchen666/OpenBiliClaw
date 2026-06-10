@@ -188,7 +188,7 @@ After starting the backend, open `http://127.0.0.1:8420/web` (or just `http://12
 
 ## Recent Updates
 
-Latest: **v0.3.116 / extension v0.3.75: surprise recommendation lifecycle (2026-06-10)**. Full changelog: [docs/changelog.md](docs/changelog.md).
+Latest: **v0.3.117 / extension v0.3.76: SenseNova LLM probe fix (2026-06-10)**. Full changelog: [docs/changelog.md](docs/changelog.md).
 
 - **Liked surprises no longer vanish** — a liked surprise recommendation stays in the queue after reopening, restored with its liked state.
 - **Browsed means read** — once you open a surprise via "去看看", it won't reappear next time; surprises you merely scrolled past stay queued.
@@ -652,7 +652,7 @@ OpenBiliClaw/
 
 ## 📜 Release History
 
-Latest: **v0.3.116 / extension v0.3.75: surprise recommendation lifecycle (2026-06-10)**. The recent updates section keeps the current release visible; full history lives in [docs/changelog.md](docs/changelog.md). Extension packages and desktop installers live on [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases); backend source updates use `backend-v*` tags.
+Latest: **v0.3.117 / extension v0.3.76: SenseNova LLM probe fix (2026-06-10)**. The recent updates section keeps the current release visible; full history lives in [docs/changelog.md](docs/changelog.md). Extension packages and desktop installers live on [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases); backend source updates use `backend-v*` tags.
 
 ## 🗺️ Roadmap
 

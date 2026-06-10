@@ -4,6 +4,14 @@
 
 ---
 
+## v0.3.117 / extension v0.3.76: SenseNova LLM 探活修复（2026-06-10）
+
+修复 SenseNova 等 reasoning-first OpenAI-compatible 模型在设置页测试与初始化检测里被小输出预算误判为空响应的问题，并发布同步安装包 / 插件包。
+
+- `LLMProvider.health_check()` 不再强制传入极小 `max_tokens`。初始化页 `/api/init-status` 与开始初始化前的 `chat_ready()` 复检都会走该入口，避免模型先产出 `message.reasoning`、尚未到 `message.content` 就被截断。
+- 设置页与插件的 `/api/config/probe-service` LLM 测试按钮不再传 `max_tokens=8`，保留 `temperature=0` 与 `reasoning_effort=""`，让可关闭 thinking 的 provider 仍轻量探测，同时兼容 SenseNova 这类 OpenAI-compatible reasoning-first 服务。
+- 后端包版本提升到 `v0.3.117`，浏览器插件版本提升到 `0.3.76`，准备发布 `backend-v0.3.117`、`desktop-v0.3.117` 与 `extension-v0.3.76`。
+
 ## v0.3.116 / extension v0.3.75: 惊喜推荐生命周期闭环（2026-06-10）
 
 惊喜推荐的完整生命周期梳理：正向反馈跨重灌保留、浏览过即已读、与普通推荐互斥去重，并用真实 Chrome 端到端验证三端行为。
@@ -89,7 +97,6 @@ macOS 桌面安装包在无 Apple Developer 账号下改为后处理完成后 ad
 - 修复 X 源健康恢复死锁：`missing_cookie` / `expired_cookie` / `blocked` 这类 re-login 状态原本无法自动恢复（`is_ready()` 会永久 park 住 producer），现 `/api/sources/x/cookie` 收到有效 cookie 即调 `XSourceHealthStore.clear_relogin_block()` 解封——cookie 过期重登后发现能自动续上。
 - 修复设置页 X 开关：`PUT /api/config` 之前静默丢弃 `sources.twitter`、`GET /api/config` 也不返回它 → 设置页开关存不下、刷新即丢；现补齐 `TwitterSourceConfigOut` + `update_config` 的 twitter 分支，X 启用开关与候选池 X 占比端到端持久化。
 - 配置：`config.toml` 的 `[sources.twitter]`（enabled / mode / cookie_env / 预算 / 间隔）与 `[scheduler.pool_source_shares].twitter` 全链路读写；`init` 平台清单纳入 twitter。
-
 ## v0.3.104 / extension v0.3.69: Windows 安装包版本元数据修复（2026-06-09）
 
 - 修复 Windows 安装包 / 主程序版本属性不完整：`OpenBiliClaw.exe` 现在由 PyInstaller 写入 `FileVersion` / `ProductVersion` / `OriginalFilename` 等 VERSIONINFO 资源，Windows 资源管理器、任务管理器和诊断脚本都能看到正确版本。

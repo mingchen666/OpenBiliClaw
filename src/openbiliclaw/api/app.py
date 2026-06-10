@@ -6684,7 +6684,6 @@ def create_app(
                         {"role": "user", "content": "OpenBiliClaw connectivity probe."},
                     ],
                     temperature=0,
-                    max_tokens=8,
                     reasoning_effort="",
                     model=model or None,
                 ),
