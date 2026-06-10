@@ -188,12 +188,12 @@ After starting the backend, open `http://127.0.0.1:8420/web` (or just `http://12
 
 ## Recent Updates
 
-Latest: **v0.3.114 / extension v0.3.74: source cookie config parity (2026-06-10)**. Full changelog: [docs/changelog.md](docs/changelog.md).
+Latest: **v0.3.115: auto-update unblocked (2026-06-10)**. Full changelog: [docs/changelog.md](docs/changelog.md).
 
-- **Douyin / X cookies visible & editable** — the Douyin / X source cards (extension + desktop web settings) now match the Bilibili card: view the current plaintext cookie or paste one manually.
-- **No more false source status** — X no longer reports "cookie valid" without a credential; Bilibili no longer shows "not configured" after a CLI QR login.
-- **Saving settings can't wipe cookies** — empty fields and masked echoes no longer overwrite synced cookies, so an accidentally cleared textbox is safe to save.
-- **Per-platform cookie sync retries** — Bilibili / Douyin / X retry independently; one platform's success no longer cancels another's pending quick retry.
+- **Auto-update actually updates now** — fixed stale release lockfiles permanently tripping the dirty-worktree guard on every git install, with zero feedback.
+- **Update status visible in settings** — a status line under the auto-update toggle shows current/latest version, blocking reason, and last check time.
+- **Desktop packages are honest** — frozen desktop installs can't git-self-update; the toggle is now disabled with a hint to install a newer package instead of silently doing nothing.
+- **Existing installs: one-time unlock** — run `git checkout -- uv.lock && git pull` once in the install dir (or re-run the one-line installer) to restore auto-update.
 
 ## Community
 
@@ -653,7 +653,7 @@ OpenBiliClaw/
 
 ## 📜 Release History
 
-Latest: **v0.3.114 / extension v0.3.74: source cookie config parity (2026-06-10)**. The recent updates section keeps the current release visible; full history lives in [docs/changelog.md](docs/changelog.md). Extension packages and desktop installers live on [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases); backend source updates use `backend-v*` tags.
+Latest: **v0.3.115: auto-update unblocked (2026-06-10)**. The recent updates section keeps the current release visible; full history lives in [docs/changelog.md](docs/changelog.md). Extension packages and desktop installers live on [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases); backend source updates use `backend-v*` tags.
 
 ## 🗺️ Roadmap
 

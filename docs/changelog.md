@@ -4,6 +4,16 @@
 
 ---
 
+## v0.3.115: 自动更新解卡（2026-06-10）
+
+修复「配置页开了自动更新却永远不更新」的静默失效：发布 tag 携带过期 `uv.lock`（版本 bump 时漏跑 `uv lock`），安装侧首次 `uv sync` 即把 worktree 弄脏，所有 git 克隆安装（一键脚本 / AI 安装）的自动更新从装机起被 `dirty_worktree` 守卫永久拦截，且无任何日志或 UI 反馈。
+
+- updater 守卫现豁免仅 `uv.lock` 的脏改动（其他任何脏文件仍然拦截），apply 前先 `git checkout -- uv.lock` 再 `git merge --ff-only`；实测脏安装 0.3.109 → 0.3.114 全链路（GitHub tag 检查 → 快进合并 → `uv sync` → 重启）走通。
+- 重新生成 `uv.lock` 并新增 `tests/test_release_consistency.py`：`pyproject.toml` / `openbiliclaw.__version__` / `uv.lock` 三处版本必须一致，发布 bump 漏跑 `uv lock` 时测试直接红，防止再次带脏种子发布。
+- `/api/update-status` 与 `/api/runtime-status` 新增 `install_mode`（`frozen` / `git` / `unsupported`）：桌面安装包（PyInstaller 冻结 bundle，无 git 仓库）结构上不支持后端 git 自更新，现在会如实上报而非静默无效。
+- 桌面 Web 设置页「自动更新」开关下新增状态行：展示更新状态、阻塞原因（本地化文案，如「代码目录有未提交改动」「本地代码与发布版本分叉」）、当前 / 最新版本与上次检查时间，设置页打开和保存配置后自动刷新；冻结安装包模式下禁用开关并提示「请下载并安装新版安装包」。
+- 存量 git 安装升级提示：旧版 updater 代码仍会被脏 `uv.lock` 卡住，无法自动升到本版。在安装目录手动执行一次 `git checkout -- uv.lock && git pull`（或重跑一键安装脚本，会复用现有目录与配置）即可解卡，此后自动更新恢复正常。
+
 ## v0.3.114 / extension v0.3.74: 来源 Cookie 配置对齐（2026-06-10）
 
 插件 side panel 与桌面 Web 配置页的五大来源卡片对齐到 B 站卡片的形态：抖音 / X 也能直接查看并手动粘贴明文 Cookie，状态彩点不再误报，保存配置不会意外清掉已同步的 Cookie。
@@ -15,9 +25,6 @@
 - 插件 cookie 自动同步的重试 alarm 按平台拆分（`-bili` / `-dy` / `-x`）：一个平台同步成功不再把另一平台刚排的快速重试重置回 60 分钟，登录某平台也只触发该平台的同步；旧共享 alarm 名兼容一轮后清除。
 - 配置页 parity 杂项：插件 popup 空字段回退值与后端默认对齐（各源预算 0 = 不限，YouTube 6/50/10、抖音 30/5/30、小红书 30/10 的旧回退移除），预算输入框 placeholder 统一标注「0 = 不限」；桌面 Web `xhsEnabled` 缺省渲染与候选池 `pool_target_count` 回退值（600→300）对齐后端默认。
 - 代码组织：`XCookieManager` / `resolve_x_cookie` 迁至 `sources/x_auth.py`（对标 `sources/douyin_auth.py`），`api.app` 保留 re-export 兼容旧导入。
-- 修复后端自动更新被 `dirty_worktree` 永久阻塞：发布 tag 曾携带过期 `uv.lock`（版本 bump 时漏跑 `uv lock`），安装侧首次 `uv sync` 即把 worktree 弄脏，所有 git 克隆安装（一键脚本 / AI 安装）的自动更新从装机起静默失效。updater 守卫现豁免仅 `uv.lock` 的改动并在 apply 前 `git checkout -- uv.lock` 再快进；同时重新 lock 并新增 `tests/test_release_consistency.py` 钉死 `pyproject.toml` / `__version__` / `uv.lock` 三处版本一致，防止发布再次带脏种子。
-- `/api/update-status` 与 `/api/runtime-status` 新增 `install_mode`（`frozen` / `git` / `unsupported`）：桌面安装包（PyInstaller 冻结 bundle，无 git 仓库）结构上不支持后端 git 自更新，现在会如实上报而非静默无效。
-- 桌面 Web 设置页「自动更新」开关下新增状态行：展示更新状态、阻塞原因（本地化文案，如「代码目录有未提交改动」「本地代码与发布版本分叉」）、当前 / 最新版本与上次检查时间，设置页打开和保存配置后自动刷新；冻结安装包模式下禁用开关并提示「请下载并安装新版安装包」。
 
 ## v0.3.113: Embedding 维度独立配置（2026-06-10）
 

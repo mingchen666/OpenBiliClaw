@@ -192,12 +192,12 @@
 
 ## 最近更新
 
-最新版本：**v0.3.114 / extension v0.3.74: 来源 Cookie 配置对齐（2026-06-10）**。完整变更详见 [docs/changelog.md](docs/changelog.md)。
+最新版本：**v0.3.115: 自动更新解卡（2026-06-10）**。完整变更详见 [docs/changelog.md](docs/changelog.md)。
 
-- **抖音 / X Cookie 可见可改** —— 设置页（插件 + 桌面 Web）的抖音 / X 卡片对齐 B 站形态，直接查看当前明文 Cookie，也能手动粘贴覆盖。
-- **来源状态不再误报** —— X 没有凭据时不再显示「cookie 有效」；B 站二维码登录后状态行不再误报「未配置」。
-- **保存设置不丢 Cookie** —— 空字段 / 脱敏回显不再覆盖已同步的 Cookie，误清空输入框点保存也安全。
-- **Cookie 同步重试按平台独立** —— B 站 / 抖音 / X 各自重试，一个平台成功不再打断另一平台的快速重试。
+- **自动更新真的会更新了** —— 修复发布 lock 文件过期导致所有 git 安装的自动更新被「脏工作树」守卫永久拦截、且毫无提示的问题。
+- **设置页能看到更新状态** —— 自动更新开关下新增状态行：当前 / 最新版本、阻塞原因、上次检查时间，不再「开了没反应」。
+- **桌面安装包如实提示** —— 桌面包结构上不支持 git 自更新，现在禁用开关并提示下载新版安装包，不再静默无效。
+- **存量安装一次解卡** —— 旧安装在安装目录执行一次 `git checkout -- uv.lock && git pull`（或重跑一键安装脚本）即可恢复自动更新。
 
 ## 用户交流群
 
@@ -665,7 +665,7 @@ OpenBiliClaw/
 
 ## 📜 更新日志
 
-最新版本：**v0.3.114 / extension v0.3.74: 来源 Cookie 配置对齐（2026-06-10）**。最近更新见上方摘要；完整历史见 [docs/changelog.md](docs/changelog.md)。插件包和桌面安装包见 [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases)，后端源码更新看 `backend-v*` tag。
+最新版本：**v0.3.115: 自动更新解卡（2026-06-10）**。最近更新见上方摘要；完整历史见 [docs/changelog.md](docs/changelog.md)。插件包和桌面安装包见 [GitHub Releases](https://github.com/whiteguo233/OpenBiliClaw/releases)，后端源码更新看 `backend-v*` tag。
 
 ## 🗺️ 后续规划
 
