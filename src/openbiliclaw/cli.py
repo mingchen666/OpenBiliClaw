@@ -5489,17 +5489,25 @@ def profile_consolidate(
 
     cfg = load_config()
     memory = _build_memory_manager()
-    registry = _build_registry()
-    llm_service = LLMService(
-        registry=registry,
-        memory=memory,
-        module_overrides=module_overrides_from_config(cfg),
-        concurrency=cfg.llm.concurrency,
-    )
-    embedding_service = None
+    llm_service = None
+    registry = None
     try:
-        embedding_service = build_embedding_service(cfg, registry)
-    except Exception:
+        registry = _build_registry()
+        llm_service = LLMService(
+            registry=registry,
+            memory=memory,
+            module_overrides=module_overrides_from_config(cfg),
+            concurrency=cfg.llm.concurrency,
+        )
+    except Exception as exc:
+        console.print(f"[yellow]  LLM 不可用（{exc}）— 只做规则合并与聚类预览。[/yellow]")
+    embedding_service = None
+    if registry is not None:
+        try:
+            embedding_service = build_embedding_service(cfg, registry)
+        except Exception:
+            embedding_service = None
+    if embedding_service is None:
         console.print("[dim]  embedding 服务不可用，退回子串聚类。[/dim]")
 
     consolidator = ProfileConsolidator(
