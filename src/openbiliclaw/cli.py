@@ -5474,6 +5474,11 @@ def profile_consolidate(
         "--revert",
         help="按 run_id 回滚一次已应用的整理（备份在 data/memory/consolidation_runs/）。",
     ),
+    migrate_categories: bool = typer.Option(
+        False,
+        "--migrate-categories",
+        help="一次性把存量一级分类迁移到固定词表（默认 dry-run，配 --apply 写入）。",
+    ),
 ) -> None:
     """用 LLM 整理合并画像里重复的喜欢 / 讨厌主题。
 
@@ -5485,6 +5490,7 @@ def profile_consolidate(
     \b
       - 默认 dry-run，先看建议再决定
       - --apply 写入,自动备份到 data/memory/consolidation_runs/
+      - --migrate-categories 一次性分类词表迁移（同样 dry-run/--apply/--revert）
       - 审计记录追加到 data/memory/soul_changelog.md
     """
     import asyncio as _asyncio
@@ -5535,6 +5541,44 @@ def profile_consolidate(
             raise typer.Exit(code=1)
         return
 
+    if migrate_categories:
+        from openbiliclaw.soul.category_migration import CategoryMigrator
+
+        migrator = CategoryMigrator(memory=memory, llm_service=llm_service)
+        migration_report = _asyncio.run(migrator.run(dry_run=not apply))
+        for err in migration_report.errors:
+            console.print(f"[yellow]  ⚠ {err}[/yellow]")
+        console.print(
+            f"  现存分类: {len(migration_report.histogram)} 个，"
+            f"标签 {sum(migration_report.histogram.values())} 条"
+        )
+        for old, new in sorted(
+            migration_report.mapping.items(),
+            key=lambda item: -migration_report.histogram.get(item[0], 0),
+        ):
+            console.print(
+                f"  {old}({migration_report.histogram.get(old, 0)}) → [bold]{new}[/bold]"
+            )
+        if migration_report.mapping:
+            suffix = (
+                "  [yellow]⚠ 超过 10%[/yellow]"
+                if migration_report.other_ratio > 0.10
+                else ""
+            )
+            console.print(f"\n  「其他」占比: {migration_report.other_ratio:.1%}{suffix}")
+        if not apply and migration_report.mapping:
+            console.print("\n  [dim]满意的话用 --apply 真正写入。[/dim]")
+        if migration_report.applied:
+            console.print(
+                "\n  [dim]已备份，"
+                f"run_id={migration_report.run_id}（--revert {migration_report.run_id} 可回滚）"
+                "[/dim]"
+            )
+        degraded = migration_report.errors == ["llm: service unavailable"]
+        if migration_report.errors and not migration_report.mapping and not degraded:
+            raise typer.Exit(code=1)
+        return
+
     mode_label = "[bold]apply[/bold]" if apply else "dry-run（加 --apply 才会写入）"
     console.print(f"  模式: {mode_label}")
     report = _asyncio.run(consolidator.run(dry_run=not apply))
@@ -5546,7 +5590,8 @@ def profile_consolidate(
     for rule_merge in report.rule_merges:
         console.print(f"  [cyan][规则][/cyan] {rule_merge}")
     for merge in report.merges:
-        members = " / ".join(str(m) for m in merge.get("members", []))
+        raw_members = merge.get("members", [])
+        members = " / ".join(str(m) for m in raw_members) if isinstance(raw_members, list) else ""
         scope = "兴趣" if merge.get("scope") == "likes" else "避雷"
         console.print(
             f"  [green][{scope}][/green] {members} → [bold]{merge.get('canonical')}[/bold]"
