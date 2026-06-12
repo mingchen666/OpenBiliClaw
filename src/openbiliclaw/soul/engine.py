@@ -152,6 +152,7 @@ class SoulEngine:
         self._preference_analyzer = PreferenceAnalyzer(
             self._llm_service,
             satisfaction_filter_enabled=satisfaction_filter_enabled,
+            embedding_service=embedding_service,
         )
         self._profile_builder = ProfileBuilder(self._llm_service)
         data_dir = getattr(memory, "_data_dir", None)
@@ -218,6 +219,7 @@ class SoulEngine:
         engine in the bootstrap order.
         """
         self._embedding_service = embedding_service
+        self._preference_analyzer.embedding_service = embedding_service
         self._pipeline.set_embedding_service(embedding_service)
         if self._profile_consolidator is not None:
             self._profile_consolidator.set_embedding_service(embedding_service)

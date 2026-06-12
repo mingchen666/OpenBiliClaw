@@ -16,6 +16,7 @@ from openbiliclaw.llm.json_utils import (
 from openbiliclaw.llm.prompts import build_preference_analysis_prompt
 from openbiliclaw.llm.service import LLMServiceError
 from openbiliclaw.soul.event_filters import filter_events_by_satisfaction
+from openbiliclaw.soul.taxonomy import SupportsEmbed, resolve_category
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class PreferenceAnalyzer:
     # update disliked_topics without mistaking that title for a positive
     # interest.
     satisfaction_filter_enabled: bool = True
+    embedding_service: SupportsEmbed | None = None
     max_prompt_chars: int = 24_000
     compact_title_chars: int = 180
     compact_context_chars: int = 600
@@ -206,7 +208,7 @@ class PreferenceAnalyzer:
             raise PreferenceAnalysisError(str(exc)) from exc
 
         raw_preference = self._parse_response(response.content)
-        normalized = self._normalize_preference(raw_preference)
+        normalized = await self._normalize_and_resolve(raw_preference)
         merged = self.merge_preferences(existing_preference, normalized, now=datetime.now())
         merged["source_platform_mix"] = self._merge_source_mix(
             existing_preference.get("source_platform_mix"),
@@ -348,7 +350,7 @@ class PreferenceAnalyzer:
             except (LLMProviderError, LLMServiceError) as exc:
                 raise PreferenceAnalysisError(str(exc)) from exc
             raw = self._parse_response(response.content)
-            return raw, self._normalize_preference(raw)
+            return raw, await self._normalize_and_resolve(raw)
 
         async def _split_or_compact_chunk(
             chunk: list[dict[str, object]],
@@ -671,6 +673,22 @@ class PreferenceAnalyzer:
             for item in raw_speculative
             if isinstance(item, dict) and str(item.get("name", "")).strip()
         ]
+        return normalized
+
+    async def _normalize_and_resolve(
+        self, raw_preference: dict[str, object]
+    ) -> dict[str, object]:
+        normalized = self._normalize_preference(raw_preference)
+        for key in ("interests", "speculative_interests"):
+            items = normalized.get(key, [])
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, dict):
+                    item["category"] = await resolve_category(
+                        str(item.get("category", "")),
+                        self.embedding_service,
+                    )
         return normalized
 
     def _normalize_interest(self, raw_item: dict[str, object]) -> dict[str, object]:
