@@ -980,15 +980,37 @@ class RuntimeContext:
         OR when prewarm returns >0 (i.e. some embeddings landed).
         Failures swallowed silently so pool MMR cache lazy-fills via
         normal traffic if all 5 attempts truly fail.
+
+        v0.3.124+ (lever 4): the retry loop only makes sense when there
+        is something to warm but it failed (backend warming up / down).
+        ``prewarm`` now returns ``-1`` when there is simply nothing to
+        warm yet (empty pool / no embedding service) — a benign cold
+        start, not a failure — so we log it plainly and stop instead of
+        burning 5 alarming "warmed=0 — retry" lines on every fresh deploy
+        (which read identically to a real Ollama outage). ``0`` with
+        candidates present is the genuine "backend unreachable" case and
+        keeps the retry-then-warn behaviour.
         """
         delay = 2.0
         for attempt in range(1, 6):
             try:
                 warmed = await prewarm_callable()
-                if isinstance(warmed, int) and warmed > 0:
-                    return
+                if isinstance(warmed, int):
+                    if warmed > 0:
+                        return
+                    if warmed < 0:
+                        # Nothing to warm yet — benign cold start; retrying
+                        # won't help (the cache lazy-fills as the pool fills).
+                        logger.info(
+                            "Startup prewarm_pool_mmr_embeddings: nothing to warm yet "
+                            "(empty pool or embedding service off) — skipping retries; "
+                            "cache will lazy-fill from serve()/discovery traffic"
+                        )
+                        return
                 logger.info(
-                    "Startup prewarm_pool_mmr_embeddings attempt %d warmed=0 — retry in %.1fs",
+                    "Startup prewarm_pool_mmr_embeddings attempt %d embedded 0 items "
+                    "(candidates present — embedding backend may be warming up/down) "
+                    "— retry in %.1fs",
                     attempt,
                     delay,
                 )
@@ -1003,9 +1025,10 @@ class RuntimeContext:
                 break
             await asyncio.sleep(delay)
             delay *= 2
-        logger.info(
-            "Startup prewarm_pool_mmr_embeddings gave up after retries — "
-            "cache will lazy-fill from regular serve()/discovery traffic"
+        logger.warning(
+            "Startup prewarm_pool_mmr_embeddings gave up after retries — the embedding "
+            "backend stayed unreachable (candidates were present but none embedded; "
+            "e.g. Ollama down). MMR diversity degrades; cache will lazy-fill if it recovers"
         )
 
 

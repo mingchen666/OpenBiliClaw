@@ -713,18 +713,39 @@ class RecommendationEngine:
         completes in a few minutes against a slow local embedding
         provider (Ollama). Idempotent: ``EmbeddingService.embed``
         short-circuits on L2 hit.
+
+        Return contract (lever 4 observability — let callers tell a benign
+        cold start from a broken embedding backend):
+          * ``>0`` — items warmed.
+          * ``0``  — there WERE candidates but none embedded → the embedding
+            backend is unreachable (e.g. Ollama down). Worth retrying.
+          * ``-1`` — nothing to warm (no embedding service, or pool empty);
+            retrying is pointless — the cache lazy-fills as the pool fills.
         """
         if self._embedding_service is None:
-            return 0
+            logger.debug("Pool MMR prewarm skipped: embedding service not configured")
+            return -1
         candidates = self._load_pool_candidates(limit=limit)
         if not candidates:
-            return 0
+            logger.debug(
+                "Pool MMR prewarm skipped: pool has no servable candidates yet — "
+                "nothing to warm (cache lazy-fills as discovery classifies the pool)"
+            )
+            return -1
         warmed = await self.warm_mmr_embeddings(candidates)
-        logger.info(
-            "Pool MMR embedding prewarm: %d/%d items warmed",
-            warmed,
-            len(candidates),
-        )
+        if warmed == 0:
+            logger.warning(
+                "Pool MMR prewarm: 0/%d items embedded — the embedding backend "
+                "looks unreachable (e.g. Ollama down). Recommendation diversity "
+                "(MMR) degrades until it recovers; see embed-failure debug logs.",
+                len(candidates),
+            )
+        else:
+            logger.info(
+                "Pool MMR embedding prewarm: %d/%d items warmed",
+                warmed,
+                len(candidates),
+            )
         return warmed
 
     async def precompute_pool_copy(

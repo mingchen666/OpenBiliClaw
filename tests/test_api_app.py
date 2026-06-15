@@ -427,6 +427,45 @@ class TestBackendAPI:
                 await ctx.task_registry.cancel_all()
 
     @pytest.mark.asyncio
+    async def test_startup_prewarm_wrapper_skips_retries_on_nothing_to_warm(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Lever 4: the startup prewarm wrapper skips its retry loop when prewarm
+        returns -1 ("nothing to warm" — empty pool / embeddings off), so a fresh
+        deploy no longer emits 5 alarming "warmed=0 — retry" lines that read like
+        a real Ollama outage. A 0 return (candidates present, backend down) still
+        retries.
+        """
+        from openbiliclaw.api.runtime_context import RuntimeContext
+
+        async def no_sleep(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+        # -1 → benign cold start: called exactly once, no retry loop.
+        benign_calls = 0
+
+        async def _benign() -> int:
+            nonlocal benign_calls
+            benign_calls += 1
+            return -1
+
+        await RuntimeContext._safe_prewarm_pool_mmr_embeddings(_benign)
+        assert benign_calls == 1
+
+        # 0 → backend unreachable: retried up to 5 times before giving up.
+        down_calls = 0
+
+        async def _down() -> int:
+            nonlocal down_calls
+            down_calls += 1
+            return 0
+
+        await RuntimeContext._safe_prewarm_pool_mmr_embeddings(_down)
+        assert down_calls == 5
+
+    @pytest.mark.asyncio
     async def test_put_config_does_not_block_on_speculator(
         self,
         monkeypatch: pytest.MonkeyPatch,

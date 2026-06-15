@@ -2016,6 +2016,63 @@ async def test_e2e_precompute_pool_copy_classifies_then_copies_in_one_pass(
 
 
 @pytest.mark.asyncio
+async def test_prewarm_pool_mmr_embeddings_signals_distinguish_states() -> None:
+    """Lever 4: prewarm's return distinguishes a benign cold start (-1) from a
+    genuinely-unreachable embedding backend (0), so operators can tell
+    "pool empty / embeddings off" apart from "Ollama is down" — the original
+    `warmed=0` ambiguity.
+    """
+
+    class _FakeEmbedding:
+        def __init__(self, *, working: bool) -> None:
+            self.working = working
+            self.similarity_threshold = 0.82
+
+        async def embed(self, _text: str) -> list[float]:
+            return [0.1, 0.2, 0.3] if self.working else []
+
+        def lookup_cached(self, _text: str) -> list[float] | None:
+            return None
+
+    # (1) No embedding service configured → -1 (benign: embeddings disabled).
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "a.db")
+        db.initialize()
+        _seed_visible(db, "BVa", title="测试视频", up_name="UP", source="search")
+        engine = RecommendationEngine(llm=_DummyLLM(), database=db, embedding_service=None)
+        assert await engine.prewarm_pool_mmr_embeddings() == -1
+
+    # (2) Working backend but EMPTY pool → -1 (benign cold start, nothing to warm).
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "b.db")
+        db.initialize()
+        engine = RecommendationEngine(
+            llm=_DummyLLM(), database=db, embedding_service=_FakeEmbedding(working=True)
+        )
+        assert await engine.prewarm_pool_mmr_embeddings() == -1
+
+    # (3) Candidates present but backend down (embed returns []) → 0 (real failure).
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "c.db")
+        db.initialize()
+        _seed_visible(db, "BVc", title="测试视频", up_name="UP", source="search")
+        engine = RecommendationEngine(
+            llm=_DummyLLM(), database=db, embedding_service=_FakeEmbedding(working=False)
+        )
+        assert await engine.prewarm_pool_mmr_embeddings() == 0
+
+    # (4) Candidates present + working backend → warmed count > 0.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "d.db")
+        db.initialize()
+        _seed_visible(db, "BVd", title="测试视频", up_name="UP", source="search")
+        engine = RecommendationEngine(
+            llm=_DummyLLM(), database=db, embedding_service=_FakeEmbedding(working=True)
+        )
+        assert await engine.prewarm_pool_mmr_embeddings() > 0
+
+
+@pytest.mark.asyncio
 async def test_classify_pool_backlog_accepts_jsonl_output(caplog: pytest.LogCaptureFixture) -> None:
     class _JsonlClassifyLLM:
         async def complete_structured_task(
