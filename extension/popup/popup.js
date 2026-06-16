@@ -521,6 +521,9 @@ function setActiveTab(tabName) {
   if (tabName === "favorites") {
     void loadFavorites();
   }
+  if (tabName === "chat") {
+    scrollChatMessagesToBottom();
+  }
 }
 
 async function toggleWatchLaterSaved(bvid) {
@@ -3798,6 +3801,17 @@ function renderEditPanel(container, editState) {
   }
 }
 
+function scrollChatMessagesToBottom() {
+  if (!(elements.chatMessages instanceof HTMLElement)) {
+    return;
+  }
+  const scroll = () => {
+    elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+  };
+  scroll();
+  window.requestAnimationFrame(scroll);
+}
+
 function appendChatMessage(role, content, { turnId = "", part = "" } = {}) {
   if (!(elements.chatMessages instanceof HTMLElement)) {
     return null;
@@ -3817,7 +3831,7 @@ function appendChatMessage(role, content, { turnId = "", part = "" } = {}) {
 
   item.append(label, text);
   elements.chatMessages.append(item);
-  elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+  scrollChatMessagesToBottom();
   return item;
 }
 
@@ -3852,7 +3866,7 @@ function appendChatThinkingPlaceholder(turnId = "") {
 
   item.append(label, text);
   elements.chatMessages.append(item);
-  elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+  scrollChatMessagesToBottom();
   return item;
 }
 
@@ -3868,9 +3882,7 @@ function replaceChatThinkingPlaceholder(placeholder, content) {
     text.classList.remove("chat-thinking-content");
     text.textContent = content;
   }
-  if (elements.chatMessages instanceof HTMLElement) {
-    elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
-  }
+  scrollChatMessagesToBottom();
 }
 
 const DELIGHT_LOCAL_STATE_KEY = "openbiliclaw_delight_local";
@@ -4092,6 +4104,7 @@ async function hydrateChatHistory() {
         });
       }
     }
+    scrollChatMessagesToBottom();
   } catch {
     // History is opportunistic; core panel loading should continue offline.
   }

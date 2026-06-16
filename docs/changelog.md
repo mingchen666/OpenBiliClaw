@@ -4,6 +4,12 @@
 
 ---
 
+## extension v0.3.80: 对话历史自动滚到底部（2026-06-16）
+
+浏览器插件小版本发布；后端源码和桌面安装包未改动。
+
+- **对话 tab 历史恢复自动定位最新消息**：popup 启动时即使 Chat view 处于 hidden 状态先 hydrate 历史，用户切到「对话」后也会在下一帧滚到最新消息；追加消息、pending 占位替换、历史恢复共用 `scrollChatMessagesToBottom()`。已用真实临时后端 + unpacked extension 浏览器 E2E 验证 40 turns / 80 bubbles，`bottomDelta=0.5px`、最后一条完全可见。
+
 ## v0.3.125 / extension v0.3.79: 画像分类词表 + B 站扩展搜索兜底发版（2026-06-16）
 
 把 `backend-v0.3.124` 之后已合入 main 的跨模块改动打成正式发布：后端源码走 `backend-v0.3.125`，桌面安装包走 `desktop-v0.3.125`，浏览器插件版本提升到 `0.3.79` 并发布 `extension-v0.3.79`。
