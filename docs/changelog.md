@@ -4,6 +4,12 @@
 
 ---
 
+## main: CI 热重载测试稳定性（2026-06-16）
+
+未发新包；仅修正主线 CI 的测试 race。
+
+- **热重载补货重启测试不再依赖 live task 统计**：`BackgroundTaskRegistry.stats()` 只统计尚未完成的任务，CI 上极快完成的 fake `post_reload_precompute_pool_copy` 会被自移除，导致偶发红灯。测试改为捕获 `track()` 调度的 task 并等待其完成，继续验证 restart 会踢起 pool precompute，但不再依赖任务是否仍处于 live 状态。
+
 ## extension v0.3.80: 对话历史自动滚到底部（2026-06-16）
 
 浏览器插件小版本发布；后端源码和桌面安装包未改动。

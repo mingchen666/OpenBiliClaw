@@ -306,11 +306,21 @@ class TestBackendAPI:
             recommendation_engine=engine,
         )
         app = SimpleNamespace(state=SimpleNamespace())
+        captured: dict[str, asyncio.Task[object]] = {}
+        original_track = ctx.task_registry.track
+
+        def _track(name: str, coro: object) -> object:
+            task = original_track(name, coro)
+            captured[name] = task
+            return task
+
+        ctx.task_registry.track = _track  # type: ignore[method-assign]
 
         try:
             await asyncio.wait_for(ctx.restart_background_tasks(app), timeout=0.5)
-            assert ctx.task_registry.stats().get("post_reload_precompute_pool_copy") == 1
+            assert "post_reload_precompute_pool_copy" in captured
             await asyncio.wait_for(engine.started.wait(), timeout=0.5)
+            await asyncio.wait_for(captured["post_reload_precompute_pool_copy"], timeout=0.5)
             assert engine.calls == [{"profile": "ok"}]
         finally:
             await ctx.task_registry.cancel_all()
